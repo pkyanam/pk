@@ -61,7 +61,7 @@ type SearchResult struct {
 	URL      string `json:"url"`
 }
 
-type sourceRef struct{ owner, repo, ref, wanted string }
+type sourceRef struct{ owner, repo, ref, wanted, exactPath string }
 type githubRepo struct {
 	DefaultBranch string `json:"default_branch"`
 }
@@ -144,6 +144,9 @@ func (m Manager) Discover(ctx context.Context, source string) ([]Candidate, erro
 	}
 	dirs := make([]string, 0, len(byDir))
 	for dir := range byDir {
+		if s.exactPath != "" && dir != s.exactPath {
+			continue
+		}
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
@@ -466,11 +469,16 @@ func parseSource(raw string) (sourceRef, error) {
 				return sourceRef{}, errors.New("invalid Git ref path")
 			}
 			if len(p) > 4 {
-				last, err := url.PathUnescape(p[len(p)-1])
-				if err != nil {
-					return sourceRef{}, errors.New("invalid skill folder path")
+				parts := make([]string, 0, len(p)-4)
+				for _, component := range p[4:] {
+					decoded, decodeErr := url.PathUnescape(component)
+					if decodeErr != nil {
+						return sourceRef{}, errors.New("invalid skill folder path")
+					}
+					parts = append(parts, decoded)
 				}
-				s.wanted = path.Base(last)
+				s.exactPath = strings.Join(parts, "/")
+				s.wanted = path.Base(s.exactPath)
 			}
 		}
 		return validateSource(s)
@@ -490,6 +498,9 @@ func validateSource(s sourceRef) (sourceRef, error) {
 	}
 	if s.ref != "" && (strings.Contains(s.ref, "..") || strings.ContainsAny(s.ref, "\\\x00")) {
 		return sourceRef{}, errors.New("invalid Git ref")
+	}
+	if s.exactPath != "" && !safeRelative(s.exactPath) {
+		return sourceRef{}, errors.New("invalid GitHub skill path")
 	}
 	return s, nil
 }

@@ -99,8 +99,34 @@ func TestGitHubTreeSourceSelectsSkillPathAndRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if branchURL.ref != "feature/foo" || branchURL.wanted != "review" {
+	if branchURL.ref != "feature/foo" || branchURL.wanted != "review" || branchURL.exactPath != "skills/review" {
 		t.Fatalf("encoded slash ref was not preserved: %+v", branchURL)
+	}
+}
+
+func TestGitHubTreeURLSelectsExactDuplicateFolderPath(t *testing.T) {
+	requested := "https://github.com/owner/repo/tree/main/path1/foo"
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Host == "api.github.com" && strings.HasSuffix(r.URL.Path, "/repo"):
+			return response(200, `{"default_branch":"main"}`), nil
+		case r.URL.Host == "api.github.com" && strings.Contains(r.URL.Path, "/git/trees/"):
+			return response(200, `{"tree":[{"path":"path1/foo/SKILL.md","type":"blob","mode":"100644"},{"path":"path2/foo/SKILL.md","type":"blob","mode":"100644"}]}`), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/path1/foo/SKILL.md"):
+			return response(200, "---\nname: selected-foo\ndescription: Exact selected skill.\n---\nInstructions."), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}
+	manager := Manager{Root: filepath.Join(t.TempDir(), "skills"), Client: client}
+	candidates, err := manager.Discover(context.Background(), requested)
+	if err != nil || len(candidates) != 1 || candidates[0].Path != "path1/foo" {
+		t.Fatalf("exact path discovery = %#v, %v", candidates, err)
+	}
+	installed, err := manager.Install(context.Background(), candidates[0].Source, candidates[0].Path)
+	if err != nil || installed.Name != "selected-foo" {
+		t.Fatalf("install exact path = %+v, %v", installed, err)
 	}
 }
 
