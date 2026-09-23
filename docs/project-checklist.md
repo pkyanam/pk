@@ -163,3 +163,5 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 - [x] Release direct Cloudflare Workers AI setup through `/provider` and `/providers`: account ID, masked API token, model discovery, streaming and function-call continuation. Local fixtures only; live account validation remains.
 - [x] Publish the final tested checkpoint (v0.1.7), retain rollback instructions, then pause Codex work and the goal. See [handoff](HANDOFF.md). Remaining backlog is not silently marked complete.
+
+- [x] Follow-up v0.1.8: connect Workers AI/Chat Completions SSE to live TUI text/tool progress and reasoning-byte activity. A delayed 19KB prompt fixture verifies early delivery, final-history privacy, and cancellation. Both platform release gates and isolated Darwin archive startup pass; live provider latency remains unmeasured.
