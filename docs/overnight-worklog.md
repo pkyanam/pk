@@ -645,3 +645,9 @@ gates or imply that every backlog item is complete.
 
 - Managed updater activated clean c796f96 as 20260923T125009.244964000Z-90fefa436666-685f3407 after Go/UI validation and build. Existing running sessions were not interrupted.
 - A bounded renderer diagnostic with four 32 KiB Markdown responses and four plain responses preserved composer visibility through resize and wheel scrolling. The initial sample was slower for Markdown, but ordering, warm-up and accumulated content differ; this is not a comparative benchmark or reproduction of the original freeze.
+
+### ACP first-prompt and rendering follow-up
+
+- Empty pre-created sessions now receive their initial context without a misleading resume warning. Existing history with a missing snapshot still warns and refuses captured-output compaction. Full runner and CLI race suites pass.
+- Replaced the first large-transcript diagnostic with fresh renderers, prewarmed parsers and alternating format order; retained full content. Initial Markdown work remains more expensive, while unrelated updates were similar. No clipping or freeze reproduced; timing details and scope are in docs/performance.md.
+- Official SDK smoke now passes restart/load of the actual CLI, replaying both user and assistant history and continuing with a third provider turn. This verifies the SDK path, not a particular editor.

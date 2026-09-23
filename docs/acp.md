@@ -53,8 +53,10 @@ To check stdio interoperability without credentials or a model call, run
 `@agentclientprotocol/sdk` pinned at 1.5.0 into a temporary directory, builds a
 fake local ACP agent using a fixed assistant response, and exercises initialize,
 session creation, prompt updates, and the `end_turn` response. It also builds
-the actual pk CLI and drives two turns through a loopback Chat Completions
-provider, checking model selection, tool declarations, and retained history.
+the actual pk CLI and drives three turns through a loopback Chat Completions
+provider. Between turns two and three it restarts pk, loads the durable session,
+and verifies replayed user/assistant messages, model selection, tool declarations,
+and retained history.
 All model responses in this smoke are synthetic; no remote model is called. The script uses a
 temporary private home and removes its temporary files on exit. It verifies the
 wire exchange with the SDK; it does not claim compatibility testing with a

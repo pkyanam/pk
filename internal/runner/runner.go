@@ -324,9 +324,15 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 			if !isMissingContextSnapshot(snapshotErr) {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("load session context snapshot: %w", snapshotErr)
 			}
-			fmt.Fprintf(options.Diagnostics, "pk: warning: session %s has no saved prompt context; resuming with current workspace context.\n", id)
-			if options.CompactCapturedOutput {
-				return RunResult{SessionID: string(id)}, errors.New("captured-output compaction cannot be enabled while resuming a session without a saved context snapshot; start a new session")
+			emptyHistory, historyErr := sessionHasNoHistory(ctx, store, id)
+			if historyErr != nil {
+				return RunResult{SessionID: string(id)}, fmt.Errorf("inspect session history without context snapshot: %w", historyErr)
+			}
+			if !emptyHistory {
+				fmt.Fprintf(options.Diagnostics, "pk: warning: session %s has no saved prompt context; resuming with current workspace context.\n", id)
+				if options.CompactCapturedOutput {
+					return RunResult{SessionID: string(id)}, errors.New("captured-output compaction cannot be enabled while resuming a session without a saved context snapshot; start a new session")
+				}
 			}
 		} else {
 			snapshot = loaded
@@ -1242,6 +1248,14 @@ func appendCaptured(capture *strings.Builder, mu *sync.Mutex, text string, limit
 	}
 	capture.WriteString(text[:cut])
 	capture.WriteString("\n[pk: captured output truncated; streamed output is complete]\n")
+}
+
+func sessionHasNoHistory(ctx context.Context, store sessionstore.Store, id session.ID) (bool, error) {
+	page, err := store.Items(ctx, id, sessionstore.BeforeFirst, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(page.Items) == 0 && !page.More, nil
 }
 
 func usageJSONEvent(id session.ID, response llm.Response) map[string]any {

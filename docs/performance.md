@@ -129,3 +129,22 @@ go test ./internal/sessionmanager -run '^$' -bench '^BenchmarkGetLargeSessionLog
 ## Installed startup checkpoint (`264b3c7`)
 
 Release `264b3c7` rendered its first 80×24 TUI ready frame in 500 ms; two later launches measured 498–502 ms. RPC ready and tool-catalog preview warm medians were 12.1 and 10.7 ms (three samples each). These are small shared-machine measurements in a temporary workspace, without provider calls, not a comparative speedup. Raw results: [`startup-264b3c7-20260923/result.json`](../benchmarks/results/startup-264b3c7-20260923/result.json).
+
+## Large Markdown transcript diagnostic
+
+The renderer test uses three 16 KiB answers per fresh app, prewarms Markdown
+parsers, alternates format order, and destroys each renderer before the next
+sample. On the same development Mac, three samples measured initial Markdown
+rendering at 151.7/154.4/149.0 ms, versus plain text at 37.0/35.7/35.8 ms.
+Unrelated status updates measured 42.0/36.0/36.5 ms and 36.5/35.4/34.9 ms,
+respectively. The composer remained visible through resize and wheel scrolling.
+
+This synthetic test includes renderer scheduling/flush overhead. It establishes
+initial Markdown work as a cost, not an explanation of the reported freeze or
+a general performance ratio. Existing memoization skips unchanged transcript
+rows on unrelated updates; a status event here is not a direct clock-tick test.
+No transcript content was truncated or rendering behavior changed.
+
+```sh
+cd ui && bun test src/app.large-transcript.test.tsx
+```
