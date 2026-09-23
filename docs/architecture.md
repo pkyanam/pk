@@ -15,7 +15,8 @@ flowchart LR
     PLAIN[--plain / pk run] --> RUNNER
     RUNNER --> HARNESS[Unreal Agent v0.1.1 harness]
     RUNNER --> STORE[durable session store + prefix snapshot]
-    HARNESS --> PROVIDER[OpenAI Responses API]
+    HARNESS --> PROVIDER[Configured model adapter]
+    HARNESS --> INTEGRATIONS[Explicit extension and MCP tools]
 ```
 
 The UI sends commands and renders events; it does not own model credentials or call the provider.
@@ -46,10 +47,37 @@ turn. `AskUser` is for clarifying decisions, not permission to execute a tool. S
 
 `internal/runner` composes the pinned Unreal Agent session coordinator, durable session storage,
 operation manager, tool registry, and model adapter. The `llm.Adapter` boundary isolates model
-requests. The operation manager is responsible for executing durable Bash and image operations. The
-default tool registry exposes Bash, ViewImage, and SkillUse; skills are discovered from disk and
-registered in that runtime. This project does not discover arbitrary plugin binaries or load a
-user-defined tool registry from config.
+requests. The upstream local operation manager executes durable Bash and image operations; pk also
+registers explicit remote-job handlers for supported extensions. The base tool registry exposes
+Bash, ViewImage, and SkillUse. Host setup may add foreground AskUser, explicitly configured
+extensions, MCP servers, image generation, and parent-managed subagent tools through registry
+decorators. These are opt-in integrations, not binaries discovered by scanning a workspace.
+
+## What pk inherits from Unreal Agent
+
+The pinned dependency is `github.com/unreallabsai/unreal-agent` v0.1.1. pk calls its production
+`coordinator.New` and `operation.NewLocalOperationManager`; it does not replace the coordinator with
+a pk polling loop. The coordinator dispatches independent tool calls returned together by the model
+and folds their completed operation results into later model turns. This is an inherited execution
+capability, not a claim that the model always chooses parallel calls. A deterministic integration
+test uses a file-marker rendezvous to verify that two independent Bash calls overlap and both results
+reach the next request: [`TestRunDispatchesIndependentToolsConcurrentlyAndWaitsForBoth`](../internal/integration/runner_test.go).
+
+The upstream Bash tool captures complete stdout/stderr and can return references to capture files
+when model-visible output is truncated. pk retains that path by default; an optional, separate
+default-off pk policy can summarize oversized captured results while preserving their full local
+artifacts. Upstream capture-path tests are linked in the [foundation audit](unreal-foundation-audit.md).
+
+Unreal's context builder stages new inputs and tool results after the committed conversation prefix.
+Its coordinator passes the session ID as the provider cache key. pk freezes the prompt, tool schemas,
+and skill contents in a local context snapshot so resumes keep the same prefix; the model/effort may
+change. The adapter reports provider-returned cached-token counters when available. A stable prefix
+and key can support reuse, but cache hits, lifetime, token savings, or latency gains are not promised.
+
+Unreal also provides skill discovery and an on-demand SkillUse operation. pk keeps that mechanism,
+deduplicates canonical skill paths, and saves the exact skill bytes in the session snapshot. Changes
+to a captured skill do not silently alter a resumed session; create `/new` to load changed
+instructions. Source links and test limits are collected in the [Unreal foundation audit](unreal-foundation-audit.md).
 
 ## Context reuse and cache reporting
 
