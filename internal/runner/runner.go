@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/pkyanam/pk/internal/benchcontext"
+	"github.com/pkyanam/pk/internal/contextbudget"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/coordinator"
@@ -91,6 +92,18 @@ type Options struct {
 	// ContextUsageStore persists content-free request composition measurements
 	// for custom session stores. Local sessions use a private sidecar by default.
 	ContextUsageStore ContextUsageStore
+	// ContextBudget keeps provider/model capacities distinct from the
+	// operational input allowance. History compaction never treats the
+	// operational fallback as a published model limit.
+	ContextBudget contextbudget.Budget
+	// HistoryCompaction controls reversible, model-visible history projection.
+	// The durable session transcript is never rewritten.
+	HistoryCompaction      HistoryCompactionOptions
+	OnContextCompaction    func(ContextCompactionEvent)
+	HistoryCheckpointStore HistoryCheckpointStore
+	// HistoryCompactionUsageStore records summary-provider calls separately
+	// from the latest ordinary request metrics.
+	HistoryCompactionUsageStore HistoryCompactionUsageStore
 	// BuilderFactory and RegistryFactory allow hosts to provide extension seams
 	// without changing the coordinator or the pinned upstream harness.
 	BuilderFactory  func([]tool.Skill) contextbuilder.Builder
@@ -480,10 +493,34 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	if previous, loadErr := contextUsageStore.LoadContextUsage(ctx, id); loadErr == nil {
 		contextUsageOrdinal = previous.RequestOrdinal
 	}
-	options.Adapter = &contextUsageAdapter{
+	providerAdapter := options.Adapter
+	usageAdapter := &contextUsageAdapter{
 		next: options.Adapter, store: contextUsageStore, id: id,
 		ordinal: contextUsageOrdinal,
 		onError: func(err error) { fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", err) },
+	}
+	options.Adapter = usageAdapter
+	checkpointStore := options.HistoryCheckpointStore
+	if checkpointStore == nil {
+		checkpointDir := options.SessionDir
+		if checkpointDir == "" {
+			checkpointDir = filepath.Join(options.Workspace, ".pk", "contexts")
+		}
+		checkpointStore = NewLocalHistoryCheckpointStore(checkpointDir)
+	}
+	compactionUsageStore := options.HistoryCompactionUsageStore
+	if compactionUsageStore == nil {
+		compactionDir := options.SessionDir
+		if compactionDir == "" {
+			compactionDir = filepath.Join(options.Workspace, ".pk", "contexts")
+		}
+		compactionUsageStore = NewLocalHistoryCompactionUsageStore(compactionDir)
+	}
+	options.Adapter = &historyCompactionAdapter{
+		next: usageAdapter, summarizer: providerAdapter, store: checkpointStore,
+		usageStore: compactionUsageStore,
+		sessionID:  string(id), budget: options.ContextBudget,
+		policy: normalizeHistoryCompactionOptions(options.HistoryCompaction), observer: options.OnContextCompaction,
 	}
 	lifecycle := func(eventType, status string) {}
 	if options.LifecycleObserver != nil {
