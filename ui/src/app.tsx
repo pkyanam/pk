@@ -374,6 +374,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const pendingToolsRequest = useRef("")
   const pendingHistoryRequest = useRef("")
+  const pendingProviderModelsRequest = useRef("")
   const historySessionID = useRef("")
   const pendingSteers = useRef(new Map<string, number>())
   const steeringNegotiated = useRef(false)
@@ -1141,12 +1142,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "provider_models_started": {
+        if (!event.id || event.id !== pendingProviderModelsRequest.current) break
         setProviderModels([])
         setProviderModelsLoading(true)
         setSelector("provider_models")
         break
       }
       case "provider_models": {
+        if (!event.id || event.id !== pendingProviderModelsRequest.current) break
+        pendingProviderModelsRequest.current = ""
         setProviderModelsLoading(false)
         const available = Array.isArray(data.models) ? data.models.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
           id: String(item.id), object: typeof item.object === "string" ? item.object : undefined, owned_by: typeof item.owned_by === "string" ? item.owned_by : undefined,
@@ -1367,7 +1371,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           break
         }
         if (pluginCommandRun && (!event.id || event.id === pluginCommandRun.id || data.request_type === "plugin_command_execute")) setPluginCommandRun(null)
-        if (data.command_type === "provider_models" || data.request_type === "provider_models") setProviderModelsLoading(false)
+        if (data.command_type === "provider_models" || data.request_type === "provider_models") {
+          if (!event.id || event.id !== pendingProviderModelsRequest.current) break
+          pendingProviderModelsRequest.current = ""
+          setProviderModelsLoading(false)
+        }
         if (data.command_type === "tools" || data.request_type === "tools") {
           if (!event.id || event.id === pendingToolsRequest.current) pendingToolsRequest.current = ""
           setModelToolsLoading(false)
@@ -1790,7 +1798,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const [operation, ...rest] = args
         const target = rest.join(" ")
         if (!operation || operation === "list") transport.send("providers_list" as any)
-        else if (operation === "models" && target) transport.send("provider_models" as any, { provider_id: target })
+        else if (operation === "models" && target) {
+          pendingProviderModelsRequest.current = transport.send("provider_models" as any, { provider_id: target }) ?? ""
+          setProviderModelsLoading(Boolean(pendingProviderModelsRequest.current))
+          if (pendingProviderModelsRequest.current) {
+            setProviderModels([])
+            setSelector("provider_models")
+          }
+        }
         else if (operation === "use" && target) {
           if (busy || turnActive.current || sessionHasPrompt.current) addEntry("system", "Provider is fixed after the first prompt. Use /new before switching providers.")
           else transport.send("provider_select" as any, { provider_id: target === "native" ? "" : target })
@@ -2244,6 +2259,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (selector === "tools" && pendingToolsRequest.current) {
           pendingToolsRequest.current = ""
           setModelToolsLoading(false)
+        }
+        if (selector === "provider_models" && pendingProviderModelsRequest.current) {
+          pendingProviderModelsRequest.current = ""
+          setProviderModelsLoading(false)
         }
         if (selector === "history" && pendingHistoryRequest.current) {
           cancelHistoryRead()
