@@ -31,5 +31,8 @@ message representation, context-builder support, and provider serialization
 for both Responses and Chat Completions. That is a separate runtime change;
 verify the provider request contains an image part before claiming support.
 
-This is a source audit and implementation proposal. ACP image blocks remain
-unsupported in the current release.
+Implementation is underway after release `1fbd1cd`. Inline images use
+`inline-images/<session hash>/<input hash>/` with private files and directories.
+The session manager's archive/restore/purge lifecycle test and race suite pass
+for this artifact root. ACP parsing, ordered replay, and actual CLI-to-provider
+image delivery still need their integration checks before this is released.
