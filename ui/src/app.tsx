@@ -6,16 +6,27 @@ import type { ServerEvent } from "./protocol"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
+const MAX_TRANSCRIPT_ENTRIES = 300
+const OMITTED_TRANSCRIPT_ENTRY: Entry = { id: -1, role: "system", text: "Earlier activity omitted from this view · transcript is bounded for responsiveness." }
+function appendTranscriptEntries(current: Entry[], incoming: Entry | Entry[]): Entry[] {
+  const additions = Array.isArray(incoming) ? incoming : [incoming]
+  const hadOmission = current.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id)
+  const combined = [...current.filter((entry) => entry.id !== OMITTED_TRANSCRIPT_ENTRY.id), ...additions]
+  if (!hadOmission && combined.length <= MAX_TRANSCRIPT_ENTRIES) return combined
+  return [OMITTED_TRANSCRIPT_ENTRY, ...combined.slice(-(MAX_TRANSCRIPT_ENTRIES - 1))]
+}
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type StreamDraft = { outerId: string; requestId: string; attempt: number; itemId: string; entryId: number; text: string }
 type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number }
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "plugin_commands" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "plugin_commands" | "history" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type PluginCommandRun = { id: string; name: string; startedAt: number; cancelRequested?: boolean }
-type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean }
+type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean; source?: string; url?: string; installs?: number; id?: string }
+type SkillSearchOption = { name: string; id: string; source: string; installs: number; url: string }
+type SkillCandidate = { name: string; description: string; source: string; path: string; url: string }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
 type ExtensionCommand = { name: string; extension_id: string; command_name: string; description: string; enabled?: boolean; error?: string }
 type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string }
@@ -23,6 +34,7 @@ type MCPToolOption = { server_id: string; server_tool_name: string; name: string
 type ModelToolOption = { name: string; description: string; source?: string }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
 type ProviderModelOption = { id: string; object?: string; owned_by?: string }
+type SavedHistoryEntry = { role: "user" | "assistant"; text: string; sequence: number }
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -40,6 +52,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
   { name: "/mcp", description: "List, add, or remove MCP servers · configuration only changes new sessions", action: "mcp" },
   { name: "/tools", description: "Inspect the tools available to the active model session", action: "tools" },
+  { name: "/history", description: "Browse saved conversation entries from earlier in this session", action: "history" },
   { name: "/provider", description: "List providers, inspect models, or select one for a new session", action: "provider" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
   { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
@@ -245,7 +258,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | "history" | null>(null)
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
@@ -265,6 +278,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [providerModels, setProviderModels] = useState<ProviderModelOption[]>([])
   const [providerModelsLoading, setProviderModelsLoading] = useState(false)
   const [providerID, setProviderID] = useState("native")
+  const [releaseUpdateAvailable, setReleaseUpdateAvailable] = useState(false)
   const sessionHasPrompt = useRef(false)
   const childSequences = useRef(new Map<string, number>())
   const childAssistantEntries = useRef(new Map<string, number>())
@@ -274,6 +288,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [modelToolsPreview, setModelToolsPreview] = useState(false)
   const [modelToolsNotice, setModelToolsNotice] = useState("")
   const [modelToolsLoading, setModelToolsLoading] = useState(false)
+  const [historyEntries, setHistoryEntries] = useState<SavedHistoryEntry[]>([])
+  const [historyHasEarlier, setHistoryHasEarlier] = useState(false)
+  const [historyBeforeSequence, setHistoryBeforeSequence] = useState(0)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyDetailIndex, setHistoryDetailIndex] = useState<number | null>(null)
   const [maintenance, setMaintenance] = useState<Maintenance | null>(null)
   const [pluginCommandRun, setPluginCommandRun] = useState<PluginCommandRun | null>(null)
   const [reloadPending, setReloadPending] = useState(false)
@@ -294,6 +313,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingClipboardRequests = useRef(new Set<string>())
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const pendingToolsRequest = useRef("")
+  const pendingHistoryRequest = useRef("")
+  const historySessionID = useRef("")
   const pendingSteers = useRef(new Map<string, number>())
   const steeringNegotiated = useRef(false)
   const reloadCommandId = useRef("")
@@ -363,7 +384,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const addEntry = (role: Role, text: string) => {
     if (!text.trim()) return
-    setEntries((previous) => [...previous, { id: entryId.current++, role, text }].slice(-300))
+    setEntries((previous) => appendTranscriptEntries(previous, { id: entryId.current++, role, text }))
+  }
+
+  const requestEarlierHistory = (sessionID = historySessionID.current, beforeSequence = historyBeforeSequence) => {
+    if (!sessionID) { addEntry("system", "Saved history is available after attaching to a session."); return }
+    if (!historyHasEarlier || beforeSequence <= 0) { addEntry("system", "There are no earlier saved conversation entries."); return }
+    if (pendingHistoryRequest.current) return
+    const requestID = transport.send("history_before" as any, { session_id: sessionID, before_sequence: beforeSequence })
+    if (!requestID) { addEntry("system", "Could not load earlier history because pk is disconnected."); return }
+    pendingHistoryRequest.current = requestID
+    setHistoryLoading(true)
+    setHistoryDetailIndex(null)
+    setSelector("history")
   }
 
   const updateEntry = (id: number, update: (entry: Entry) => Entry) => {
@@ -500,7 +533,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     const entry: Entry = { id: streamedEntry.entryId, role: "assistant", text: streamedEntry.text, provisional: true }
     setEntries((entries) => entries.some((current) => current.id === entry.id)
       ? entries.map((current) => current.id === entry.id ? entry : current)
-      : [...entries, entry].slice(-300))
+      : appendTranscriptEntries(entries, entry))
   }
 
   const requestClipboardPaste = () => {
@@ -538,7 +571,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         commandPreview: preview(data.command_preview || data.arguments_preview, 120),
         detail,
       }
-      return (previous ? current.map((entry) => entry.callId === callId ? next : entry) : [...current, next]).slice(-300)
+      return previous ? current.map((entry) => entry.callId === callId ? next : entry) : appendTranscriptEntries(current, next)
     })
     setTools((current) => terminal ? current.filter((item) => item.id !== callId) : [
       ...current.filter((item) => item.id !== callId),
@@ -550,6 +583,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     const tick = setInterval(() => setClock(Date.now()), 1000)
     return () => clearInterval(tick)
   }, [])
+  useEffect(() => {
+    if (!connected) return
+    const poll = setInterval(() => transport.send("release_status" as any), 60_000)
+    return () => clearInterval(poll)
+  }, [connected, transport])
   useEffect(() => () => { if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current) }, [])
   useEffect(() => { setSlashIndex(0) }, [draft])
   useEffect(() => { busyRef.current = busy }, [busy])
@@ -570,6 +608,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
+        if (data.release_status && typeof data.release_status.reload_available === "boolean") setReleaseUpdateAvailable(data.release_status.reload_available)
         if (data.workspace) setMessage(String(data.workspace))
         setEntries((current) => current.filter((entry) => entry.text !== "Starting a new session…"))
         break
@@ -578,17 +617,51 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
         break
       case "history": {
+        historySessionID.current = String(data.session_id ?? "")
+        const saved = Array.isArray(data.entries)
+          ? data.entries.flatMap((item: any) => {
+              const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
+              const text = typeof item?.text === "string" ? item.text : ""
+              const sequence = Number(item?.sequence)
+              return role && text.trim() && Number.isFinite(sequence) ? [{ role, text, sequence } as SavedHistoryEntry] : []
+            })
+          : []
+        setHistoryEntries(saved)
+        setHistoryHasEarlier(data.has_earlier === true)
+        setHistoryBeforeSequence(Number(data.before_sequence ?? saved[0]?.sequence ?? 0))
         const restored = Array.isArray(data.entries)
           ? data.entries.flatMap((item: any) => {
               const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
               const text = typeof item?.text === "string" ? item.text : ""
-              return role && text.trim() ? [{ id: entryId.current++, role, text } as Entry] : []
+              const sequence = Number(item?.sequence)
+              return role && text.trim() ? [{ id: entryId.current++, role, text, ...(Number.isFinite(sequence) ? { historySequence: sequence } : {}) } as Entry] : []
             })
           : []
-        const notices: Entry[] = data.truncated ? [{ id: entryId.current++, role: "system", text: "Showing recent conversation history; earlier messages were omitted." }] : []
+        const notices: Entry[] = data.has_earlier ? [{ id: entryId.current++, role: "system", text: "Showing recent conversation history; use /history older to browse earlier saved entries." }] : data.truncated ? [{ id: entryId.current++, role: "system", text: "Some saved conversation text was shortened to fit the replay limit." }] : []
         setEntries([...notices, ...restored].slice(-300))
         sessionHasPrompt.current = restored.some((entry) => entry.role === "user")
         if (data.session_id) setSessionId(String(data.session_id))
+        break
+      }
+      case "history_page": {
+        if (!event.id || event.id !== pendingHistoryRequest.current) break
+        pendingHistoryRequest.current = ""
+        setHistoryLoading(false)
+        const page = Array.isArray(data.entries)
+          ? data.entries.flatMap((item: any) => {
+              const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
+              const text = typeof item?.text === "string" ? item.text : ""
+              const sequence = Number(item?.sequence)
+              return role && text.trim() && Number.isFinite(sequence) ? [{ role, text, sequence } as SavedHistoryEntry] : []
+            })
+          : []
+        setHistoryEntries(page)
+        setHistoryHasEarlier(data.has_earlier === true)
+        setHistoryBeforeSequence(Number(data.before_sequence ?? page[0]?.sequence ?? 0))
+        setHistoryDetailIndex(null)
+        setSelectionIndex(0)
+        setSelector("history")
+        if (!page.length) addEntry("system", "No earlier saved conversation entries were returned.")
         break
       }
       case "question": {
@@ -745,6 +818,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "usage":
         setUsage({ cachedInput: data.cached_input_tokens, available: data.cached_input_tokens_available === true })
         break
+      case "release_status":
+        setReleaseUpdateAvailable(data.reload_available === true)
+        break
       case "tasks":
       case "sessions":
         setTasks((Array.isArray(data.sessions) ? data.sessions : []).map((task: any) => ({ ...task, kind: "session" })) as any)
@@ -893,7 +969,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
               const id = entryId.current++
               childAssistantEntries.current.set(childID, id)
               if (childAssistantEntries.current.size > 128) childAssistantEntries.current.delete(childAssistantEntries.current.keys().next().value!)
-              setEntries((current) => [...current, { id, role: "assistant" as const, speaker: `agent ${shortChildID(childID)}`, detail: `Child ID ${childID}`, text: text.slice(-16 * 1024) }].slice(-300))
+              setEntries((current) => appendTranscriptEntries(current, { id, role: "assistant" as const, speaker: `agent ${shortChildID(childID)}`, detail: `Child ID ${childID}`, text: text.slice(-16 * 1024) }))
             }
           }
         } else if (subtype === "tool_call") {
@@ -904,7 +980,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setEntries((current) => {
             const prior = current.find((entry) => entry.callId === callId)
             const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId, toolName: `agent ${shortChildID(childID)} · ${name}`, toolState: state, commandPreview: state, text: "", detail: `Child ID ${childID} · ${name} ${state}` }
-            return (prior ? current.map((entry) => entry.callId === callId ? next : entry) : [...current, next]).slice(-300)
+            return prior ? current.map((entry) => entry.callId === callId ? next : entry) : appendTranscriptEntries(current, next)
           })
         } else {
           const state = String(data.state ?? "running")
@@ -913,7 +989,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setEntries((current) => {
             const prior = current.find((entry) => entry.callId === childEntryId)
             const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId: childEntryId, toolName: `agent ${shortChildID(childID)}`, toolState: state, commandPreview: state, text, detail: `Child ID ${childID}${text ? ` · ${text}` : ` · ${state === "running" ? "Working in delegated task" : `Task ${state}`}`}` }
-            return (prior ? current.map((entry) => entry.callId === childEntryId ? next : entry) : [...current, next]).slice(-300)
+            return prior ? current.map((entry) => entry.callId === childEntryId ? next : entry) : appendTranscriptEntries(current, next)
           })
         }
         break
@@ -1063,6 +1139,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setSelector(null)
           textarea.current?.focus()
           addEntry("system", String(data.message ?? "Could not load the model tool catalog."))
+          break
+        }
+        if ((data.command_type === "history_before" || data.request_type === "history_before") && (!event.id || event.id === pendingHistoryRequest.current)) {
+          pendingHistoryRequest.current = ""
+          setHistoryLoading(false)
+          setSelector(null)
+          textarea.current?.focus()
+          addEntry("system", String(data.message ?? "Could not load earlier conversation history."))
           break
         }
         if (event.id && pendingClipboardWrites.current.has(event.id) && (data.command_type === "clipboard_write" || data.request_type === "clipboard_write")) {
@@ -1261,7 +1345,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       const id = entryId.current++
       pendingSteers.current.set(commandId, id)
       const steeringEntry: Entry = { id, role: "user", text: promptText, delivery: "queued" }
-      setEntries((previous) => [...previous, steeringEntry].slice(-300))
+      setEntries((previous) => appendTranscriptEntries(previous, steeringEntry))
       clearComposer(true)
       return
     }
@@ -1364,6 +1448,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (!pendingToolsRequest.current) setModelToolsLoading(false)
         break
       }
+      case "history": {
+        const [operation] = args
+        if (!operation || operation === "older") requestEarlierHistory()
+        else addEntry("system", "Usage: /history older · browse saved user and assistant entries without changing the live transcript.")
+        break
+      }
       case "provider": {
         const [operation, ...rest] = args
         const target = rest.join(" ")
@@ -1456,9 +1546,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setEntries([])
         sessionHasPrompt.current = false
         setSessionId("")
+        historySessionID.current = ""
+        pendingHistoryRequest.current = ""
+        setHistoryEntries([])
+        setHistoryBeforeSequence(0)
+        setHistoryHasEarlier(false)
+        setHistoryLoading(false)
         break
       case "attach":
         if (!args[0]) { addEntry("system", "Usage: /attach SESSION_ID"); break }
+        historySessionID.current = ""
+        pendingHistoryRequest.current = ""
+        setHistoryEntries([])
+        setHistoryBeforeSequence(0)
+        setHistoryHasEarlier(false)
         transport.send("attach", { session_id: args[0] })
         setEntries([{ id: entryId.current++, role: "system", text: `Attaching to session ${args[0]}…` }])
         break
@@ -1525,7 +1626,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /commands · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /commands · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /history older · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -1547,7 +1648,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   const activateSelectorOption = (index: number) => {
-    if (selector === "tasks") {
+    if (selector === "history") {
+      if (index >= historyEntries.length) {
+        requestEarlierHistory()
+      } else {
+        setHistoryDetailIndex(index)
+        setSelectionIndex(index)
+      }
+    } else if (selector === "tasks") {
       const task: any = tasks[index]
       if (task?.task_id) transport.send("task_attach", { task_id: task.task_id })
       else if (task?.session_id) runSlashCommand(`/attach ${task.session_id}`)
@@ -1687,11 +1795,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : modelTools.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
       if (isEscape) {
         if (selector === "tools" && pendingToolsRequest.current) {
           pendingToolsRequest.current = ""
           setModelToolsLoading(false)
+        }
+        if (selector === "history" && pendingHistoryRequest.current) {
+          pendingHistoryRequest.current = ""
+          setHistoryLoading(false)
         }
         setSelector(null); textarea.current?.focus(); return
       }
@@ -1779,6 +1891,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   })
 
   const selectedOptions = selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
+    : selector === "history" ? [
+      ...historyEntries.map((item) => ({ label: `${item.role === "user" ? "You" : "pk"} · #${item.sequence}`, value: `entry-${item.sequence}`, description: item.text.slice(0, 240), state: "saved" })),
+      ...(historyHasEarlier ? [{ label: "Load earlier entries…", value: "history-older", description: `Browse entries before #${historyBeforeSequence}`, state: historyLoading ? "loading" : "more" }] : []),
+    ]
     : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" }))]
       : selector === "extension_commands" ? extensionCommands.map((item) => ({ label: item.name, value: item.name, description: item.description || `Plugin command · ${item.extension_id}`, state: "available" }))
       : selector === "provider_models" ? providerModels.map((item) => ({ label: item.id, value: item.id, description: [item.object, item.owned_by].filter(Boolean).join(" · "), state: "model" }))
@@ -1788,7 +1904,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
           : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: "configured" }))
             : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
-  const selectorPageSize = selector === "skills"
+  const selectorPageSize = selector === "history" ? Math.max(3, Math.min(6, Math.floor((renderer.height - 20) / 2))) : selector === "skills"
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
     : selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
   const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
@@ -1811,15 +1927,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
   const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending
   const cacheLabel = usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"
+  const transcriptOmitted = entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id)
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
       <box style={{ flexDirection: "row", height: 1 }}>
-        <text fg={palette.text} content="pk  /  terminal agent" />
+        <text fg={palette.text} content="p k  ·  /skills  /plugins  /mcp  /provider" />
       </box>
-      {!sessionId && entries.length <= 1 && <box style={{ flexDirection: "column", marginTop: 1, marginBottom: 1, flexShrink: 0 }}>
-        <ascii-font text="PK" font="block" color={palette.accent} />
-      </box>}
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
         <text fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
       </box>
@@ -1844,7 +1958,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
         </box>}
         <box style={{ flexDirection: "row", height: 1 }}>
-          <text fg={copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}`} />
+          <text fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
           <textarea id="composer" ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
@@ -1870,14 +1984,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : "Model-visible tools"} />
+      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? "Saved conversation · earlier page" : "Model-visible tools"} />
+        {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading earlier entries…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
         {selector === "providers" && <text fg={palette.dim} content="Enter selects for this session · /provider use ID persists only through pk provider use ID" />}
         {selector === "provider_models" && <text fg={palette.dim} content={providerModelsLoading ? "Contacting provider model catalog…" : "Model discovery is read-only · use /provider use ID before the first prompt"} />}
         {selector === "tools" && <text fg={palette.dim} content={modelToolsLoading ? "Loading model-visible tools…" : modelToolsPreview ? modelToolsNotice || "Preview of the core tools available before the first prompt" : modelToolsSaved ? "Saved snapshot for this session" : modelToolsInitialized ? "Current available tool registry" : "The session tool catalog is not initialized until its first prompt."} />}
         <box style={{ height: 1 }} />
-        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? modelToolsPreview ? "No preview tools available" : modelToolsInitialized ? "No model tools available" : "Not initialized yet" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : "Nothing to show"} />}
+        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? modelToolsPreview ? "No preview tools available" : modelToolsInitialized ? "No model tools available" : "Not initialized yet" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : selector === "history" ? "No earlier saved entries" : "Nothing to show"} />}
         {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
           const index = selectorWindowStart + localIndex
           return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
@@ -1889,8 +2004,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             {option.description && <text fg={palette.dim} content={option.description} />}
           </box>
         })}
+        {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={historyEntries[historyDetailIndex]!.text.slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
-        <text fg={palette.dim} content={selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />

@@ -46,6 +46,10 @@ describe("OpenTUI application", () => {
     await setup.flush()
     const frame = await setup.waitForFrame((value) => value.includes("Ask pk to inspect"))
     expect(frame).toContain("pk")
+    expect(frame).toContain("/skills")
+    expect(frame).toContain("/plugins")
+    expect(frame).toContain("/mcp")
+    expect(frame).toContain("/provider")
     expect(frame).toContain("/tmp/pk")
     expect(frame).toContain("Ask pk to inspect")
     expect(frame).toContain("Ask pk to inspect")
@@ -57,6 +61,32 @@ describe("OpenTUI application", () => {
     expect(frame.indexOf("Ask pk to inspect")).toBeLessThan(frame.indexOf("Enter send"))
     expect(frame).not.toContain("\\n")
     expect(frame.split("\n")).toHaveLength(height + 1)
+  })
+
+  test("empty-session command shortcuts remain visible and first prompt works", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })
+    openRenderers.push(setup)
+    let frame = await setup.waitForFrame((value) => value.includes("/skills") && value.includes("/provider") && value.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("check this workspace") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(true)
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("/skills")
+    expect(frame).toContain("check this workspace")
+  })
+
+  test("shows an installed update as a reload hint without restarting automatically", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", release_status: { running_id: "old", installed_id: "new", reload_available: true } } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Update ready · /reload")
+    expect(fake.sent.some((item) => item.type === "reload" || item.type === "reload_exit")).toBe(false)
   })
 
   test.each([{ width: 80, height: 24, count: 28 }, { width: 140, height: 55, count: 60 }])("keeps a busy transcript viewport inside the composer at $width × $height", async ({ width, height, count }) => {
@@ -113,6 +143,7 @@ describe("OpenTUI application", () => {
     })
     const frame = await setup.waitForFrame((value) => value.includes("Row 1199"))
     expect(frame).toContain("Ask pk to inspect")
+    expect(frame).toContain("earlier activity omitted")
     const transcript = (setup.renderer.root as any).findDescendantById("transcript")
     expect(transcript.getChildren().length).toBeLessThanOrEqual(300)
     expect(transcript.getChildren().length).toBeGreaterThan(0)
@@ -237,14 +268,13 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "plugins_disable" && item.payload?.id === "mint-tools")).toBe(true)
   })
 
-  test("slash menu makes skill and plugin panels discoverable by command description", async () => {
+  test("slash menu makes plugin panels discoverable by command description", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
     await act(async () => { await setup.mockInput.typeText("/pl") })
-    const frame = await setup.waitForFrame((value) => value.includes("/plugins"))
-    expect(frame).toContain("Inspect installed plugins")
+    const frame = await setup.waitForFrame((value) => value.includes("Inspect installed plugins"))
     expect(frame).toContain("/plugin")
     await act(async () => { await setup.mockInput.typeText("ugins") })
     act(() => setup.mockInput.pressEnter())
@@ -730,16 +760,65 @@ describe("OpenTUI application", () => {
       payload: {
         session_id: "session-123",
         truncated: true,
+        has_earlier: true,
+        before_sequence: 1,
         entries: [
           { role: "user", text: "Earlier request", sequence: 1 },
           { role: "assistant", text: "Earlier answer", sequence: 2 },
         ],
       },
     }))
-    const frame = await setup.waitForFrame((value) => value.includes("Earlier request") && value.includes("earlier messages were omitted"))
+    const frame = await setup.waitForFrame((value) => value.includes("Earlier request") && value.includes("/history older"))
     expect(frame).toContain("Earlier request")
     expect(frame).toContain("pk")
-    expect(frame).toContain("earlier messages were omitted")
+    expect(frame).toContain("/history older")
+  })
+
+  test("browses earlier saved conversation pages without evicting live transcript rows", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, type: "history", payload: {
+      session_id: "history-session", has_earlier: true, before_sequence: 50,
+      entries: [{ role: "user", text: "Latest request", sequence: 50 }, { role: "assistant", text: "Latest answer", sequence: 51 }],
+    } }))
+    act(() => fake.emit({ version: 1, type: "assistant", payload: { text: "Live transcript remains here." } }))
+    expect(await setup.waitForFrame((value) => value.includes("/history older"))).toContain("Live transcript remains here.")
+    await act(async () => { await setup.mockInput.typeText("/history older") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const firstRequest = fake.sent.find((item) => item.type === "history_before")
+    expect(fake.sent.map((item) => item.type)).toContain("history_before")
+    expect(firstRequest?.payload).toEqual({ session_id: "history-session", before_sequence: 50 })
+    act(() => fake.emit({ version: 1, id: firstRequest!.id, type: "history_page", payload: {
+      session_id: "history-session", before_sequence: 40, has_earlier: true,
+      entries: [{ role: "user", text: "Earlier request with full context", sequence: 40 }, { role: "assistant", text: "Earlier answer", sequence: 41 }],
+    } }))
+    let frame = await setup.waitForFrame((value) => value.includes("Saved conversation") && value.includes("Earlier request with full context"))
+    await act(async () => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Earlier request with full context")
+    await act(async () => { await setup.mockInput.pressEscape(); await new Promise((resolve) => setTimeout(resolve, 50)) })
+    frame = await setup.waitForFrame((value) => !value.includes("Saved conversation · earlier page"))
+    expect(frame).toContain("Live transcript remains here.")
+    expect(frame).toContain("Latest answer")
+
+    await act(async () => { await setup.mockInput.typeText("/history older") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const requests = fake.sent.filter((item) => item.type === "history_before")
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.payload).toEqual({ session_id: "history-session", before_sequence: 40 })
+    await act(async () => { await setup.mockInput.pressEscape(); await new Promise((resolve) => setTimeout(resolve, 50)) })
+    act(() => fake.emit({ version: 1, id: requests[1]!.id, type: "history_page", payload: {
+      session_id: "history-session", before_sequence: 30, has_earlier: false,
+      entries: [{ role: "user", text: "Stale older page", sequence: 30 }],
+    } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Saved conversation · earlier page")
+    expect(setup.captureCharFrame()).not.toContain("Stale older page")
   })
 
   test("keeps tool activity chronological after completion without object coercion", async () => {
