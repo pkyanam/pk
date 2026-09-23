@@ -910,3 +910,9 @@ User supplied the official GLM-5.3-Flash model page with a 1,310,720-token conte
 - Fetched/pruned origin and audited all six stale worktrees. Every detached/branch commit was already an ancestor of main. The two dirty benchmark snapshots contained only identical or superseded main files, confirmed by a second review. Preserved their patches, changed/untracked files, and source commit IDs under `~/.pk/recovery/branch-consolidation-20260923-183915` before removal. Removed the merged `fix/file-tools-followup` branch and stale worktrees; local and remote now have only main. No history rewrite.
 - Kept the user’s untracked `generated_images/` content untouched and outside the release commit.
 - Final local checks: full Go tests and vet, RPC/config race tests, UI typecheck/build, and 213 UI tests passed. Theme tests cover keyboard selection, mouse reset, ready restore, save failure, 50×24 layout, and the new-session token reset.
+
+### v0.1.15 published verification
+
+- Published `v0.1.15` from `7fbc360134f44d4fb3652b5514b4092a5dc21499`. Release run `35930810219` passed both platforms. Exact-tag normal CI `35930797577` passed after retrying one existing history-test timing failure. Follow-up `77c6356` corrects that test's premature wait predicate; its CI `35931046983` passed all jobs. No production code changed in that follow-up.
+- Downloaded macOS archive SHA-256 `29ae1dca4d4d3aa499e9e4cd3d23beeab67f831a9cba6909189aa2d7a5f71e0f`, verified against published checksums, and installed only under `/tmp/pk-v0115-verify`. Saved Light via the installed config CLI and verified the installed TUI rendered the light palette and composer in a 120×36 PTY and exited cleanly. The terminal advertised 256 colors, so the palette was verified through its mapped ANSI color escapes.
+- Release: https://github.com/pkyanam/pk/releases/tag/v0.1.15. User can run `pk update`; no user installation or active session was replaced.
