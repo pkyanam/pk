@@ -170,6 +170,12 @@ func (body *observedBody) observeFrame(frame []byte) {
 }
 
 func (state *callState) emit(event Event) {
+	if state != nil && state.onOutput != nil {
+		switch event.Kind {
+		case EventAssistantDelta, EventToolCallStarted, EventToolArgumentsProgress, EventToolCallReady:
+			state.onOutput()
+		}
+	}
 	if state == nil || state.callback == nil {
 		return
 	}

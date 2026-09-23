@@ -58,11 +58,15 @@ const (
 type observerKey struct{}
 type callKey struct{}
 
-type observerConfig struct{ callback func(Event) }
+type observerConfig struct {
+	callback func(Event)
+	onOutput func()
+}
 
 type callState struct {
 	requestID    string
 	callback     func(Event)
+	onOutput     func()
 	attempt      atomic.Int32
 	deliveryMu   sync.Mutex
 	mu           sync.Mutex
@@ -81,6 +85,33 @@ func WithObserver(ctx context.Context, callback func(Event)) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, observerKey{}, observerConfig{callback: callback})
+}
+
+// WithoutObserver prevents internal model work, such as context summaries, from
+// appearing as assistant text in the user's conversation. Cancellation and other
+// context values are preserved.
+func WithoutObserver(ctx context.Context) context.Context {
+	return context.WithValue(ctx, observerKey{}, observerConfig{})
+}
+
+// TrackOutput observes output before UI coalescing, including deltas discarded
+// after a failed stream. The returned predicate is safe to call concurrently.
+// A caller deciding whether to retry must also inspect the returned response;
+// this tracker only covers providers using this streaming observer.
+func TrackOutput(ctx context.Context) (context.Context, func() bool) {
+	config, _ := ctx.Value(observerKey{}).(observerConfig)
+	var produced atomic.Bool
+	previous := config.onOutput
+	config.onOutput = func() {
+		produced.Store(true)
+		if previous != nil {
+			previous()
+		}
+	}
+	if config.callback == nil {
+		config.callback = func(Event) {}
+	}
+	return context.WithValue(ctx, observerKey{}, config), produced.Load
 }
 
 type Client struct {
@@ -144,7 +175,7 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, options 
 		if err != nil {
 			return llm.Response{}, fmt.Errorf("create model request ID: %w", err)
 		}
-		ctx = context.WithValue(ctx, callKey{}, &callState{requestID: id, callback: config.callback})
+		ctx = context.WithValue(ctx, callKey{}, &callState{requestID: id, callback: config.callback, onOutput: config.onOutput})
 	}
 	response, err := client.adapter.Respond(ctx, request, options)
 	if err != nil {
