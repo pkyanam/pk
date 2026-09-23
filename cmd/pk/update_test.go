@@ -89,6 +89,15 @@ func TestInstallArtifactsMigratesLegacyPairAndWritesLauncher(t *testing.T) {
 	}
 }
 
+func TestMainDispatchesInstallReleaseHelper(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr strings.Builder
+	code := runMain([]string{"__install-release"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "usage: pk __install-release") {
+		t.Fatalf("runMain __install-release code=%d stderr=%q; helper command was not dispatched", code, stderr.String())
+	}
+}
+
 type githubUpdateRunner struct{ checkout string }
 
 func (runner *githubUpdateRunner) Run(ctx context.Context, dir, name string, stdout, stderr io.Writer, args ...string) error {

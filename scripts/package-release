@@ -1,0 +1,120 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+OUT_DIR=${1:-"$ROOT/dist"}
+OUT_DIR=$(mkdir -p "$OUT_DIR" && CDPATH= cd -- "$OUT_DIR" && pwd)
+
+for tool in go bun tar; do
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		echo "package-release: $tool is required" >&2
+		exit 1
+	fi
+done
+
+host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
+host_arch=$(uname -m)
+case "$host_os" in
+	darwin) target_os=darwin ;;
+	linux) target_os=linux ;;
+	*) echo "package-release: unsupported native OS $host_os" >&2; exit 1 ;;
+esac
+case "$host_arch" in
+	x86_64|amd64) target_arch=amd64 ;;
+	aarch64|arm64) target_arch=arm64 ;;
+	*) echo "package-release: unsupported native architecture $host_arch" >&2; exit 1 ;;
+esac
+go_os=$(cd "$ROOT" && go env GOOS)
+go_arch=$(cd "$ROOT" && go env GOARCH)
+if [ "$go_os" != "$target_os" ] || [ "$go_arch" != "$target_arch" ]; then
+	echo "package-release: native host is $target_os/$target_arch but Go targets $go_os/$go_arch; refusing mislabeled archive" >&2
+	exit 1
+fi
+if [ "$(cd "$ROOT" && go env CGO_ENABLED)" != 1 ]; then
+	echo "package-release: CGO_ENABLED=1 is required for native release builds" >&2
+	exit 1
+fi
+
+stage=$(mktemp -d "${TMPDIR:-/tmp}/pk-release.XXXXXX")
+smoke_root=$(mktemp -d "${TMPDIR:-/tmp}/pk-release-smoke.XXXXXX")
+archive_tmp=""
+checksums_tmp=""
+cleanup() {
+	rm -rf "$stage"
+	find "$smoke_root" -type d -exec chmod u+rwx {} \; 2>/dev/null || true
+	rm -rf "$smoke_root"
+	[ -z "$archive_tmp" ] || rm -f "$archive_tmp"
+	[ -z "$checksums_tmp" ] || rm -f "$checksums_tmp"
+}
+trap cleanup EXIT HUP INT TERM
+mkdir -p "$stage/ui"
+
+cd "$ROOT"
+# CI may set this only after it has run the Go and UI test gates in an earlier
+# step. Local invocations run those checks by default.
+if [ "${PK_RELEASE_SKIP_TESTS:-0}" != 1 ]; then
+	go test ./...
+fi
+(cd ui && bun install --frozen-lockfile)
+if [ "${PK_RELEASE_SKIP_TESTS:-0}" != 1 ]; then
+	(cd ui && bun run check && bun test)
+fi
+(cd ui && bun run build)
+CGO_ENABLED=1 go build -trimpath -o "$stage/pk" ./cmd/pk
+
+cp ui/package.json ui/bun.lock "$stage/ui/"
+(cd "$stage/ui" && bun install --production --frozen-lockfile)
+cp -R ui/dist "$stage/ui/dist"
+
+if [ ! -x "$stage/pk" ] || [ ! -f "$stage/ui/dist/main.js" ] || [ ! -f "$stage/ui/package.json" ] || [ ! -f "$stage/ui/bun.lock" ] || [ ! -d "$stage/ui/node_modules" ]; then
+	echo "package-release: staged release is missing a required runtime file" >&2
+	exit 1
+fi
+
+entry_count=$(find "$stage" -print | wc -l | tr -d ' ')
+expanded_bytes=$(du -sk "$stage" | awk '{print $1 * 1024}')
+if [ "$entry_count" -gt 100000 ] || [ "$expanded_bytes" -gt 536870912 ]; then
+	echo "package-release: staged release exceeds updater limits (${entry_count} entries, ${expanded_bytes} expanded bytes)" >&2
+	exit 1
+fi
+
+name="pk_${target_os}_${target_arch}.tar.gz"
+archive_tmp="$OUT_DIR/.$name.tmp.$$"
+COPYFILE_DISABLE=1 tar -czf "$archive_tmp" -C "$stage" pk ui
+archive_bytes=$(wc -c < "$archive_tmp" | tr -d ' ')
+if [ "$archive_bytes" -gt 268435456 ]; then
+	echo "package-release: archive exceeds 256 MiB updater limit" >&2
+	exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+	archive_hash=$(sha256sum "$archive_tmp" | awk '{print $1}')
+else
+	archive_hash=$(shasum -a 256 "$archive_tmp" | awk '{print $1}')
+fi
+PK_LIB_DIR="$smoke_root/lib" PK_BIN_DIR="$smoke_root/bin" "$stage/pk" __install-release --archive "$archive_tmp" --tag v0.0.0-package-smoke --sha256 "$archive_hash"
+PK_LIB_DIR="$smoke_root/lib" PK_BIN_DIR="$smoke_root/bin" "$smoke_root/bin/pk" --help >/dev/null
+version_output=$(PK_LIB_DIR="$smoke_root/lib" PK_BIN_DIR="$smoke_root/bin" "$smoke_root/bin/pk" version)
+printf '%s\n' "$version_output"
+case "$version_output" in
+	*"source: https://github.com/pkyanam/pk.git"*"revision: v0.0.0-package-smoke"*"distribution sha256: $archive_hash"*) ;;
+	*) echo "package-release: imported archive did not activate the expected managed release" >&2; exit 1 ;;
+esac
+if [ ! -f "$smoke_root/lib/current/ui/dist/main.js" ] || [ ! -d "$smoke_root/lib/current/ui/node_modules" ]; then
+	echo "package-release: importer smoke test did not preserve paired UI runtime files" >&2
+	exit 1
+fi
+
+mv -f "$archive_tmp" "$OUT_DIR/$name"
+archive_tmp=""
+
+if command -v sha256sum >/dev/null 2>&1; then
+	checksum=$(sha256sum "$OUT_DIR/$name" | awk '{print $1}')
+else
+	checksum=$(shasum -a 256 "$OUT_DIR/$name" | awk '{print $1}')
+fi
+checksums_tmp="$OUT_DIR/.SHA256SUMS.tmp.$$"
+printf '%s  %s\n' "$checksum" "$name" > "$checksums_tmp"
+mv -f "$checksums_tmp" "$OUT_DIR/SHA256SUMS"
+checksums_tmp=""
+printf 'Packaged %s (%s bytes, %s expanded bytes, %s entries)\n' "$OUT_DIR/$name" "$archive_bytes" "$expanded_bytes" "$entry_count"

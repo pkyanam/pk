@@ -348,6 +348,10 @@ func (s *rpcServer) startReleaseOperation(requestID, operation, sourcePath strin
 
 func updateStageMessage(stage string) string {
 	messages := map[string]string{
+		"release_check":    "Checking for the latest published pk release.",
+		"release_download": "Downloading the compatible pk release and checksum list.",
+		"release_verify":   "Verifying the release archive before staging it.",
+		"source_fallback":  "No compatible published release is available; switching to a source build.",
 		"source_validate":  "Validating the selected pk source.",
 		"clone":            "Cloning the official pk source into an isolated checkout.",
 		"resolve_revision": "Resolving the requested pk revision.",

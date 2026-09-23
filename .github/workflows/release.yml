@@ -1,0 +1,90 @@
+name: Build and publish paired pk releases
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and package ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Verify native build target
+        env:
+          EXPECTED_GOOS: ${{ matrix.goos }}
+          EXPECTED_GOARCH: ${{ matrix.goarch }}
+        run: |
+          actual="$(go env GOOS)/$(go env GOARCH)"
+          expected="$EXPECTED_GOOS/$EXPECTED_GOARCH"
+          if [ "$actual" != "$expected" ]; then
+            echo "Runner Go target is $actual, expected $expected" >&2
+            exit 1
+          fi
+          printf 'Runner: %s / %s; Go: %s\n' "$(uname -s)" "$(uname -m)" "$actual"
+      - name: Test Go source
+        run: go test ./...
+      - name: Test OpenTUI source
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile
+          bun run check
+          bun test
+      - name: Build and import-smoke paired release
+        env:
+          PK_RELEASE_SKIP_TESTS: "1"
+        run: scripts/package-release dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pk-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/pk_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish checksummed release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pk-*
+          path: dist
+          merge-multiple: true
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$'
+      - name: Create aggregate SHA-256 checksums
+        working-directory: dist
+        run: sha256sum pk_*.tar.gz > SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/pk_*.tar.gz dist/SHA256SUMS --generate-notes --draft --verify-tag

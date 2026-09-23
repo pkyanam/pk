@@ -21,10 +21,11 @@ cd /path/to/project
 pk
 ```
 
-The installer requires Git, Bun, and Go 1.21+; Go selects the source module's Go 1.27 toolchain
-according to your `GOTOOLCHAIN` setting. It builds from a temporary source checkout, preserves an
-existing managed release for rollback, and honors `PK_BIN_DIR` and `PK_LIB_DIR`. It does not install
-system packages.
+Bun is required to run the OpenTUI interface. The installer prefers a checksum-verified paired
+binary/UI release when a compatible GitHub asset is published. If no release or platform asset is
+available, it announces a source-build fallback that requires Git and Go 1.27+ (or Go 1.21+ with
+automatic toolchain selection). Download or checksum failures stop installation; they do not silently
+start a source build. See [install and update details](docs/updates.md).
 
 For work that should keep running after you leave the interface:
 
@@ -51,6 +52,6 @@ The default model is `gpt-6-luna` with `medium` reasoning effort. Change it with
 
 pk builds on Unreal Agent's asynchronous tool coordinator and can keep full local shell captures while compacting large result text sent back to the model when explicitly enabled. Prompt caching is provider-controlled; reported counters are actual provider usage, and a cache hit is never guaranteed. See the [verified runtime foundation](docs/unreal-foundation-audit.md). A small paired coding-task pilot is documented in [benchmark findings](docs/benchmark-findings.md); it is exploratory and does not establish a general performance advantage.
 
-**Learn more:** [Getting started](docs/getting-started.md) · [Providers](docs/providers.md) · [Available tools](docs/toolbelt.md) · [MCP](docs/mcp.md) · [ACP](docs/acp.md) · [Validation](docs/validation.md)
+**Learn more:** [Getting started](docs/getting-started.md) · [Install and update](docs/updates.md) · [Providers](docs/providers.md) · [Available tools](docs/toolbelt.md) · [MCP](docs/mcp.md) · [ACP](docs/acp.md) · [Validation](docs/validation.md)
 
 **Permissions:** Bash uses the operating-system permissions of pk. A workspace organizes files; it does not sandbox the process.

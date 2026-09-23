@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -44,6 +45,11 @@ type Manager struct {
 	Root     string
 	Runner   CommandRunner
 	Progress func(stage string)
+	// Release URL/client overrides are for deterministic updater tests. Normal
+	// installs use the fixed official GitHub endpoints.
+	ReleaseAPIBaseURL      string
+	ReleaseDownloadBaseURL string
+	HTTPClient             *http.Client
 }
 
 func (manager Manager) report(stage string) {
@@ -53,18 +59,19 @@ func (manager Manager) report(stage string) {
 }
 
 type Release struct {
-	ID            string    `json:"id"`
-	Path          string    `json:"path"`
-	BinaryPath    string    `json:"binary_path"`
-	UIPath        string    `json:"ui_path"`
-	Source        string    `json:"source"`
-	GitRepository string    `json:"git_repository,omitempty"`
-	GitRef        string    `json:"git_ref,omitempty"`
-	Revision      string    `json:"revision,omitempty"`
-	Dirty         bool      `json:"dirty"`
-	DirtyKnown    bool      `json:"dirty_known"`
-	SourceHash    string    `json:"source_sha256"`
-	StagedAt      time.Time `json:"staged_at"`
+	ID                 string    `json:"id"`
+	Path               string    `json:"path"`
+	BinaryPath         string    `json:"binary_path"`
+	UIPath             string    `json:"ui_path"`
+	Source             string    `json:"source"`
+	GitRepository      string    `json:"git_repository,omitempty"`
+	GitRef             string    `json:"git_ref,omitempty"`
+	Revision           string    `json:"revision,omitempty"`
+	DistributionSHA256 string    `json:"distribution_sha256,omitempty"`
+	Dirty              bool      `json:"dirty"`
+	DirtyKnown         bool      `json:"dirty_known"`
+	SourceHash         string    `json:"source_sha256"`
+	StagedAt           time.Time `json:"staged_at"`
 }
 
 type Status struct {
@@ -107,6 +114,7 @@ type sourceProvenance struct {
 	source, repository, ref, revision string
 	dirty, dirtyKnown                 bool
 	hash                              string
+	distributionHash                  string
 }
 
 func (manager Manager) importArtifacts(binaryPath, uiDirectory string, provenance *sourceProvenance) (Release, error) {
@@ -160,6 +168,7 @@ func (manager Manager) importArtifacts(binaryPath, uiDirectory string, provenanc
 		}
 		release.GitRepository, release.GitRef = provenance.repository, provenance.ref
 		release.Revision, release.Dirty, release.DirtyKnown, release.SourceHash = provenance.revision, provenance.dirty, provenance.dirtyKnown, provenance.hash
+		release.DistributionSHA256 = provenance.distributionHash
 	}
 	if err := writeManifest(stagePath, release); err != nil {
 		return Release{}, err

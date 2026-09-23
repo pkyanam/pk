@@ -53,7 +53,7 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runProviderCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "web":
 		return runWebCommand(ctx, args[1:], stdin, stdout, stderr)
-	case "update", "rollback", "version", "__install-artifacts":
+	case "update", "rollback", "version", "__install-artifacts", "__install-release":
 		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
 		return rpcMain(ctx, stdin, stdout, stderr)
