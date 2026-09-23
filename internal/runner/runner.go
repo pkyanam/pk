@@ -137,6 +137,9 @@ type ToolRegistryOptions struct {
 	SkillsDirs   []string
 	Skills       []tool.Skill
 	SkillsSet    bool
+	// RequireSkillUse preserves the tool declaration captured by older or
+	// custom session snapshots even when their saved skill set is empty.
+	RequireSkillUse bool
 }
 
 // RunResult reports the durable session ID and any final assistant text emitted.
@@ -356,6 +359,12 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	var skillDiscoveryWarnings []error
 	if loadedSnapshot {
 		registryOptions.Skills, registryOptions.SkillsSet = snapshotSkills(snapshot), true
+		for _, definition := range snapshot.Tools {
+			if definition.Name == tool.SkillUseName {
+				registryOptions.RequireSkillUse = true
+				break
+			}
+		}
 	} else if registryFactory == nil {
 		// Unreal v0.1.1's path discovery is useful, but its frontmatter parser
 		// treats YAML block scalars as literal markers. Decode metadata before
@@ -1334,7 +1343,6 @@ func submitStop(ctx context.Context, in *inbox.Inbox, mode inbox.ControlMode, re
 }
 
 func newToolRegistry(workspace, operationDir string, dirs []string) (tool.Registry, []tool.Skill, []error) {
-	registry := newToolRegistryBase(workspace, operationDir)
 	var skills []tool.Skill
 	var warnings []error
 	for _, directory := range dirs {
@@ -1343,6 +1351,7 @@ func newToolRegistry(workspace, operationDir string, dirs []string) (tool.Regist
 		warnings = append(warnings, errs...)
 	}
 	skills = deduplicateSkillFiles(skills)
+	registry := newToolRegistryBaseWithSkills(workspace, operationDir, len(skills) > 0)
 	for _, skill := range skills {
 		if _, err := registry.RegisterSkill(skill); err != nil {
 			warnings = append(warnings, err)
@@ -1355,7 +1364,7 @@ func defaultRegistryFactory(options ToolRegistryOptions) (tool.Registry, []tool.
 	if !options.SkillsSet {
 		return newToolRegistry(options.Workspace, options.OperationDir, options.SkillsDirs)
 	}
-	registry := newToolRegistryBase(options.Workspace, options.OperationDir)
+	registry := newToolRegistryBaseWithSkills(options.Workspace, options.OperationDir, len(options.Skills) > 0 || options.RequireSkillUse)
 	var warnings []error
 	for _, skill := range options.Skills {
 		if _, err := registry.RegisterSkill(skill); err != nil {
@@ -1366,10 +1375,18 @@ func defaultRegistryFactory(options ToolRegistryOptions) (tool.Registry, []tool.
 }
 
 func newToolRegistryBase(workspace, operationDir string) tool.Registry {
+	return newToolRegistryBaseWithSkills(workspace, operationDir, true)
+}
+
+func newToolRegistryBaseWithSkills(workspace, operationDir string, includeSkillUse bool) tool.Registry {
+	enabled := []string{tool.BashName, tool.ViewImageName}
+	if includeSkillUse {
+		enabled = append(enabled, tool.SkillUseName)
+	}
 	return tool.NewRegistry(tool.StaticTranslators{
 		Bash:      bash.New(bash.Config{Shell: "/bin/sh", Directory: workspace, BaseDirectory: operationDir}),
 		ViewImage: viewimage.New(viewimage.Config{Directory: workspace}),
-	}, tool.BashName, tool.ViewImageName, tool.SkillUseName)
+	}, enabled...)
 }
 
 func newContextSnapshot(options Options, registry tool.Registry, _ []tool.Skill) ContextSnapshot {

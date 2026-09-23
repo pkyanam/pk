@@ -12,6 +12,7 @@ import (
 
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 func writeCatalogSkill(t *testing.T, root, name, description, content string) string {
@@ -146,11 +147,98 @@ func TestFreshCatalogUsesYAMLDecodedSkillDescription(t *testing.T) {
 	}
 }
 
-type skillDescriptionCapture struct{ input []byte }
+type skillDescriptionCapture struct {
+	input []byte
+	tools []llm.Tool
+}
 
 func (a *skillDescriptionCapture) Respond(_ context.Context, req llm.Request, _ llm.RequestOptions) (llm.Response, error) {
 	a.input, _ = json.Marshal(req.Input)
+	a.tools = append([]llm.Tool(nil), req.Tools...)
 	return llm.Response{ID: "skill-metadata", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "done"}}}}, nil
+}
+
+func TestEmptySkillCatalogOmitsSkillUseWithoutRewritingSnapshots(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions")
+	adapter := &skillDescriptionCapture{}
+	result, err := Run(t.Context(), Options{Prompt: "inspect this workspace", Workspace: workspace, SessionDir: sessionDir, SkillsDirs: []string{filepath.Join(root, "empty-skills")}, Adapter: adapter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range adapter.tools {
+		if definition.Name == tool.SkillUseName {
+			t.Fatal("SkillUse was sent with an empty skill catalog")
+		}
+	}
+	store := defaultContextSnapshotStore(sessionDir, workspace)
+	snapshot, err := store.LoadContext(t.Context(), session.ID(result.SessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Skills) != 0 || len(snapshot.Tools) != 2 {
+		t.Fatalf("empty-catalog snapshot changed unexpectedly: skills=%d tools=%v", len(snapshot.Skills), snapshot.Tools)
+	}
+	emptyResume := &skillDescriptionCapture{}
+	if _, err := Run(t.Context(), Options{Prompt: "continue", SessionID: result.SessionID, Workspace: workspace, SessionDir: sessionDir, Adapter: emptyResume}); err != nil {
+		t.Fatal(err)
+	}
+	initialToolJSON, err := json.Marshal(adapter.tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedToolJSON, err := json.Marshal(emptyResume.tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(initialToolJSON, resumedToolJSON) {
+		t.Fatalf("empty-catalog resume changed tool declarations: initial=%v resumed=%v", adapter.tools, emptyResume.tools)
+	}
+
+	// Compare actual request serialization against the previous no-skill schema
+	// set. This is a wire capture, not a token estimate.
+	legacyDefinitions := newToolRegistryBase(workspace, filepath.Join(sessionDir, "operations")).StaticDefinitions()
+	legacyTools := make([]llm.Tool, 0, len(legacyDefinitions))
+	for _, definition := range legacyDefinitions {
+		legacyTools = append(legacyTools, definition.Tool)
+	}
+	legacyJSON, err := json.Marshal(legacyTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualJSON, err := json.Marshal(adapter.tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := len(legacyJSON) - len(actualJSON)
+	t.Logf("empty-catalog request tool JSON: %d bytes; previous declarations: %d bytes; removed SkillUse schema: %d bytes", len(actualJSON), len(legacyJSON), saved)
+	if saved < 200 {
+		t.Fatalf("captured tool declarations saved only %d bytes; expected the omitted SkillUse schema", saved)
+	}
+
+	// A legacy/custom snapshot that recorded SkillUse keeps it on resume even
+	// when no skill files were saved, so saved prompt prefixes are unchanged.
+	legacyAdapter := &skillDescriptionCapture{}
+	legacyResult, err := Run(t.Context(), Options{
+		Prompt: "legacy session", Workspace: workspace, SessionDir: filepath.Join(root, "legacy-sessions"), Adapter: legacyAdapter,
+		RegistryFactory: func(options ToolRegistryOptions) (tool.Registry, []tool.Skill, []error) {
+			return newToolRegistryBase(options.Workspace, options.OperationDir), nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeAdapter := &skillDescriptionCapture{}
+	if _, err := Run(t.Context(), Options{Prompt: "continue", SessionID: legacyResult.SessionID, Workspace: workspace, SessionDir: filepath.Join(root, "legacy-sessions"), Adapter: resumeAdapter}); err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range resumeAdapter.tools {
+		if definition.Name == tool.SkillUseName {
+			return
+		}
+	}
+	t.Fatal("resume removed SkillUse from an existing snapshot")
 }
 
 func TestRunUsesDecodedSkillDescriptionAndResumeKeepsSnapshot(t *testing.T) {
@@ -174,6 +262,16 @@ func TestRunUsesDecodedSkillDescriptionAndResumeKeepsSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(string(firstAdapter.input), "Search sources and cite results.") {
 		t.Fatalf("fresh model request did not use decoded description: %s", firstAdapter.input)
+	}
+	hasSkillUse := false
+	for _, definition := range firstAdapter.tools {
+		if definition.Name == tool.SkillUseName {
+			hasSkillUse = true
+			break
+		}
+	}
+	if !hasSkillUse {
+		t.Fatal("registered skill catalog was sent without the SkillUse definition")
 	}
 	store := defaultContextSnapshotStore(sessionDir, workspace)
 	snapshot, err := store.LoadContext(t.Context(), session.ID(result.SessionID))

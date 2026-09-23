@@ -27,6 +27,14 @@ bytes of request fields, not token estimates.
 | All eight serialized tool definitions | 3,297 | Adds five subagent tools to the prior set. |
 | System message plus all tool definitions | 6,063 | Excludes conversation, dynamic tool results, and provider framing. |
 
+Follow-up capture after making `SkillUse` conditional on a nonempty skill catalog
+measured 924 bytes for the same empty-catalog `Bash` and `ViewImage` declarations,
+down from 1,168 bytes: 244 serialized bytes removed from the request's tool
+definitions. This applies only when no valid skills are registered. Normal
+installed sessions include the bundled `pk` skill and continue to send
+`SkillUse`; resume also preserves tools already recorded in a session snapshot.
+This is a schema-byte measurement, not a provider-token or cost saving claim.
+
 The pinned Unreal v0.1.1 context-builder preamble is 1,371 bytes (253 words).
 Its default system prompt is 199 bytes; the benchmark runner supplies that
 default unless explicitly overridden. The `pk` system message is 2,766 bytes
