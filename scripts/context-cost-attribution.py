@@ -129,9 +129,13 @@ def summarize(directory, engine, pattern):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", help="directory containing sanitized per-phase JSONL traces")
+    parser.add_argument("--engine", choices=("both", "pk", "unreal"), default="both",
+                        help="summarize a single engine or require both (default)")
     args = parser.parse_args()
-    summarize(args.directory, "pk", "pk-*.jsonl")
-    summarize(args.directory, "unreal", "unreal-*.jsonl")
+    if args.engine in ("both", "pk"):
+        summarize(args.directory, "pk", "pk-*.jsonl")
+    if args.engine in ("both", "unreal"):
+        summarize(args.directory, "unreal", "unreal-*.jsonl")
 
 
 if __name__ == "__main__":

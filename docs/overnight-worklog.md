@@ -602,3 +602,8 @@ gates or imply that every backlog item is complete.
 
 - Added a reproducible local SSE provider smoke for the benchmark-tagged CLI, with temporary PK_HOME, workspace and provider config. One request passed through the actual run/provider/runner path; nine tool declarations matched the HTTP request.
 - Verified explicit zero cached-input availability, response correlation, 0600 capture permissions, and absence of prompt/response text in metrics. All usage numbers are synthetic; no live model request or cost-improvement claim.
+
+### 08:12 EDT — live request-component diagnostic
+
+- Bounded Luna-low capture completed clamp and intervals with both holdout checks passing. All 11 responses correlated; totals 29,717 input / 13,824 cached / 774 output tokens. This was pk-only, one repetition, not a comparative gain.
+- Large tool-result growth followed Git usage errors in non-repository fixtures and persisted on resume. Saved count-only captures, sanitized traces and analysis under benchmarks/results/context-capture-luna-low-20260923. Next experiment should target unnecessary Git-error context while preserving useful errors and real-repository behavior.
