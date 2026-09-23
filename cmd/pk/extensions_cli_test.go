@@ -110,3 +110,35 @@ func TestCLIExplicitExtensionDecoratesRunnerAndClosesWorker(t *testing.T) {
 		t.Fatalf("diagnostics=%q", diagnostics.String())
 	}
 }
+
+func TestCLIQuietExtensionSetupSuppressesOnlySuccessfulLoadNotice(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "fixture.json")
+	manifest := extensions.Manifest{
+		APIVersion: extensions.ProtocolVersion,
+		ID:         "cli-fixture", Version: "1.0.0", Executable: "/fixture/worker",
+		Tools: []extensions.ToolSpec{{Name: "fixture_info", Description: "return fixture data", Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics strings.Builder
+	host, err := configureCLIExtensionsQuiet(context.Background(), &runner.Options{Workspace: t.TempDir()}, []string{manifestPath}, func(context.Context, extensions.Manifest, string) (extensions.Worker, error) {
+		return &cliFakeExtensionWorker{}, nil
+	}, &diagnostics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host == nil {
+		t.Fatal("quiet setup did not load the explicitly configured extension")
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(diagnostics.String(), "loaded extension cli-fixture") {
+		t.Fatalf("quiet setup repeated startup notice: %q", diagnostics.String())
+	}
+}

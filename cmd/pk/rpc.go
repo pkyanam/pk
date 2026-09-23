@@ -19,6 +19,7 @@ import (
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/extensions"
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/mcpclient"
 	"github.com/pkyanam/pk/internal/modelstream"
@@ -75,6 +76,9 @@ type rpcServer struct {
 	releaseCancel       context.CancelFunc
 	releaseDone         chan struct{}
 	releaseActive       bool
+	pluginCommandCancel context.CancelFunc
+	pluginCommandDone   chan struct{}
+	pluginCommandActive bool
 	reloadPrepared      bool
 	activeInputs        chan runner.Input
 	pendingSteers       map[string]func(error)
@@ -137,7 +141,7 @@ func (s *rpcServer) startReleaseOperation(requestID, operation, sourcePath strin
 		_ = s.emit(requestID, "error", map[string]any{"message": "send start before updating", "recoverable": true})
 		return
 	}
-	if s.active || s.releaseActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
+	if s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
 		s.mu.Unlock()
 		_ = s.emit(requestID, "error", map[string]any{"message": "update and rollback require an idle session with no attached task", "recoverable": true})
 		return
@@ -304,6 +308,15 @@ func (s *rpcServer) serve() error {
 	}
 	if releaseDone != nil {
 		<-releaseDone
+	}
+	s.mu.Lock()
+	pluginCommandCancel, pluginCommandDone := s.pluginCommandCancel, s.pluginCommandDone
+	s.mu.Unlock()
+	if pluginCommandCancel != nil {
+		pluginCommandCancel()
+	}
+	if pluginCommandDone != nil {
+		<-pluginCommandDone
 	}
 	if s.taskFollowCancel != nil {
 		s.taskFollowCancel()
@@ -509,9 +522,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before prompt", "recoverable": true})
 			return
 		}
-		if s.active {
+		if s.active || s.pluginCommandActive {
 			s.mu.Unlock()
-			_ = s.emit(msg.ID, "error", map[string]any{"message": "a turn is already running", "recoverable": true})
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "a foreground operation is already running", "recoverable": true})
 			return
 		}
 		if s.reloadPrepared {
@@ -849,7 +862,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "update_cancel_requested", map[string]any{"operation": "release"})
 	case "reload":
 		s.mu.Lock()
-		busy := s.active || s.releaseActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared
+		busy := s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared
 		handoff := reloadHandoff{Workspace: s.opts.Workspace, SessionID: s.session, Model: s.opts.Model, Effort: s.opts.Effort}
 		started := s.started
 		if started && !busy {
@@ -984,7 +997,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "question_cancelled", map[string]any{"id": questionID})
 	case "attach":
 		s.mu.Lock()
-		active := s.active
+		active := s.active || s.releaseActive || s.pluginCommandActive
 		s.mu.Unlock()
 		if active {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot attach while a turn is running", "recoverable": true})
@@ -1019,7 +1032,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "attached": true, "capabilities": rpcCapabilities(steeringEnabled)})
 	case "new":
 		s.mu.Lock()
-		active, sessionID := s.active, s.session
+		active, sessionID := s.active || s.releaseActive || s.pluginCommandActive, s.session
 		s.mu.Unlock()
 		if active {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cancel the active turn before starting a new session", "recoverable": true})
@@ -1049,6 +1062,92 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "plugins", payload)
+	case "plugin_commands_list":
+		s.mu.Lock()
+		started := s.started
+		manifestPaths := append([]string(nil), s.pluginPaths...)
+		s.mu.Unlock()
+		if !started {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before listing session plugin commands", "recoverable": true})
+			return
+		}
+		commands, issues := pluginSlashCommandCatalog(manifestPaths)
+		publicCommands := make([]map[string]string, 0, len(commands))
+		for _, command := range commands {
+			publicCommands = append(publicCommands, map[string]string{
+				"name": command.Name, "extension_id": command.ExtensionID,
+				"command_name": command.CommandName, "description": command.Description,
+			})
+		}
+		publicIssues := make([]string, 0, len(issues))
+		for _, issue := range issues {
+			publicIssues = append(publicIssues, issue.Error())
+		}
+		_ = s.emit(msg.ID, "plugin_commands", map[string]any{"commands": publicCommands, "issues": publicIssues})
+	case "plugin_command_execute":
+		name, arguments := get("name"), get("arguments")
+		if name == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "plugin command name is required", "recoverable": true})
+			return
+		}
+		if len(arguments) > extensions.MaxSlashCommandArgumentBytes || !utf8.ValidString(arguments) {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": fmt.Sprintf("plugin command arguments must be valid UTF-8 and at most %d bytes", extensions.MaxSlashCommandArgumentBytes), "recoverable": true})
+			return
+		}
+		s.mu.Lock()
+		if !s.started {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before running a plugin command", "recoverable": true})
+			return
+		}
+		if s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "plugin commands require an idle session with no attached task", "recoverable": true})
+			return
+		}
+		workspace := s.opts.Workspace
+		manifestPaths := append([]string(nil), s.pluginPaths...)
+		ctx, cancel := context.WithCancel(s.ctx)
+		done := make(chan struct{})
+		s.pluginCommandActive = true
+		s.pluginCommandCancel = cancel
+		s.pluginCommandDone = done
+		s.mu.Unlock()
+		_ = s.emit(msg.ID, "plugin_command_started", map[string]any{"name": name})
+		go func() {
+			text, err := executePluginSlashCommand(ctx, workspace, manifestPaths, name, arguments)
+			wasCanceled := ctx.Err() != nil
+			cancel()
+			s.mu.Lock()
+			s.pluginCommandActive = false
+			s.pluginCommandCancel = nil
+			s.mu.Unlock()
+			if err != nil {
+				payload := map[string]any{"message": err.Error(), "recoverable": true, "command": name}
+				if wasCanceled {
+					payload["cancelled"] = true
+				}
+				_ = s.emit(msg.ID, "error", payload)
+			} else {
+				_ = s.emit(msg.ID, "plugin_command_result", map[string]any{"name": name, "text": text})
+			}
+			close(done)
+			s.mu.Lock()
+			if s.pluginCommandDone == done {
+				s.pluginCommandDone = nil
+			}
+			s.mu.Unlock()
+		}()
+	case "plugin_command_cancel":
+		s.mu.Lock()
+		cancel, active := s.pluginCommandCancel, s.pluginCommandActive
+		s.mu.Unlock()
+		if !active || cancel == nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "no plugin command is running", "recoverable": true})
+			return
+		}
+		cancel()
+		_ = s.emit(msg.ID, "plugin_command_cancel_requested", map[string]any{})
 	case "providers_list":
 		items, err := rpcProviderStore().Summaries()
 		if err != nil {
@@ -1266,8 +1365,15 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		_ = s.emit(msg.ID, "tasks", map[string]any{"sessions": items})
 	case "task_create":
-		if !s.started {
+		s.mu.Lock()
+		started, busy := s.started, s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != ""
+		s.mu.Unlock()
+		if !started {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before creating a task", "recoverable": true})
+			return
+		}
+		if busy {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot create a task while another foreground operation is active", "recoverable": true})
 			return
 		}
 		prompt := get("prompt")
@@ -1327,7 +1433,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		s.mu.Lock()
-		blocked := s.active || s.releaseActive || s.reloadPrepared
+		blocked := s.active || s.releaseActive || s.pluginCommandActive || s.reloadPrepared
 		previousCancel := s.taskFollowCancel
 		s.mu.Unlock()
 		if blocked {
@@ -1342,7 +1448,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		followCtx, cancel := context.WithCancel(s.ctx)
 		s.mu.Lock()
-		if s.active || s.releaseActive || s.reloadPrepared {
+		if s.active || s.releaseActive || s.pluginCommandActive || s.reloadPrepared {
 			s.mu.Unlock()
 			cancel()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot attach a task while another foreground operation is active", "recoverable": true})

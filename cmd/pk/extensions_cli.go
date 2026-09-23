@@ -17,6 +17,17 @@ type cliRegistryExtension struct {
 }
 
 func configureCLIExtensions(ctx context.Context, options *runner.Options, manifestPaths []string, factory extensions.WorkerFactory, diagnostics io.Writer, extra ...cliRegistryExtension) (*extensions.Host, error) {
+	return configureCLIExtensionsWithLoadNotices(ctx, options, manifestPaths, factory, diagnostics, true, extra...)
+}
+
+// configureCLIExtensionsQuiet keeps repeated child startup chatter out of the
+// parent transcript while still reporting invalid manifests and disabled
+// extensions. It does not change which extensions are loaded.
+func configureCLIExtensionsQuiet(ctx context.Context, options *runner.Options, manifestPaths []string, factory extensions.WorkerFactory, diagnostics io.Writer, extra ...cliRegistryExtension) (*extensions.Host, error) {
+	return configureCLIExtensionsWithLoadNotices(ctx, options, manifestPaths, factory, diagnostics, false, extra...)
+}
+
+func configureCLIExtensionsWithLoadNotices(ctx context.Context, options *runner.Options, manifestPaths []string, factory extensions.WorkerFactory, diagnostics io.Writer, showLoadNotices bool, extra ...cliRegistryExtension) (*extensions.Host, error) {
 	var host *extensions.Host
 	var decorators []func(tool.Registry) tool.Registry
 	var handlerFactories []func(context.Context) []operation.RemoteJobHandler
@@ -31,8 +42,10 @@ func configureCLIExtensions(ctx context.Context, options *runner.Options, manife
 		if err != nil {
 			return nil, err
 		}
-		for _, id := range report.Loaded {
-			fmt.Fprintf(diagnostics, "pk: loaded extension %s\n", id)
+		if showLoadNotices {
+			for _, id := range report.Loaded {
+				fmt.Fprintf(diagnostics, "pk: loaded extension %s\n", id)
+			}
 		}
 		for _, issue := range report.Disabled {
 			fmt.Fprintf(diagnostics, "pk: extension warning: %v\n", issue)

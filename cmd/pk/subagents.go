@@ -166,7 +166,7 @@ func runSubagent(ctx context.Context, child runner.Options, cfg subagentRuntimeC
 	if cfg.InheritPlugins {
 		manifests = append(manifests, cfg.PluginManifests...)
 	}
-	pluginHost, err := configureCLIExtensions(ctx, &child, manifests, nil, cfg.Diagnostics, tinyFishRegistryExtension())
+	pluginHost, err := configureCLIExtensionsQuiet(ctx, &child, manifests, nil, cfg.Diagnostics, tinyFishRegistryExtension())
 	if err != nil {
 		return runner.RunResult{}, fmt.Errorf("load subagent extensions: %w", err)
 	}
