@@ -47,6 +47,7 @@ const (
 	EventRequestFailed         = "request_failed"
 	EventResponseStarted       = "response_started"
 	EventAssistantDelta        = "assistant_delta"
+	EventReasoningProgress     = "reasoning_progress"
 	EventToolCallStarted       = "tool_call_started"
 	EventToolArgumentsProgress = "tool_arguments_progress"
 	EventToolCallReady         = "tool_call_ready"
@@ -64,21 +65,79 @@ type observerConfig struct {
 	suppressed bool
 }
 
+// ObservedCall adapts streaming from providers that do not use the Responses
+// transport observer to the same bounded progress event path.
+type ObservedCall struct {
+	state *callState
+	once  sync.Once
+}
+
+// BeginObservedCall starts an observed provider call. requestID may be empty,
+// in which case a random ID is generated. Suppressed or unobserved calls still
+// return a call handle so TrackOutput can observe visible output safely.
+func BeginObservedCall(ctx context.Context, id string, attempt int) (*ObservedCall, error) {
+	config, _ := ctx.Value(observerKey{}).(observerConfig)
+	if id == "" {
+		var err error
+		id, err = requestID()
+		if err != nil {
+			return nil, fmt.Errorf("create model request ID: %w", err)
+		}
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	state := &callState{requestID: id, callback: config.callback, onOutput: config.onOutput}
+	state.attempt.Store(int32(attempt))
+	call := &ObservedCall{state: state}
+	state.emit(Event{Attempt: attempt, Kind: EventAttemptStarted})
+	return call, nil
+}
+
+// Emit sends a provider progress event through the shared coalescing and
+// output-tracking path. Request and attempt identifiers are set by the call.
+func (call *ObservedCall) Emit(event Event) {
+	if call == nil || call.state == nil {
+		return
+	}
+	if event.Attempt == 0 {
+		event.Attempt = int(call.state.attempt.Load())
+	}
+	call.state.emit(event)
+}
+
+// Finish flushes pending progress before a terminal event. It is safe to call
+// more than once; only the first result is emitted.
+func (call *ObservedCall) Finish(err error) {
+	if call == nil || call.state == nil {
+		return
+	}
+	call.once.Do(func() {
+		attempt := int(call.state.attempt.Load())
+		if err != nil {
+			call.state.emit(Event{Attempt: attempt, Kind: EventRequestFailed})
+			return
+		}
+		call.state.flush(Event{Attempt: attempt, Kind: EventResponseCompleted})
+	})
+}
+
 type callState struct {
-	requestID    string
-	callback     func(Event)
-	onOutput     func()
-	attempt      atomic.Int32
-	deliveryMu   sync.Mutex
-	mu           sync.Mutex
-	lastEmit     time.Time
-	flushTimer   *time.Timer
-	flushVersion uint64
-	pending      strings.Builder
-	pendingID    string
-	draftUsed    int
-	pendingBytes int
-	toolBytes    map[string]int
+	requestID             string
+	callback              func(Event)
+	onOutput              func()
+	attempt               atomic.Int32
+	deliveryMu            sync.Mutex
+	mu                    sync.Mutex
+	lastEmit              time.Time
+	flushTimer            *time.Timer
+	flushVersion          uint64
+	pending               strings.Builder
+	pendingID             string
+	draftUsed             int
+	pendingBytes          int
+	pendingReasoningBytes int
+	toolBytes             map[string]int
 }
 
 func WithObserver(ctx context.Context, callback func(Event)) context.Context {

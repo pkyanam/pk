@@ -1199,6 +1199,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         label = "Waiting for model response"
         phaseKey = `response:${requestId}:${attempt}`
         break
+      case "reasoning_progress":
+        label = "Model is thinking"
+        phaseKey = `reasoning:${requestId}:${attempt}`
+        break
       case "assistant_delta":
         label = "Receiving response"
         phaseKey = `receiving:${requestId}:${attempt}`

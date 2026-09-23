@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
 
@@ -28,6 +30,7 @@ type Event struct {
 	ToolIndex      int
 	ToolName       string
 	ArgumentsBytes int
+	Bytes          int
 }
 
 type observerKey struct{}
@@ -50,7 +53,34 @@ func newChatAdapter(provider Provider, key, baseURL string) *chatAdapter {
 	return &chatAdapter{provider: provider, apiKey: key, endpoint: baseURL + "/chat/completions", http: newProviderHTTPClient()}
 }
 
-func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ llm.RequestOptions) (llm.Response, error) {
+func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ llm.RequestOptions) (result llm.Response, retErr error) {
+	observed, observeErr := modelstream.BeginObservedCall(ctx, "", 1)
+	if observeErr != nil {
+		return llm.Response{}, observeErr
+	}
+	defer func() { observed.Finish(retErr) }()
+	previousObserver, _ := ctx.Value(observerKey{}).(func(Event))
+	argumentBytes := make(map[int]int)
+	ctx = WithObserver(ctx, func(event Event) {
+		if previousObserver != nil {
+			previousObserver(event)
+		}
+		switch event.Kind {
+		case "assistant_delta":
+			observed.Emit(modelstream.Event{Kind: modelstream.EventAssistantDelta, Text: event.Text, Bytes: len(event.Text)})
+		case "reasoning_progress":
+			observed.Emit(modelstream.Event{Kind: modelstream.EventReasoningProgress, Bytes: event.Bytes})
+		case "tool_call_started":
+			observed.Emit(modelstream.Event{Kind: modelstream.EventToolCallStarted, ItemID: strconv.Itoa(event.ToolIndex), ToolName: event.ToolName})
+		case "tool_arguments_progress":
+			itemID := strconv.Itoa(event.ToolIndex)
+			delta := event.ArgumentsBytes - argumentBytes[event.ToolIndex]
+			argumentBytes[event.ToolIndex] = event.ArgumentsBytes
+			if delta > 0 {
+				observed.Emit(modelstream.Event{Kind: modelstream.EventToolArgumentsProgress, ItemID: itemID, Bytes: delta})
+			}
+		}
+	})
 	if err := ctx.Err(); err != nil {
 		return llm.Response{}, err
 	}
@@ -108,6 +138,7 @@ func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ 
 		return llm.Response{}, fmt.Errorf("chat completion request failed: %w", err)
 	}
 	defer response.Body.Close()
+	observed.Emit(modelstream.Event{Kind: modelstream.EventResponseStarted, Status: response.StatusCode})
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message := fmt.Sprintf("chat completion endpoint returned HTTP %d", response.StatusCode)
 		if adapter.provider.Protocol == ProtocolCloudflareWorkersAI && len(request.Tools) > 0 && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity) {
@@ -260,9 +291,11 @@ type chatChunk struct {
 	ID      string `json:"id"`
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			Refusal   string `json:"refusal"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			Refusal          string `json:"refusal"`
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -349,6 +382,12 @@ func decodeChatStream(ctx context.Context, source io.Reader) (llm.Response, erro
 			response.Usage.Raw = jsontext.Value(append([]byte(nil), chunk.Usage...))
 		}
 		for _, choice := range chunk.Choices {
+			reasoningBytes := len(choice.Delta.ReasoningContent) + len(choice.Delta.Reasoning)
+			if reasoningBytes > 0 {
+				if observer != nil {
+					observer(Event{Kind: "reasoning_progress", Bytes: reasoningBytes})
+				}
+			}
 			if choice.Delta.Content != "" {
 				content.WriteString(choice.Delta.Content)
 				if observer != nil {

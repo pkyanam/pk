@@ -1807,6 +1807,9 @@ describe("OpenTUI application", () => {
       version: 1, id: prompt.id, type: "model_progress",
       payload: { request_id: "request-1", attempt, phase, ...extra },
     })
+    act(() => progress("reasoning_progress", { bytes: 42, text_delta: "private-reasoning-must-not-render" }))
+    const thinkingFrame = await setup.waitForFrame((value) => value.includes("Model is thinking"))
+    expect(thinkingFrame).not.toContain("private-reasoning-must-not-render")
     act(() => progress("assistant_delta", { item_id: "text-1", text_delta: "stale partial" }))
     let frame = await setup.waitForFrame((value) => value.includes("stale partial"))
     expect(frame).toContain("Receiving response")

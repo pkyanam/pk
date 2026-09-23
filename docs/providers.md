@@ -96,6 +96,11 @@ printf '%s' "$CLOUDFLARE_API_TOKEN" | pk provider add \
 pk provider models cloudflare-workers-ai
 ```
 
+Workers AI streams visible answer text and tool-preparation progress into the TUI.
+Reasoning-only chunks show **Model is thinking**; their contents are not displayed or saved
+by the progress observer. A longer prompt can still take longer to process at the provider.
+Progress is evidence of arriving data, not a guarantee of completion time.
+
 The integration is verified with local HTTP fixtures for setup, catalog parsing, streaming, and a
 tool-call/result round trip. No live Cloudflare account request is part of these tests.
 

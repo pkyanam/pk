@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
 
@@ -158,5 +160,58 @@ func TestCloudflareWorkersAIToolUnsupportedErrorIsActionable(t *testing.T) {
 	}, llm.RequestOptions{})
 	if err == nil || !strings.Contains(err.Error(), "may not support function calling") || strings.Contains(err.Error(), "private response body") {
 		t.Fatalf("tool error = %v", err)
+	}
+}
+
+func TestCloudflareWorkersAIReasoningStreamReportsSafeProgress(t *testing.T) {
+	provider := Provider{ID: "cf", Protocol: ProtocolCloudflareWorkersAI, BaseURL: "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1"}
+	adapter := newChatAdapter(provider, "fixture-token", provider.BaseURL)
+	adapter.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return fakeResponse(http.StatusOK, strings.Join([]string{
+			`data: {"id":"reasoning-response","choices":[{"delta":{"reasoning_content":"PRIVATE_REASONING_ONE"},"finish_reason":null}]}`,
+			`data: {"id":"reasoning-response","choices":[{"delta":{"reasoning":"PRIVATE_REASONING_TWO"},"finish_reason":null}]}`,
+			`data: {"id":"reasoning-response","choices":[{"delta":{"content":"visible answer"},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n\n")), nil
+	})}
+	var mu sync.Mutex
+	var events []modelstream.Event
+	ctx := modelstream.WithObserver(context.Background(), func(event modelstream.Event) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+	response, err := adapter.Respond(ctx, llm.Request{
+		Model: llm.Model{ID: "@cf/zai-org/glm-5.3-flash"},
+		Input: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "think"}}},
+	}, llm.RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 1 || response.Output[0].Data.(llm.Message).Text != "visible answer" {
+		t.Fatalf("reasoning leaked into or replaced the final response: %+v", response.Output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var reasoningBytes int
+	var sawStarted, sawCompleted, sawVisible bool
+	for _, event := range events {
+		switch event.Kind {
+		case modelstream.EventResponseStarted:
+			sawStarted = event.Status == http.StatusOK
+		case modelstream.EventReasoningProgress:
+			reasoningBytes += event.Bytes
+			if event.Text != "" || strings.Contains(event.Text, "PRIVATE_REASONING") {
+				t.Fatalf("reasoning progress exposed text: %+v", event)
+			}
+		case modelstream.EventAssistantDelta:
+			sawVisible = sawVisible || strings.Contains(event.Text, "visible answer")
+		case modelstream.EventResponseCompleted:
+			sawCompleted = true
+		}
+	}
+	if !sawStarted || !sawCompleted || !sawVisible || reasoningBytes != len("PRIVATE_REASONING_ONEPRIVATE_REASONING_TWO") {
+		t.Fatalf("incomplete safe stream progress: started=%v reasoning_bytes=%d visible=%v completed=%v events=%+v", sawStarted, reasoningBytes, sawVisible, sawCompleted, events)
 	}
 }

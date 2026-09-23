@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
 )
 
 func TestRPCProviderCatalogSelectionAndRuntime(t *testing.T) {
@@ -299,5 +301,187 @@ func TestRPCProviderModelDiscoveryIsResponsiveAndCoalescesCancellation(t *testin
 				return
 			}
 		}
+	}
+}
+
+func TestRPCProviderChatStreamingProgressFinalHistoryAndCancel(t *testing.T) {
+	home, workspace, sessions := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("PK_HOME", home)
+	firstStarted := make(chan int, 1)
+	firstRelease := make(chan struct{})
+	secondStarted := make(chan struct{}, 1)
+	secondCanceled := make(chan struct{}, 1)
+	var calls atomic.Int32
+	writeChunk := func(w http.ResponseWriter, chunk string) {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode provider request: %v", err)
+			return
+		}
+		if len(request.Messages) == 0 {
+			t.Error("provider request had no messages")
+			return
+		}
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if call == 1 {
+			promptBytes := 0
+			for _, message := range request.Messages {
+				promptBytes += len(message.Content)
+			}
+			firstStarted <- promptBytes
+			writeChunk(w, "{\"id\":\"chat-stream-1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"private reasoning that must not be rendered\"}}]}")
+			writeChunk(w, "{\"id\":\"chat-stream-1\",\"choices\":[{\"delta\":{\"content\":\"A streamed answer \"}}]}")
+			select {
+			case <-firstRelease:
+			case <-r.Context().Done():
+				return
+			}
+			writeChunk(w, "{\"id\":\"chat-stream-1\",\"choices\":[{\"delta\":{\"content\":\"finishes here.\"},\"finish_reason\":\"stop\"}]}")
+			writeChunk(w, "[DONE]")
+			return
+		}
+		writeChunk(w, "{\"id\":\"chat-stream-2\",\"choices\":[{\"delta\":{\"content\":\"Cancellation fixture draft.\"}}]}")
+		secondStarted <- struct{}{}
+		<-r.Context().Done()
+		close(secondCanceled)
+	}))
+	defer httpServer.Close()
+	provider := providers.Provider{
+		ID: "fixture", Protocol: providers.ProtocolChatCompletions,
+		BaseURL: httpServer.URL + "/v1", APIKey: "fixture-secret",
+		DefaultModel: "fixture-model", DefaultEffort: "low",
+	}
+	if err := (providers.Store{Home: home}).Put(provider); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 256)}
+	rpc := &rpcServer{
+		ctx: context.Background(), output: sink, diagnostics: io.Discard,
+		cfgPath: filepath.Join(home, "config.json"), sessionDir: sessions,
+		started: true, providerID: provider.ID,
+		opts:         runner.Options{Workspace: workspace, SessionDir: sessions, Model: provider.DefaultModel, Effort: provider.DefaultEffort},
+		requestTypes: map[string]string{},
+	}
+	longPrompt := "Please inspect this long request carefully. " + strings.Repeat("Keep the answer grounded in the supplied requirement. ", 350)
+	firstPayload, err := json.Marshal(map[string]any{"text": longPrompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFinished := make(chan turnDone, 1)
+	rpc.handle(rpcMessage{Version: 1, ID: "chat-first", Type: "prompt", Payload: firstPayload}, firstFinished)
+	select {
+	case size := <-firstStarted:
+		if size < len(longPrompt) {
+			t.Fatalf("long prompt bytes in provider request=%d, want at least %d", size, len(longPrompt))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not begin the delayed streaming response")
+	}
+	gotText, gotReasoning := false, false
+	deadline := time.After(5 * time.Second)
+	for !gotText || !gotReasoning {
+		select {
+		case raw := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.ID != "chat-first" || event.Type != "model_progress" {
+				continue
+			}
+			payload, _ := event.Payload.(map[string]any)
+			switch payload["phase"] {
+			case "assistant_delta":
+				gotText = true
+				if !strings.Contains(fmt.Sprint(payload["text_delta"]), "A streamed answer") {
+					t.Fatalf("assistant progress payload=%v", payload)
+				}
+			case "reasoning_progress":
+				gotReasoning = true
+				if payload["text_delta"] != nil || payload["reasoning"] != nil {
+					t.Fatalf("reasoning progress exposed provider reasoning: %v", payload)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("stream progress did not arrive before completion: assistant=%v reasoning=%v", gotText, gotReasoning)
+		}
+	}
+	select {
+	case result := <-firstFinished:
+		t.Fatalf("turn finished before provider completion was released: %+v", result)
+	default:
+	}
+	sessionID := rpc.session
+	if sessionID == "" {
+		t.Fatal("session was not created before stream completion")
+	}
+	close(firstRelease)
+	var first turnDone
+	select {
+	case first = <-firstFinished:
+		if first.err != nil || !strings.Contains(first.text, "A streamed answer finishes here.") {
+			t.Fatalf("completed first turn=%+v", first)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("chat turn did not finish after provider completion")
+	}
+	rpc.completeTurn(first)
+	store, err := localfile.New(sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, _, err := recentSessionHistory(context.Background(), store, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyText := fmt.Sprint(history)
+	if !strings.Contains(historyText, "A streamed answer finishes here.") {
+		t.Fatalf("final response missing from history: %+v", history)
+	}
+	if strings.Contains(historyText, "private reasoning") {
+		t.Fatalf("private reasoning appeared in saved history: %+v", history)
+	}
+
+	secondPayload, err := json.Marshal(map[string]any{"text": "cancel this streamed response"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFinished := make(chan turnDone, 1)
+	rpc.handle(rpcMessage{Version: 1, ID: "chat-cancel", Type: "prompt", Payload: secondPayload}, secondFinished)
+	select {
+	case <-secondStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second provider request did not start")
+	}
+	rpc.handle(rpcMessage{Version: 1, ID: "cancel-chat", Type: "cancel"}, make(chan turnDone, 1))
+	select {
+	case <-secondCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel did not promptly cancel the provider stream")
+	}
+	select {
+	case canceled := <-secondFinished:
+		if canceled.err == nil || !strings.Contains(strings.ToLower(canceled.err.Error()), "cancel") {
+			t.Fatalf("canceled stream result=%+v", canceled)
+		}
+		rpc.completeTurn(canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("RPC worker did not settle after stream cancellation")
 	}
 }
