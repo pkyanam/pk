@@ -467,8 +467,12 @@ func (adapter *historyCompactionAdapter) summarizeRange(ctx context.Context, req
 	if err != nil {
 		return "", benchcontext.Usage{}, 0, err
 	}
-	if len(chunks) > policy.MaxSummaryCalls {
-		return "", benchcontext.Usage{}, 0, fmt.Errorf("history prefix requires %d summary calls, above the configured maximum of %d; increase the limit or compact sooner", len(chunks), policy.MaxSummaryCalls)
+	requiredCalls := len(chunks)
+	if len(chunks) > 1 {
+		requiredCalls++ // summaries require one bounded merge call
+	}
+	if requiredCalls > policy.MaxSummaryCalls {
+		return "", benchcontext.Usage{}, 0, fmt.Errorf("history prefix requires %d summary calls, above the configured maximum of %d; increase the limit or compact sooner", requiredCalls, policy.MaxSummaryCalls)
 	}
 	var usage benchcontext.Usage
 	var summaries []string

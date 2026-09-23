@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -69,5 +70,19 @@ func TestContextOverflowRetriesOnceOnlyBeforeAnyOutput(t *testing.T) {
 	response, err = noRetry.Respond(context.Background(), request, llm.RequestOptions{})
 	if err == nil || partial.calls != 1 || len(response.Output) == 0 {
 		t.Fatalf("partial output must be returned without replay: calls=%d response=%+v err=%v", partial.calls, response, err)
+	}
+}
+
+func TestSummaryCallBoundPreflightsFinalMerge(t *testing.T) {
+	request := llm.Request{Model: llm.Model{ID: "bounded-summary"}, Input: []llm.Item{
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: strings.Repeat("A", 20_000)}},
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: strings.Repeat("B", 20_000)}},
+	}}
+	adapter := reviewSummaryAdapter("summary")
+	engine := historyCompactionAdapter{summarizer: adapter, sessionID: "bounded-summary"}
+	policy := HistoryCompactionOptions{SummaryInputTokens: 12_000, MaxSummaryTokens: 2_500, MaxSummaryCalls: 2}
+	_, _, calls, err := engine.summarizeRange(context.Background(), request, 0, len(request.Input), "", policy)
+	if err == nil || calls != 0 || len(adapter.requests) != 0 {
+		t.Fatalf("call limit must account for merge before spending provider calls: calls=%d requests=%d err=%v", calls, len(adapter.requests), err)
 	}
 }
