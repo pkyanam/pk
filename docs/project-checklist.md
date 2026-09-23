@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `2da4bc0` (`20260923T122106.062697000Z-9553ed49507a-fd890b40`). The managed updater passed its build/test gates; the new Git-awareness runner race tests and live coding pilot passed. Native reload/history/copy checks belong to earlier checkpoints below; this release has not repeated them. Earlier release references in dated checkpoints are historical.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `be4bf3a` (`20260923T123657.052406000Z-5aad47beba25-33d3a5aa`). The managed updater passed its build/test gates; the new Git-awareness runner race tests and live coding pilot passed. Native reload/history/copy checks belong to earlier checkpoints below; this release has not repeated them. Earlier release references in dated checkpoints are historical.
 
 ## Product and implementation
 

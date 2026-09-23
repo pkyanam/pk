@@ -629,3 +629,8 @@ gates or imply that every backlog item is complete.
 - Escape canceled the form and then the manager. Physical x, Shift+Enter, y appeared as two composer lines without submitting a prompt. No provider request or MCP configuration write occurred.
 - Renderer audit exercised long-gap typing/copy and cancel/second-prompt paths without finding the original freeze. Additional focused-form/turn-completion regression is retained; original native freeze remains undiagnosed.
 - The expanded keyboard-only form regression passes (six assertions): field sentinel stays out of chat, form and manager cancel, composer regains focus, and two prompt payloads remain correct across turn completion. Initial failures were stale-frame assertions and the renderer’s 20ms lone-Escape parsing delay; no application defect was established. One React act warning remains in the test output.
+
+### 08:37 EDT — updater dispatch and progress installed
+
+- Fixed real RPC /update dispatch passing the command name into a flags-only handler. New regression failed with unexpected arguments before the fix and now reaches source validation. CLI update emits readable stage progress to stderr and the current stage on failure; post-build UI validation is now labeled accurately.
+- Affected updater and CLI/RPC race tests pass. Managed updater activated clean be4bf3a as 20260923T123657.052406000Z-5aad47beba25-33d3a5aa after its full validation gates. Installed binary smoke verified CLI progress and actual RPC dispatch against an isolated invalid source; no secondary installation or network access was needed for that smoke. Existing running user sessions were not interrupted.
