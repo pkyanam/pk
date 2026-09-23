@@ -7,22 +7,20 @@ LIB_DIR=${PK_LIB_DIR:-"$USER_HOME/.local/lib/pk"}
 "$ROOT/scripts/build"
 mkdir -p "$BIN_DIR" "$LIB_DIR"
 STAGED_UI="$LIB_DIR/.ui-stage-$$"
-OLD_UI="$LIB_DIR/.ui-previous-$$"
-STAGED_BIN="$BIN_DIR/.pk-stage-$$"
 cleanup() {
   [ ! -d "$STAGED_UI" ] || rm -rf "$STAGED_UI"
-  [ ! -f "$STAGED_BIN" ] || rm -f "$STAGED_BIN"
 }
 trap cleanup EXIT HUP INT TERM
 mkdir -p "$STAGED_UI"
 cp "$ROOT/ui/package.json" "$ROOT/ui/bun.lock" "$STAGED_UI/"
 cp -R "$ROOT/ui/dist" "$STAGED_UI/"
 (cd "$STAGED_UI" && bun install --production --frozen-lockfile)
-install -m 0755 "$ROOT/bin/pk" "$STAGED_BIN"
-if [ -e "$LIB_DIR/ui" ]; then mv "$LIB_DIR/ui" "$OLD_UI"; fi
-mv "$STAGED_UI" "$LIB_DIR/ui"
-mv -f "$STAGED_BIN" "$BIN_DIR/pk"
-[ ! -d "$OLD_UI" ] || rm -rf "$OLD_UI"
+if [ -x "$BIN_DIR/pk" ] && [ -d "$LIB_DIR/ui" ]; then
+  "$ROOT/bin/pk" __install-artifacts --binary "$ROOT/bin/pk" --ui "$STAGED_UI" --legacy-binary "$BIN_DIR/pk" --legacy-ui "$LIB_DIR/ui"
+else
+  "$ROOT/bin/pk" __install-artifacts --binary "$ROOT/bin/pk" --ui "$STAGED_UI"
+fi
+cleanup
 trap - EXIT HUP INT TERM
-echo "Installed pk to $BIN_DIR/pk"
-echo "OpenTUI assets installed to $LIB_DIR/ui"
+echo "Installed pk launcher to $BIN_DIR/pk"
+echo "OpenTUI assets are paired with the active immutable release in $LIB_DIR/current"

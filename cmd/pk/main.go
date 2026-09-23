@@ -37,6 +37,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		command = args[0]
 	}
 	switch command {
+	case "update", "rollback", "version", "__install-artifacts":
+		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
 		return rpcMain(ctx, stdin, stdout, stderr)
 	case "config":
@@ -467,6 +469,9 @@ func usage(out io.Writer) {
   pk login
   pk logout
   pk status
+  pk update [--source DIR]
+  pk rollback
+  pk version
   pk run -p PROMPT [OPTIONS]
 
 Run options:
