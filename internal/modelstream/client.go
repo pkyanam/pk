@@ -149,7 +149,7 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, options 
 	response, err := client.adapter.Respond(ctx, request, options)
 	if err != nil {
 		if state, ok := ctx.Value(callKey{}).(*callState); ok {
-			state.send(Event{Attempt: int(state.attempt.Load()), Kind: EventRequestFailed})
+			state.emit(Event{Attempt: int(state.attempt.Load()), Kind: EventRequestFailed})
 		}
 	}
 	return response, err
