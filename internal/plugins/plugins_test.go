@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -12,12 +13,67 @@ import (
 )
 
 func testManifest(id, toolName string) extensions.Manifest {
+	executable, _ := os.Executable()
 	return extensions.Manifest{
 		APIVersion: extensions.ProtocolVersion,
 		ID:         id,
 		Version:    "1.0.0",
-		Executable: "/bin/echo",
+		Executable: executable,
 		Tools:      []extensions.ToolSpec{{Name: toolName, Description: "test tool", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)}},
+	}
+}
+
+func TestEnableRejectsUnavailableWorkerWithoutPersisting(t *testing.T) {
+	root := t.TempDir()
+	manifestDir := t.TempDir()
+	worker := filepath.Join(manifestDir, "worker")
+	manifest := testManifest("missing-worker", "missing_tool")
+	manifest.Executable = worker
+	path := writeManifest(t, manifestDir, manifest)
+	service := Service{Home: root}
+	if _, err := service.Enable(path); err == nil || !strings.Contains(err.Error(), "worker is unavailable") {
+		t.Fatalf("Enable missing worker error=%v", err)
+	}
+	plugins, err := service.List()
+	if err != nil || len(plugins) != 0 {
+		t.Fatalf("failed enable persisted config: plugins=%+v err=%v", plugins, err)
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows executable mode bits are not meaningful")
+	}
+	if err := os.WriteFile(worker, []byte("not executable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Enable(path); err == nil || !strings.Contains(err.Error(), "is not executable") {
+		t.Fatalf("Enable non-executable worker error=%v", err)
+	}
+}
+
+func TestListAndEnabledManifestsMarkWorkerRemovedAfterEnable(t *testing.T) {
+	root := t.TempDir()
+	manifestDir := t.TempDir()
+	worker := filepath.Join(manifestDir, "worker")
+	if err := os.WriteFile(worker, []byte("worker placeholder"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := testManifest("vanishing-worker", "vanishing_tool")
+	manifest.Executable = worker
+	path := writeManifest(t, manifestDir, manifest)
+	service := Service{Home: root}
+	if _, err := service.Enable(path); err != nil {
+		t.Fatalf("Enable valid worker: %v", err)
+	}
+	if err := os.Remove(worker); err != nil {
+		t.Fatal(err)
+	}
+	plugins, err := service.List()
+	if err != nil || len(plugins) != 1 || !strings.Contains(plugins[0].Error, "worker unavailable") {
+		t.Fatalf("List unavailable worker=%+v err=%v", plugins, err)
+	}
+	manifests, issues, err := service.EnabledManifests()
+	if err != nil || len(manifests) != 0 || len(issues) != 1 || !strings.Contains(issues[0].Error(), "worker unavailable") {
+		t.Fatalf("EnabledManifests=%+v issues=%v err=%v", manifests, issues, err)
 	}
 }
 

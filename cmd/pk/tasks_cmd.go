@@ -176,7 +176,16 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 			}
 		}()
 		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, Adapter: client, OnSession: taskOptions.OnSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		mcpHost, err := configureCLIMCP(ctx, &o, diagnostics)
+		if err != nil {
+			return err
+		}
 		_, err = runner.Run(ctx, o)
+		if mcpHost != nil {
+			if closeErr := mcpHost.Close(); err == nil && closeErr != nil {
+				err = closeErr
+			}
+		}
 		return err
 	})
 	if err != nil {

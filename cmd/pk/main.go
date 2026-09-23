@@ -42,6 +42,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch command {
 	case "acp":
 		return runACPCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "mcp":
+		return runMCPCommand(ctx, args[1:], stdout, stderr)
 	case "update", "rollback", "version", "__install-artifacts":
 		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
@@ -155,6 +157,21 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			}
 		}()
 	}
+	mcpHost, err := configureCLIMCP(ctx, &options, stderr)
+	if err != nil {
+		if host != nil {
+			_ = host.Close()
+		}
+		fmt.Fprintf(stderr, "pk run: load MCP servers: %v\n", err)
+		return 1
+	}
+	if mcpHost != nil {
+		defer func() {
+			if closeErr := mcpHost.Close(); closeErr != nil {
+				fmt.Fprintf(stderr, "pk: close MCP servers: %v\n", closeErr)
+			}
+		}()
+	}
 	options.Output = stdout
 	options.Diagnostics = stderr
 	options.OnSession = func(id string) { fmt.Fprintf(stderr, "Session: %s\n", id) }
@@ -194,6 +211,18 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 	options.Output = stdout
 	options.Diagnostics = stderr
 	options.ToolEvents = true
+	mcpHost, err := configureCLIMCP(ctx, &options, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "pk: load MCP servers: %v\n", err)
+		return 1
+	}
+	if mcpHost != nil {
+		defer func() {
+			if closeErr := mcpHost.Close(); closeErr != nil {
+				fmt.Fprintf(stderr, "pk: close MCP servers: %v\n", closeErr)
+			}
+		}()
+	}
 	err = interactiveLoop(ctx, stdin, stderr, options, runner.Run)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -469,6 +498,7 @@ func usage(out io.Writer) {
   pk -p PROMPT [OPTIONS]     send one prompt and exit
   pk rpc                     start the JSONL frontend backend
   pk acp                     serve Agent Client Protocol v1 over stdio
+  pk mcp list|add|remove     manage explicitly configured MCP servers
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...
   pk config [show|set model|set effort VALUE]

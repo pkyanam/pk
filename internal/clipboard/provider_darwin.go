@@ -3,9 +3,11 @@
 package clipboard
 
 /*
+#include <stdlib.h>
 #cgo LDFLAGS: -framework AppKit -framework Foundation
 char *pk_clipboard_read_json(void);
 void pk_clipboard_free(void *);
+int pk_clipboard_write_text(const char *, size_t);
 */
 import "C"
 
@@ -20,6 +22,31 @@ import (
 )
 
 type NativeProvider struct{}
+type NativeWriter struct{}
+
+func (NativeWriter) WriteText(ctx context.Context, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ValidateText(text); err != nil {
+		return err
+	}
+	if len(text) == 0 {
+		text = ""
+	}
+	data := []byte(text)
+	var pointer unsafe.Pointer
+	if len(data) == 0 {
+		pointer = unsafe.Pointer(C.CString(""))
+	} else {
+		pointer = C.CBytes(data)
+	}
+	defer C.free(pointer)
+	if C.pk_clipboard_write_text((*C.char)(pointer), C.size_t(len(data))) == 0 {
+		return errors.New("macOS could not write text to the clipboard")
+	}
+	return nil
+}
 
 func (NativeProvider) Read(ctx context.Context) (Snapshot, error) {
 	if err := ctx.Err(); err != nil {

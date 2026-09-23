@@ -1,4 +1,4 @@
-import { useKeyboard, usePaste, useRenderer } from "@opentui/react"
+import { useKeyboard, usePaste, useRenderer, useSelectionHandler } from "@opentui/react"
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useRef, useState } from "react"
 import type { PkTransport } from "./transport"
@@ -12,7 +12,8 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
 
@@ -29,6 +30,9 @@ const slashCommands: SlashCommand[] = [
   { name: "/skills", description: "Browse available skills and insert one into your prompt", action: "skills" },
   { name: "/plugins", description: "Inspect installed plugins and their state", action: "plugins" },
   { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
+  { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
+  { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
+  { name: "/reload", description: "Restart pk and resume this session", action: "reload" },
   { name: "/task", description: "Create, attach, or control a durable task", action: "task" },
   { name: "/file", description: "Queue an explicit file for your next prompt", action: "file" },
   { name: "/files", description: "Review, remove, or clear queued files", action: "files" },
@@ -225,6 +229,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [tasks, setTasks] = useState<Array<{ session_id: string; updated_at?: string; title?: string }>>([])
   const [skills, setSkills] = useState<SkillOption[]>([])
   const [plugins, setPlugins] = useState<PluginOption[]>([])
+  const [maintenance, setMaintenance] = useState<Maintenance | null>(null)
+  const [reloadPending, setReloadPending] = useState(false)
+  const [copyNotice, setCopyNotice] = useState("")
   const [activeTaskId, setActiveTaskId] = useState("")
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
@@ -239,7 +246,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
   const pendingClipboardRequests = useRef(new Set<string>())
+  const pendingClipboardWrites = useRef(new Map<string, string>())
   const pendingSteers = useRef(new Map<string, number>())
+  const reloadCommandId = useRef("")
+  const reloadReady = useRef(false)
+  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copiedSelection = useRef("")
   const activityPhase = useRef("idle")
   const activeToolIds = useRef(new Set<string>())
   const streamDrafts = useRef(new Map<string, StreamDraft>())
@@ -247,6 +259,38 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const toolProgress = useRef(new Map<string, { name: string; bytes: number }>())
   const streamProgressRef = useRef<StreamProgress | null>(null)
   const pendingQuestionId = useRef<string | null>(null)
+
+  const showCopyNotice = (text: string) => {
+    setCopyNotice(text)
+    if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current)
+    copyNoticeTimer.current = setTimeout(() => setCopyNotice(""), 1800)
+  }
+
+  const fallbackClipboardCopy = (text: string) => {
+    if (renderer.isOsc52Supported() && renderer.copyToClipboardOSC52(text)) showCopyNotice("Copy sent to terminal")
+    else showCopyNotice("Clipboard copy is unavailable in this terminal")
+  }
+
+  const copyToClipboard = (text: string) => {
+    if (!text) return
+    const id = transport.send("clipboard_write" as any, { text })
+    if (id) {
+      pendingClipboardWrites.current.set(id, text)
+      setCopyNotice("Copying…")
+    } else fallbackClipboardCopy(text)
+  }
+
+  useSelectionHandler((selection) => {
+    if (selection.isDragging) return
+    const selected = selection.getSelectedText()
+    if (!selected.trim()) {
+      copiedSelection.current = ""
+      return
+    }
+    if (selected === copiedSelection.current) return
+    copiedSelection.current = selected
+    copyToClipboard(selected)
+  })
 
   const enterPhase = (phase: string) => {
     const resolved = pendingQuestionId.current && phase !== "idle" && !phase.startsWith("question:")
@@ -458,6 +502,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     const tick = setInterval(() => setClock(Date.now()), 1000)
     return () => clearInterval(tick)
   }, [])
+  useEffect(() => () => { if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current) }, [])
   useEffect(() => { setSlashIndex(0) }, [draft])
   useEffect(() => { busyRef.current = busy }, [busy])
 
@@ -686,6 +731,58 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (!available.length) addEntry("system", "No plugins are installed.")
         break
       }
+      case "clipboard_written": {
+        if (event.id && pendingClipboardWrites.current.delete(event.id)) showCopyNotice("Copied to clipboard")
+        break
+      }
+      case "update_started":
+      case "rollback_started": {
+        const kind = event.type === "update_started" ? "update" : "rollback"
+        const progress = String(data.text ?? (kind === "update" ? "Preparing build" : "Restoring previous release"))
+        setMaintenance({ id: String(event.id ?? ""), kind, startedAt: Date.now(), progress })
+        addEntry("system", `${kind === "update" ? "Update" : "Rollback"} started · ${progress}`)
+        break
+      }
+      case "update_progress":
+      case "rollback_progress": {
+        const id = String(event.id ?? "")
+        const progress = String(data.text ?? "Working…").slice(0, 240)
+        if (maintenance && (!id || id === maintenance.id) && maintenance.progress !== progress) {
+          setMaintenance({ ...maintenance, progress })
+          addEntry("system", progress)
+        }
+        break
+      }
+      case "update_cancel_requested":
+        if (maintenance?.kind === "update" && (!event.id || event.id === maintenance.id)) {
+          setMaintenance({ ...maintenance, progress: "Stopping update" })
+          addEntry("system", "Update cancellation requested…")
+        }
+        break
+      case "update_finished":
+      case "rollback_finished": {
+        const id = String(event.id ?? "")
+        if (maintenance && (!id || id === maintenance.id)) {
+          const succeeded = data.success === true || Number(data.exit_code) === 0
+          const detail = String(data.message ?? (succeeded ? "Complete." : `Failed with exit code ${data.exit_code ?? "unknown"}.`))
+          const canceled = !succeeded && /cancel/i.test(detail)
+          addEntry("system", `${maintenance.kind === "update" ? "Update" : "Rollback"} ${succeeded ? "complete" : canceled ? "canceled" : "failed"} · ${detail}${succeeded ? " Use /reload to run the saved session on the new release." : canceled ? " The active release was not changed." : " Review the build output, then try again."}`)
+          setMaintenance(null)
+        }
+        break
+      }
+      case "reload_ready":
+        reloadReady.current = true
+        setReloadPending(true)
+        addEntry("system", "Session saved · restarting pk…")
+        transport.send("reload_exit" as any)
+        break
+      case "reload_rejected":
+      case "reload_failed":
+        reloadCommandId.current = ""
+        setReloadPending(false)
+        addEntry("system", String(data.message ?? "Reload was rejected; the session is still running."))
+        break
       case "skill_document": {
         const name = String(data.skill?.name ?? "skill")
         const instruction = `Use the ${name} skill for this task.`
@@ -752,7 +849,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        if (event.id && pendingClipboardWrites.current.has(event.id) && (data.command_type === "clipboard_write" || data.request_type === "clipboard_write")) {
+          const text = pendingClipboardWrites.current.get(event.id)!
+          pendingClipboardWrites.current.delete(event.id)
+          fallbackClipboardCopy(text)
+          break
+        }
         addEntry("system", String(data.message ?? "The agent encountered an error."))
+        if (event.id && reloadCommandId.current === event.id) { reloadCommandId.current = ""; setReloadPending(false) }
+        if (maintenance && event.id === maintenance.id) setMaintenance(null)
         if ((data.command_type === "steer" || data.request_type === "steer") && event.id) {
           const entryId = pendingSteers.current.get(event.id)
           if (entryId !== undefined) {
@@ -800,6 +905,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "rpc_closed": {
+        if (reloadReady.current) {
+          void transport.close().finally(() => {
+            renderer.destroy()
+            process.exitCode = 75
+          })
+          break
+        }
         finishPendingSteers("The connection closed before this message was accepted.")
         clearStreamDraft()
         toolProgress.current.clear()
@@ -813,6 +925,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           : entry))
         setTools([])
         setQuestion(null)
+        setMaintenance(null)
+        setReloadPending(false)
         pendingQuestionId.current = null
         waiting.current = false
         turnActive.current = false
@@ -904,6 +1018,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       clearComposer(true)
       return
     }
+    if (maintenance || reloadCommandId.current) {
+      addEntry("system", maintenance ? `${maintenance.kind === "update" ? "Update" : "Rollback"} is still running. Your draft is kept.` : "Reload is saving this session. Your draft is kept.")
+      return
+    }
     if (activeTaskId && queuedFilesRef.current.length) {
       addEntry("system", "File attachments are not supported for this background task. The draft and file queue are kept; attachments work with foreground prompts.")
       return
@@ -986,6 +1104,47 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else addEntry("system", 'Usage: /plugin enable "MANIFEST_PATH" · /plugin disable ID · changes apply to new sessions.')
         break
       }
+      case "update": {
+        if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || reloadCommandId.current) {
+          addEntry("system", "Update is available only when the foreground turn and task follow are idle.")
+          break
+        }
+        let sourcePath = ""
+        if (args[0] === "--source") sourcePath = args.slice(1).join(" ")
+        else if (args.length) sourcePath = args.join(" ")
+        if (args[0] === "--source" && !sourcePath) {
+          addEntry("system", "Usage: /update [--source PATH] · without a path, pk fetches the latest GitHub source release.")
+          break
+        }
+        const commandId = transport.send("update", sourcePath ? { source_path: sourcePath } : undefined)
+        if (!commandId) addEntry("system", "Could not start update because the agent connection is unavailable.")
+        else setMaintenance({ id: commandId, kind: "update", startedAt: Date.now(), progress: "Starting build" })
+        break
+      }
+      case "rollback": {
+        if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || reloadCommandId.current) {
+          addEntry("system", "Rollback is available only when the foreground turn and task follow are idle.")
+          break
+        }
+        const commandId = transport.send("rollback")
+        if (!commandId) addEntry("system", "Could not start rollback because the agent connection is unavailable.")
+        else setMaintenance({ id: commandId, kind: "rollback", startedAt: Date.now(), progress: "Restoring previous release" })
+        break
+      }
+      case "reload": {
+        if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || reloadCommandId.current) {
+          addEntry("system", "Reload is available only when the foreground turn, question, task follow, and update are idle.")
+          break
+        }
+        if (!sessionId) {
+          addEntry("system", "Start a conversation before reloading so pk can resume its session.")
+          break
+        }
+        reloadCommandId.current = transport.send("reload") ?? ""
+        if (!reloadCommandId.current) addEntry("system", "Could not prepare reload because the agent connection is unavailable.")
+        else { setReloadPending(true); addEntry("system", "Saving this session before reload…") }
+        break
+      }
       case "new":
         if (busy) { addEntry("system", "Wait for the active turn to finish before starting a new session."); break }
         transport.send("new")
@@ -1002,7 +1161,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else if (sessionId) transport.send("detach", { session_id: sessionId })
         else addEntry("system", "There is no active session to detach.")
         break
-      case "cancel": if (busy) transport.send("cancel"); else addEntry("system", "No turn is running."); break
+      case "cancel":
+        if (maintenance?.kind === "update") {
+          transport.send("update_cancel")
+          setMaintenance({ ...maintenance, progress: "Stopping update" })
+          addEntry("system", "Stopping the update before activation…")
+        } else if (maintenance?.kind === "rollback") addEntry("system", "Rollback cannot be interrupted safely once activation has started; wait for it to finish.")
+        else if (reloadCommandId.current) addEntry("system", "Reload is saving the session; wait for the supervisor handoff to finish.")
+        else if (reloadCommandId.current) addEntry("system", "Reload is saving the session; wait for the supervisor handoff to finish.")
+        else if (busy) transport.send("cancel")
+        else addEntry("system", "No turn is running.")
+        break
       case "status": transport.send("status"); addEntry("system", `Session ${sessionId || "not started"} · ${model} · ${effort} reasoning`); break
       case "login": transport.send("login"); break
       case "task": {
@@ -1050,7 +1219,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -1141,10 +1310,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if ((commandModifier && key.name.toLowerCase() === "c") || (key.ctrl && key.name.toLowerCase() === "y")) {
       const selection = renderer.getSelection()?.getSelectedText() ?? ""
-      if (selection && renderer.isOsc52Supported()) {
+      if (selection) {
         key.preventDefault()
-        const copied = renderer.copyToClipboardOSC52(selection)
-        if (copied) addEntry("system", `Copied ${selection.length} characters.`)
+        copyToClipboard(selection)
       } else if (key.ctrl && key.name.toLowerCase() === "y") {
         key.preventDefault()
         addEntry("system", selection ? "This terminal does not allow OSC 52 clipboard copy." : "Select transcript text first, then press Ctrl+Y to copy it.")
@@ -1230,6 +1398,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       setDraft("")
       return
     }
+    if (isEscape && maintenance?.kind === "update") {
+      transport.send("update_cancel" as any)
+      setMaintenance({ ...maintenance, progress: "Stopping update" })
+      addEntry("system", "Stopping the update before activation…")
+      return
+    }
+    if (isEscape && maintenance?.kind === "rollback") {
+      addEntry("system", "Rollback is finishing safely; wait for it to complete.")
+      return
+    }
+    if (isEscape && reloadPending) {
+      addEntry("system", "Session handoff is in progress; pk will restart when it is safe.")
+      return
+    }
     if (isEscape && busyRef.current) {
       if (activeTaskId) transport.send("task_cancel", { task_id: activeTaskId })
       else transport.send("cancel")
@@ -1237,13 +1419,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (key.ctrl && key.name === "d") {
+      if (maintenance || reloadPending) { addEntry("system", "Wait for the release operation to finish before closing pk."); return }
       if (activeTaskId && !busy) transport.send("detach", { task_id: activeTaskId })
       else if (sessionId && !busy) transport.send("detach", { session_id: sessionId })
       else if (busyRef.current) addEntry("system", "A turn is still running. Use Esc to stop it before detaching.")
       else void transport.close().finally(() => renderer.destroy())
       return
     }
-    if (key.ctrl && key.name === "c" && !busy) {
+    if (key.ctrl && key.name === "c" && !busy && !maintenance && !reloadPending) {
       void transport.close().finally(() => renderer.destroy())
     }
   })
@@ -1263,12 +1446,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const visibleFileCount = Math.max(1, Math.floor((renderer.width - 26) / 20))
   const activityLabel = question
     ? "Waiting for your answer"
+    : maintenance
+      ? `${maintenance.kind === "update" ? "Building update" : "Rolling back"} · ${maintenance.progress}`
+      : reloadPending
+        ? "Saving session for reload"
     : busy
       ? streamProgress?.label ?? (tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model")
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
-  const phaseTime = phaseStartedAt === null || !busy ? "" : ` · ${shortTime(clock - phaseStartedAt)}`
-  const activityTime = activityStartedAt === null ? "" : ` · ${shortTime(clock - activityStartedAt)} total`
+  const phaseTime = phaseStartedAt === null || (!busy && !maintenance) ? "" : ` · ${shortTime(clock - phaseStartedAt)}`
+  const activityTime = activityStartedAt !== null ? ` · ${shortTime(clock - activityStartedAt)} total` : maintenance ? ` · ${shortTime(clock - maintenance.startedAt)} total` : ""
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
+  const activityActive = busy || Boolean(maintenance) || reloadPending
   const cacheLabel = usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"
 
   return (
@@ -1303,7 +1491,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
         </box>}
         <box style={{ flexDirection: "row", height: 1 }}>
-          <text fg={palette.dim} content={`${busy ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}`} />
+          <text fg={copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
           <textarea id="composer" ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />

@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -73,8 +75,14 @@ func (s Service) List() ([]Plugin, error) {
 				for _, command := range manifest.Commands {
 					plugin.Commands = append(plugin.Commands, command.Name)
 				}
+				if err := validateWorkerExecutable(manifest.Executable); err != nil {
+					plugin.Error = fmt.Sprintf("worker unavailable: %v", err)
+				}
 				if item.Enabled {
 					for _, spec := range manifest.Tools {
+						if plugin.Error != "" {
+							break
+						}
 						if owner := toolOwners[spec.Name]; owner != "" {
 							plugin.Error = fmt.Sprintf("tool %q conflicts with plugin %q", spec.Name, owner)
 							break
@@ -200,6 +208,10 @@ func (s Service) EnabledManifests() ([]extensions.Manifest, []error, error) {
 				issues = append(issues, fmt.Errorf("plugin %q manifest now declares ID %q", item.ID, manifest.ID))
 				continue
 			}
+			if err := validateWorkerExecutable(manifest.Executable); err != nil {
+				issues = append(issues, fmt.Errorf("plugin %q worker unavailable: %w", item.ID, err))
+				continue
+			}
 			loaded = append(loaded, struct {
 				entry    entry
 				manifest extensions.Manifest
@@ -258,7 +270,32 @@ func loadExplicit(path string) (extensions.Manifest, string, error) {
 	if err != nil {
 		return extensions.Manifest{}, "", err
 	}
+	if err := validateWorkerExecutable(manifest.Executable); err != nil {
+		return extensions.Manifest{}, "", fmt.Errorf("plugin %q worker is unavailable: %w", manifest.ID, err)
+	}
 	return manifest, abs, nil
+}
+
+func validateWorkerExecutable(executable string) error {
+	resolved := executable
+	if !filepath.IsAbs(resolved) {
+		path, err := exec.LookPath(resolved)
+		if err != nil {
+			return fmt.Errorf("executable %q was not found in PATH", resolved)
+		}
+		resolved = path
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("inspect %q: %w", resolved, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", resolved)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%q is not executable", resolved)
+	}
+	return nil
 }
 
 func validateEnabled(cfg config, candidate *extensions.Manifest, candidatePath string) error {

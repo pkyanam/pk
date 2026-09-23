@@ -137,3 +137,17 @@ func TestRejectsTrailingJSONValues(t *testing.T) {
 		t.Fatal("expected trailing JSON value to be rejected")
 	}
 }
+
+func TestSafeCLIErrorSurfacesNotFoundWithoutProviderBody(t *testing.T) {
+	raw := []byte(`{"error":{"code":404,"reason":"not_found","message":"Message not found","details":{"body":"private-message-body","id":"private-id"}}}`)
+	got := safeCLIError(raw)
+	if !strings.Contains(got, "not found") || !strings.Contains(got, "mail_list") {
+		t.Fatalf("missing actionable not-found diagnostic: %q", got)
+	}
+	if strings.Contains(got, "private-message-body") || strings.Contains(got, "private-id") {
+		t.Fatalf("provider details leaked: %q", got)
+	}
+	if got := safeCLIError([]byte(`{"error":{"code":500,"reason":"bad","message":"private body"}}`)); got != "" {
+		t.Fatalf("unrecognized provider error should not be surfaced: %q", got)
+	}
+}

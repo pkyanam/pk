@@ -80,11 +80,13 @@ type rpcServer struct {
 	taskFollowRequest   string
 	taskFollowCancel    context.CancelFunc
 	pluginPaths         []string
+	pluginIssues        []string
 	requestTypes        map[string]string
 	broker              *interaction.Broker
 	loadAttachments     func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
 	prepareAdapter      func(context.Context, bool, string) (*codexAdapter, error)
 	clipboardProvider   clipboard.Provider
+	clipboardWriter     clipboard.TextWriter
 	runReleaseCommand   func(context.Context, []string, io.Writer, io.Writer) int
 }
 
@@ -406,6 +408,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.session = get("session_id")
 		s.opts.SessionID = s.session
 		s.pluginPaths = pluginPaths
+		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		var steeringEnabled bool
 		_ = json.Unmarshal(payload["steering"], &steeringEnabled)
 		s.steeringEnabled = steeringEnabled
@@ -456,6 +459,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		if s.releaseActive {
 			s.mu.Unlock()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "an update or rollback is running", "recoverable": true})
+			return
+		}
+		if len(s.pluginIssues) > 0 {
+			issues := append([]string(nil), s.pluginIssues...)
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": rpcPluginUnavailableMessage(issues), "recoverable": true})
 			return
 		}
 		workspace, sessionID := s.opts.Workspace, s.session
@@ -646,6 +655,32 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		// The UI retains these explicit selections and submits their paths through
 		// the same bounded attachment loader used by --file and ordinary prompts.
 		_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": selected, "text": snapshot.Text, "workspace": workspace, "message": snapshot.Message})
+	case "clipboard_write":
+		var text string
+		if err := json.Unmarshal(payload["text"], &text); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "clipboard_write requires a text string", "recoverable": true})
+			return
+		}
+		if err := clipboard.ValidateText(text); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		s.mu.Lock()
+		started := s.started
+		s.mu.Unlock()
+		if !started {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before writing clipboard text", "recoverable": true})
+			return
+		}
+		writer := s.clipboardWriter
+		if writer == nil {
+			writer = clipboard.NativeWriter{}
+		}
+		if err := writer.WriteText(s.ctx, text); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "clipboard_written", map[string]any{"bytes": len(text)})
 	case "cancel":
 		s.mu.Lock()
 		cancel, active, sessionID, model, effort := s.activeCancel, s.active, s.session, s.opts.Model, s.opts.Effort
@@ -830,6 +865,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.session = id
 		s.opts.SessionID = id
 		s.pluginPaths = pluginPaths
+		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
@@ -858,6 +894,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.session = ""
 		s.opts.SessionID = ""
 		s.pluginPaths = pluginPaths
+		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		s.mu.Unlock()
 		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort})

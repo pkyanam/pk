@@ -60,7 +60,7 @@ func (c ServerConfig) validate() error {
 		}
 	}
 	for key, value := range c.Env {
-		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
+		if !environmentKeyPattern.MatchString(key) || strings.ContainsRune(value, 0) {
 			return fmt.Errorf("MCP server %q has an invalid environment entry", c.ID)
 		}
 	}

@@ -84,6 +84,9 @@ type Options struct {
 	// this runner has settled and tears down the operation manager.
 	RemoteJobHandlers func(context.Context) []operation.RemoteJobHandler
 	CaptureLimit      int
+	// MCPFingerprint binds an MCP tool schema/configuration set to the saved
+	// session prefix. Resumes must provide the same fingerprint.
+	MCPFingerprint string
 }
 
 // Input is a steer/follow-up prompt submitted to the active coordinator.
@@ -255,6 +258,9 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 			if snapshot.Workspace != options.Workspace {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s belongs to workspace %q; refusing resume from %q", id, snapshot.Workspace, options.Workspace)
 			}
+			if err := validateMCPFingerprint(snapshot, options.MCPFingerprint); err != nil {
+				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
+			}
 			if explicit := strings.TrimSpace(options.SystemPrompt); explicit != "" && explicit != snapshot.ExplicitSystemPrompt {
 				return RunResult{SessionID: string(id)}, errors.New("system prompt differs from the saved session context; start a new session to use the changed instructions")
 			}
@@ -307,6 +313,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	} else {
 		snapshot = newContextSnapshot(options, registry, skills)
 		snapshot.IdentityTemplate = defaultIdentityTemplate
+		snapshot.MCPFingerprint = options.MCPFingerprint
 		captured, captureErr := captureSkills(skills)
 		if captureErr != nil {
 			return RunResult{SessionID: string(id)}, captureErr
@@ -1210,7 +1217,7 @@ func newContextSnapshot(options Options, registry tool.Registry, _ []tool.Skill)
 	return ContextSnapshot{
 		Version: contextSnapshotVersion, Workspace: options.Workspace,
 		SystemPrompt:         workspaceSystemPrompt(options.Workspace, options.SystemPrompt, options.Diagnostics),
-		ExplicitSystemPrompt: explicit, Tools: tools,
+		ExplicitSystemPrompt: explicit, Tools: tools, MCPFingerprint: options.MCPFingerprint,
 	}
 }
 

@@ -30,6 +30,7 @@ type ContextSnapshot struct {
 	ExplicitSystemPrompt string
 	Skills               []ContextSkill
 	Tools                []llm.Tool
+	MCPFingerprint       string `json:",omitempty"`
 }
 
 const (

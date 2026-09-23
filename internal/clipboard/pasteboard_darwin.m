@@ -50,4 +50,17 @@ char *pk_clipboard_read_json(void) {
     }
 }
 
+int pk_clipboard_write_text(const char *bytes, size_t length) {
+    @autoreleasepool {
+        if (length > 1024 * 1024 || (!bytes && length != 0)) return 0;
+        NSString *text = [[NSString alloc] initWithBytes:bytes
+                                                 length:length
+                                               encoding:NSUTF8StringEncoding];
+        if (!text) return 0;
+        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+        [pasteboard clearContents];
+        return [pasteboard setString:text forType:NSPasteboardTypeString] ? 1 : 0;
+    }
+}
+
 void pk_clipboard_free(void *pointer) { free(pointer); }

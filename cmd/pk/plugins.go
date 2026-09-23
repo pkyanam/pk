@@ -83,6 +83,20 @@ func updatedRPCPlugins(service pluginconfig.Service) (map[string]any, error) {
 	return payload, nil
 }
 
+func pluginIssueMessages(issues []error) []string {
+	messages := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue != nil {
+			messages = append(messages, issue.Error())
+		}
+	}
+	return messages
+}
+
+func rpcPluginUnavailableMessage(issues []string) string {
+	return "an enabled plugin is unavailable: " + strings.Join(issues, "; ") + ". Build or restore its worker, or disable it with /plugins and start a new session with /new."
+}
+
 // snapshotRPCPluginPaths should be called at foreground session start. Keep the
 // returned paths on the RPC server for that session so later config changes do
 // not silently change its tool schema.

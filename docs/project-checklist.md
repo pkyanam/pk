@@ -39,7 +39,7 @@ Updated 2026-09-23. This checklist consolidates the user's project requests from
 
 ## Research and evidence
 
-- [ ] Add OMP to the comparison research requested in the updated overnight goal; verify the intended public project identity and primary sources before making comparisons.
+- [x] Add OMP to the comparison research requested in the updated overnight goal; identify Oh My Pi as the likely reference while documenting repository/fork ambiguity and pinning requirements in `docs/research/omp.md`.
 
 - [x] Study Unreal, OpenCode V2, Grok Build, Codex, Hermes Agent, Claude Code, and the verified DeepSeek Harness. Source-backed scope and caveats are in `docs/research/overnight-harness-landscape.md` and related research documents.
 - [x] Research structured ask-user and confirmation flows, mouse-aware terminal behavior, long-task controls, and context efficiency; distinguish public source evidence from product claims or nonpublic implementations.
@@ -88,3 +88,10 @@ Update: installed release `f608b9e` includes the managed shell updater, bundled 
 Historical: previous installed checkpoints covered mouse/compact-tool UI, file inputs, ImageGen, extensions, and model-aware identity. The current 45-test UI status refers to source work and is not evidence that `f608b9e` includes its newer steering/status changes. Native drag/drop and some Finder paste paths remain unverified; see earlier checklist entries for exact evidence. The benchmark pilot passed correctness checks but pk used more tokens in most observed phases; this is not a performance claim. The video remains at preflight/plan stage.
 
 Next: investigate the UI freeze first; continue Pi-like extension work and Astra image-generation integration; repeat matched benchmark trials; use Cmux and Cap for the real product demonstration; update this checklist and `docs/overnight-worklog.md` at each checkpoint so a resumed session can continue without reconstructing history.
+
+## Additional requirements — search, subagents, and providers
+
+- [ ] Research https://monid.ai/blog/tinyfish and verify advertised free search access, limits, authentication, and terms against primary sources; implement internet search as a model-invokable primitive with useful sources and bounded results. Do not claim unlimited/free access without evidence.
+- [ ] Implement main-agent-managed subagents. Only the main agent can spawn; enforce no nested spawning in the runtime, not just a prompt. Allow explicit model ID and reasoning effort with gpt-6-luna as the default; expose lifecycle/progress/results/cancellation and resource bounds.
+- [ ] Configure multiple providers, starting with OpenAI-compatible endpoints, including endpoint/auth settings and model discovery through /v1/models. Support capability differences and clear errors; test actual request/response behavior with fixtures and available endpoints.
+- [ ] Surface provider/model selection, subagent activity, and search behavior cleanly in the TUI and bundled pk self-knowledge skill.

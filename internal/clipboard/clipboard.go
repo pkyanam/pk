@@ -11,13 +11,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 const MaxFiles = 8
 const MaxImageBytes = 5 << 20
+const MaxTextBytes = 1 << 20
 
 type Provider interface {
 	Read(context.Context) (Snapshot, error)
+}
+
+type TextWriter interface {
+	WriteText(context.Context, string) error
+}
+
+func ValidateText(text string) error {
+	if !utf8.ValidString(text) {
+		return errors.New("clipboard text must be valid UTF-8")
+	}
+	if len(text) > MaxTextBytes {
+		return fmt.Errorf("clipboard text exceeds the %d byte limit", MaxTextBytes)
+	}
+	return nil
 }
 
 type Snapshot struct {

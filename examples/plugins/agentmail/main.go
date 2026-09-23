@@ -280,12 +280,41 @@ func runAgentMail(ctx context.Context, args ...string) ([]byte, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if stdout.overflow {
+			return nil, errors.New("AgentMail CLI request failed with an oversized error response")
+		}
+		if safe := safeCLIError(stdout.Bytes()); safe != "" {
+			return nil, errors.New(safe)
+		}
 		return nil, fmt.Errorf("AgentMail CLI request failed (exit status unavailable); check `agentmail auth status` and CLI connectivity")
 	}
 	if stdout.overflow {
 		return nil, errors.New("AgentMail response exceeded 4 MiB limit")
 	}
 	return stdout.Bytes(), nil
+}
+
+// safeCLIError extracts only a small, allowlisted diagnostic from the CLI's
+// structured error response. Provider error bodies can include private data.
+func safeCLIError(raw []byte) string {
+	var response struct {
+		Error struct {
+			Code   int    `json:"code"`
+			Reason string `json:"reason"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &response) != nil {
+		return ""
+	}
+	switch response.Error.Code {
+	case 401, 403:
+		return "AgentMail authentication or access failed; check `agentmail auth status`"
+	case 404:
+		if response.Error.Reason == "not_found" {
+			return "AgentMail item not found; re-run `mail_list` for this inbox and pass the exact returned message_id unchanged"
+		}
+	}
+	return ""
 }
 
 type boundedBuffer struct {
