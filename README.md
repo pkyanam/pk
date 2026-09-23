@@ -1,57 +1,62 @@
-# pk
+<div align="center">
+  <h1>pk</h1>
+  <p>Keep coding work moving—from a focused terminal session to a task that runs in the background.</p>
+  <p>
+    <a href="https://github.com/pkyanam/pk/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/pkyanam/pk/actions/workflows/ci.yml/badge.svg"></a>
+    <img alt="Go 1.27+" src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white">
+    <img alt="OpenTUI 0.5.12" src="https://img.shields.io/badge/OpenTUI-0.5.12-6E56CF">
+  </p>
+  <img src="output/imagegen/pk-welcome-dark.png" alt="pk interface design concept" width="720">
+  <p><sub>Design preview · screenshot coming soon</sub></p>
+</div>
 
-`pk` is a small Go coding agent for terminal sessions backed by a durable Go harness. It is an early
-alpha. Install it, enter a project directory, and start an interactive session:
+## Start in a project
 
 ```sh
-go install ./cmd/pk
-cd /path/to/project
+git clone https://github.com/pkyanam/pk.git
+cd pk
+./scripts/install       # requires Go 1.27+ and Bun
 pk login
+cd /path/to/project
 pk
 ```
 
-`pk` uses the current directory as its workspace. Enter a prompt at `pk> `; each line continues the
-same session. Use Ctrl-D or `/exit` to leave. Ctrl-C hard-stops active work and exits, leaving its
-session history available for resume with `pk --session ID`. For a one-shot prompt, use
-`pk -p "Summarize this project"`.
-
-## Install
-
-Use Go 1.27 or newer. To install this checkout into your Go binary directory:
+`pk` opens a native [OpenTUI](https://opentui.com/) coding session. For long work, start a detached
+task in a fresh workspace; it keeps running when you close pk. The TUI can attach and send follow-up
+input, while the CLI can follow saved output.
 
 ```sh
-go install ./cmd/pk
+pk task create -p "Implement the requested change and run the relevant checks."
+pk task list
+pk task attach TASK_ID
 ```
 
-See [Getting started](docs/getting-started.md) for login, credential reuse, session resume, tools, and
-workspace instructions.
+CLI tasks get a fresh workspace under `~/.pk/workspaces`. Choose another with `--workspace DIR`.
+Inspect with `pk task status TASK_ID`, stop with `pk task cancel TASK_ID`, or retry unfinished work
+with `pk task resume TASK_ID`.
 
-## Credentials and privacy
+## Runtime foundation
 
-`pk login` uses the Codex device authorization flow and stores pk's credentials in its own file:
-`~/.pk/auth.json`, or `$PK_HOME/auth.json` when `PK_HOME` is set. The containing directory is
-created with mode `0700`, and the credential file is written with mode `0600`.
+pk builds on [Unreal Agent v0.1.1](https://github.com/unreallabsai/unreal-agent/tree/v0.1.1). Its
+coordinator runs independent tool operations asynchronously, records their progress, and waits for
+events instead of polling. It preserves a stable conversation prefix, loads skill instructions on
+demand, and keeps full shell captures while bounding the output sent back into the conversation.
+Its stable session cache key and response usage fields make provider-reported cache reuse visible;
+they do not promise a cache hit.
 
-Existing Codex CLI credentials are not read by default. `pk run --use-codex ...` explicitly reads
-the existing Codex auth file in read-only mode; pk does not refresh, rewrite, or delete it. `pk logout`
-removes only pk's credential file. `pk status` reports whether pk is logged in and, when it is, the
-account identifier and expiry; it reports an expired login and tells you to reconnect. It does not
-display tokens. pk refreshes its own credentials as needed. Credentials selected with `--use-codex`
-remain read-only and must be refreshed separately with `codex login` if expired.
+## pk adds
 
-Prompts, model responses, tool calls, and results are stored in local durable session history. The
-built-in Bash tool runs commands with the operating-system permissions of the pk process. pk does not
-provide an OS sandbox or restrict that process to the workspace. Review prompts and tools accordingly,
-especially when reusing credentials.
+- An OpenTUI frontend and a Go CLI for conversations, settings, and task control.
+- Detached workers with isolated workspaces and durable status/output, attach, cancel, and resume.
+- Context snapshots that keep workspace instructions, tool schemas, and skill text consistent when
+  a session resumes.
+- Provider-reported cached-input counts in the TUI and usage events.
 
-## Current scope
+The default is `gpt-6-luna` with `medium` reasoning effort. Change defaults with `pk config set model
+MODEL` and `pk config set effort EFFORT`.
 
-The built-in tool set is Bash, ViewImage, and SkillUse. SkillUse discovers skills in `~/.codex/skills`
-and `~/.agents/skills` by default; `-skills-dir DIR` selects one or more custom skill directories. pk
-uses the Unreal Agent runtime, pinned at v0.1.1 in `go.mod`, for session coordination and storage. See
-[the toolbelt notes](docs/toolbelt.md) for which tool ideas are available and which remain proposals.
+**More:** [Getting started](docs/getting-started.md) · [Architecture and cache counters](docs/architecture.md) ·
+[Available tools](docs/toolbelt.md) · [Validation](docs/validation.md) · [Design concepts](docs/design/tui-concepts.md)
 
-This alpha exposes one terminal session at a time. There is no separate session browser or
-cancellation subcommand yet.
-
-Thanks to Unreal Labs for [Unreal Agent](https://github.com/unreallabsai/unreal-agent), distributed under the [MIT License](https://github.com/unreallabsai/unreal-agent/blob/v0.1.1/LICENSE).
+**Safety:** Bash uses the operating-system permissions of pk. A workspace organizes work; it does
+not sandbox the process.
