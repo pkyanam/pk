@@ -423,3 +423,7 @@ gates or imply that every backlog item is complete.
 - Cap short recording confirmed no occlusion, then real Luna/low session in /tmp/pk-demo-fixture.BFypqp fixed the Go inclusive-range bug. Independent tests and README CLI output5 passed.
 - Reviewed original and edited contact sheets plus title/outro frames. Final local video: /Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4 (44s, 1080p30, 552306 bytes). Cap project, source export, and reproduction notes retained alongside it; no upload. This is the initial focused coding demo; broader feature montage/polish remains possible.
 - Installed f6d5783 clean GitHub release 20260923T083731.814932000Z-7fb8926ae1f2-039f1af3 includes session preview allocation improvement.
+
+### 2026-09-23 08:42 UTC — raw clipboard image validation
+- In Preview, selected all pixels of the generated mint PNG and copied with Cmd+C. Cmux Cmd+V produced a `clipboard-2026-09-23-044040-7E440986.png` attachment rather than the Finder source path.
+- Session 7c1a2e81 records ViewImage on that clipboard PNG and a final answer accurately describing the glowing mint rectangle. This verifies the Preview→Cmux→pk raw-image path for this terminal, not every terminal's clipboard protocol. Native drag/drop remains pending.

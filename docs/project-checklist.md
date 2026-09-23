@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `f6d5783`; root reports 97 UI tests and 441 assertions. This includes the bounded session-preview allocation improvement.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2-039f1af3`); root reports 97 UI tests and 441 assertions. This includes the bounded session-preview allocation improvement.
 
 ## Product and implementation
 
@@ -52,7 +52,8 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 - [x] Prepare a friendly, concise README with centered product framing and badge/mockup treatment; the mockup is labeled conceptual, not a real product screenshot.
 - [~] Create image-generated marketing assets after technical validation. The first conceptual brand card is in the public repository at `output/launch/pk-keep-work-moving.png`; see `docs/launch-assets.md`. It is not a screenshot and has not been posted on social media or used in an external campaign. Avoid public open-source/licensing claims until a license is selected.
 - [~] Draft the requested X launch posts for review after technical validation. Local variants, a four-post thread, and demo captions are ready in `docs/launch-copy.md`; awaiting review. Do not publish or post them without explicit authorization.
-- [~] Make the final local launch video in Cmux using Cap: record a real pk flow, edit and inspect the 30–60 second MP4. One candidate was rejected because window occlusion obscured the product; no final capture/edit is ready. See `docs/launch-video-plan.md`; keep it local and do not publish without explicit authorization.
+- [x] Record, edit, and review a focused local coding demo in Cmux using Cap. The final [44-second MP4](/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4) is 1080p30 and 552,306 bytes. The Cap project, source export, and reproduction README are retained beside it; source/edit contact sheets and title/outro frames were reviewed. No upload or publication was made.
+- [~] Consider a broader feature montage as a separate optional follow-up; the focused coding demo is complete. Keep any later cut local unless publication is explicitly requested.
 - [x] Research video production tools and a resource-/storage-conscious approach. `docs/launch-video-plan.md` recommends Cap window capture and FFmpeg edits; Remotion and Motion Canvas were reviewed as higher-overhead choices for this one-off video.
 - [x] Draft an initial README tease that the product is coming soon, then replace it with the concise public-facing README and conceptual design preview (`fd9633c`).
 
@@ -83,13 +84,13 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 
 ## Current handoff
 
-Installed `e9821c4` includes the plugin source form and refreshed welcome flow alongside the previous skills, MCP, searchable/bulk session management, model/tool catalog, task-only subagents, ACP, providers, attachments, ImageGen bridge, updater, steering, and context-policy work. Root reports 97 passing UI tests/441 assertions. The separate `7436784` synthetic session-list allocation benchmark is documented in `docs/performance.md`; it does not claim token savings. Finder path-based image inspection passed in one demo session, while raw-pixel clipboard input and native drag/drop remain unverified. The latest video candidate was rejected for window occlusion; no final video has been recorded or reviewed.
+Installed `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2-039f1af3`) includes the bounded session-preview allocation improvement; root reports 97 passing UI tests/441 assertions. The separate `7436784` synthetic session-list benchmark is documented in `docs/performance.md`; it measures allocation/time, not tokens. Finder path-based image inspection passed in one demo session, while raw-pixel clipboard input and native drag/drop remain unverified. The focused coding demo is reviewed and delivered locally at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional.
 
 Privacy claims remain under review for network destinations, workspace access, rollback behavior, and deletion semantics. Keep them scoped to verified pk/Bun behavior and distinguish provider, remote MCP, skills catalog, and extension traffic. A general promise that pk or external integrations collect no telemetry is not supported.
 
 The user's north-star goal is an exceptionally capable and efficient harness. Current evidence does not show a general performance advantage: the one-repetition matched pilot passed six correctness checks but pk generally used more tokens; a later matched replay pilot showed lower input tokens in that sample alongside more output/response calls and mixed latency. The output-cap probe was a no-op because no calls omitted caps. Continue matched quality, token, latency, and reliability trials; never turn these small results into superiority claims.
 
-The 08:00 EDT, 23 September target is the requested handoff deadline, not evidence that every item can be finished. Finder Cmd+C file then Cmd+V image-path paste with spaces was verified and used by Luna through `ViewImage`; raw clipboard pixels and native drag/drop remain unverified. Ctrl+Y selection copy was verified. The local demo still needs recording/editing. See `docs/overnight-worklog.md` for the latest chronological checkpoint.
+The 08:00 EDT, 23 September target was the requested handoff deadline, not evidence that every item could be finished. Finder Cmd+C file then Cmd+V image-path paste with spaces was verified and used by Luna through `ViewImage`; raw clipboard pixels and native drag/drop remain unverified. Ctrl+Y selection copy was verified. The focused local coding demo is complete; a broader feature montage is optional. See `docs/overnight-worklog.md` for the latest chronological checkpoint.
 
 ## Additional requirements — search, subagents, and providers
 
@@ -100,7 +101,7 @@ The 08:00 EDT, 23 September target is the requested handoff deadline, not eviden
 - [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy and Finder Cmd+C/Cmd+V of a spaced image path are verified; Luna inspected the path with `ViewImage` and completed the demo. Raw clipboard pixels and native GUI drag/drop remain unverified. Keep those limits distinct from the tested file-path route.
 - [ ] Finish the local 30–60 second product demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization.
 
-Latest installed checkpoint: `e9821c4`; root reports 97 passing UI tests/441 assertions. The separate session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. The Finder path-to-`ViewImage` demo passed, but raw image pixels and native drag/drop remain unverified. No final video is ready after the occluded candidate was rejected. Do not reopen or interrupt the user's Cmux workspace.
+Latest installed checkpoint: `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2-039f1af3`); root reports 97 passing UI tests/441 assertions. The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. The Finder path-to-`ViewImage` demo passed, but raw image pixels and native drag/drop remain unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
