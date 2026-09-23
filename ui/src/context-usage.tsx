@@ -1,4 +1,5 @@
 import { useTerminalDimensions } from "@opentui/react"
+import { palette, useThemePalette } from "./theme"
 
 export type ContextCategoryID = "system_prompt" | "tool_schemas" | "tool_calls" | "tool_results" | "messages" | "other_input"
 
@@ -31,13 +32,14 @@ export type ContextUsageSnapshot = {
 }
 
 const categoryInfo: Record<ContextCategoryID, { label: string; color: string }> = {
-  system_prompt: { label: "System prompt", color: "#75b8ff" },
-  tool_schemas: { label: "Tool definitions", color: "#45d3b2" },
-  tool_calls: { label: "Tool calls", color: "#b6e66b" },
-  tool_results: { label: "Tool results", color: "#ffb45e" },
-  messages: { label: "Messages", color: "#d69aff" },
-  other_input: { label: "Other input", color: "#ff7896" },
+  system_prompt: { label: "System prompt", color: "blue" },
+  tool_schemas: { label: "Tool definitions", color: "accent" },
+  tool_calls: { label: "Tool calls", color: "green" },
+  tool_results: { label: "Tool results", color: "amber" },
+  messages: { label: "Messages", color: "purple" },
+  other_input: { label: "Other input", color: "red" },
 }
+function categoryColor(id: ContextCategoryID): string { return palette[categoryInfo[id].color as keyof typeof palette] }
 
 const categoryOrder: ContextCategoryID[] = ["system_prompt", "tool_schemas", "tool_calls", "tool_results", "messages", "other_input"]
 const gridRows = 3
@@ -88,20 +90,21 @@ function orderedCategories(categories: ContextCategory[]): ContextCategory[] {
 }
 
 export function ContextUsage({ snapshot }: { snapshot?: ContextUsageSnapshot | null }) {
+  useThemePalette()
   const { width } = useTerminalDimensions()
   if (snapshot?.pending) {
     return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
-      <text fg="#e5e8eb" content={snapshot.request_ordinal > 0 ? `Context composition · request ${snapshot.request_ordinal}` : "Context composition"} />
-      <text fg="#ffc06d" content="No completed response is recorded for this request. It may still be running or have been interrupted." />
-      <text fg="#b0bac5" content="Latest provider usage · input tokens — · cached tokens — · cache-write tokens — · output tokens —" />
-      <text fg="#a6b3c0" content="Context window capacity · unavailable (no validated limit)" />
+      <text fg={palette.text} content={snapshot.request_ordinal > 0 ? `Context composition · request ${snapshot.request_ordinal}` : "Context composition"} />
+      <text fg={palette.amber} content="No completed response is recorded for this request. It may still be running or have been interrupted." />
+      <text fg={palette.muted} content="Latest provider usage · input tokens — · cached tokens — · cache-write tokens — · output tokens —" />
+      <text fg={palette.blue} content="Context window capacity · unavailable (no validated limit)" />
     </box>
   }
   if (!snapshot?.available) {
     return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
-      <text fg="#e5e8eb" content="Context composition" />
-      <text fg="#b0bac5" content="No saved context snapshot is available for this session." />
-      <text fg="#a6b3c0" content="Usage totals and context composition are separate measurements." />
+      <text fg={palette.text} content="Context composition" />
+      <text fg={palette.muted} content="No saved context snapshot is available for this session." />
+      <text fg={palette.blue} content="Usage totals and context composition are separate measurements." />
     </box>
   }
 
@@ -118,23 +121,23 @@ export function ContextUsage({ snapshot }: { snapshot?: ContextUsageSnapshot | n
   const heading = snapshot.request_ordinal > 0 ? `Context composition · request ${snapshot.request_ordinal}` : "Context composition"
 
   return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
-    <text fg="#e5e8eb" content={heading} />
-    <text fg="#b0bac5" content="Share of request bytes · not token usage" />
-    <text fg="#c3ccd6" content={`Context input · ${snapshot.total_bytes == null ? "—" : `${formatBytes(snapshot.total_bytes)} JSON-value bytes`}`} />
+    <text fg={palette.text} content={heading} />
+    <text fg={palette.muted} content="Share of request bytes · not token usage" />
+    <text fg={palette.text} content={`Context input · ${snapshot.total_bytes == null ? "—" : `${formatBytes(snapshot.total_bytes)} JSON-value bytes`}`} />
     <box id="context-usage-grid" style={{ flexDirection: "column", gap: 1 }}>
       {rows.map((row, rowIndex) => <text key={`row-${rowIndex}`} selectable={false}>
-        {row.map((cell) => <span key={cell.key} fg={cell.id ? categoryInfo[cell.id].color : "#59616b"}>{cell.id ? "■" : "·"} </span>)}
+        {row.map((cell) => <span key={cell.key} fg={cell.id ? categoryColor(cell.id) : palette.dim}>{cell.id ? "■" : "·"} </span>)}
       </text>)}
     </box>
     <box style={{ flexDirection: "column" }}>
       {categories.map((category) => <text key={category.id}>
-        <span fg={categoryInfo[category.id].color}>■ </span>
-        <span fg={categoryInfo[category.id].color}>{compactLegend ? shortCategoryLabel(category.id) : categoryInfo[category.id].label}</span>
-        <span fg="#c3ccd6"> · {formatBytes(category.bytes)} · {percentage(category.bytes, total)} · {compactLegend ? category.items : `${category.items} ${category.items === 1 ? "item" : "items"}`}</span>
+        <span fg={categoryColor(category.id)}>■ </span>
+        <span fg={categoryColor(category.id)}>{compactLegend ? shortCategoryLabel(category.id) : categoryInfo[category.id].label}</span>
+        <span fg={palette.text}> · {formatBytes(category.bytes)} · {percentage(category.bytes, total)} · {compactLegend ? category.items : `${category.items} ${category.items === 1 ? "item" : "items"}`}</span>
       </text>)}
     </box>
-    <text fg="#c3ccd6" content={`Latest provider usage · input tokens ${formatTokens(usage.input_tokens, usage.input_tokens_available)} · cached tokens ${formatTokens(usage.cached_input_tokens, usage.cached_input_tokens_available)} · cache-write tokens ${formatTokens(usage.cache_write_input_tokens, usage.cache_write_input_tokens_available)} · output tokens ${formatTokens(usage.output_tokens, usage.output_tokens_available)}`} />
-    <text fg="#a6b3c0" content={snapshot.context_limit_tokens == null ? "Context window capacity · unavailable (no validated limit)" : `Context window capacity · ${snapshot.context_limit_tokens.toLocaleString()} tokens`} />
+    <text fg={palette.muted} content={`Latest provider usage · input tokens ${formatTokens(usage.input_tokens, usage.input_tokens_available)} · cached tokens ${formatTokens(usage.cached_input_tokens, usage.cached_input_tokens_available)} · cache-write tokens ${formatTokens(usage.cache_write_input_tokens, usage.cache_write_input_tokens_available)} · output tokens ${formatTokens(usage.output_tokens, usage.output_tokens_available)}`} />
+    <text fg={palette.blue} content={snapshot.context_limit_tokens == null ? "Context window capacity · unavailable (no validated limit)" : `Context window capacity · ${snapshot.context_limit_tokens.toLocaleString()} tokens`} />
   </box>
 }
 

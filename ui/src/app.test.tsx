@@ -9,6 +9,7 @@ import type { ServerEvent } from "./protocol"
 import { PkApp, splitTranscriptMarkdownImages, streamProgressStatus, transcriptTimelineShouldUpdate } from "./app"
 import { leadingPathFromPrompt, parsePastedPaths } from "./app"
 import { resolveLocalImageSource } from "./inline-image"
+import { applyTheme, getThemeID, palette } from "./theme"
 import type { PkTransport } from "./transport"
 
 const openRenderers: Array<Awaited<ReturnType<typeof testRender>>> = []
@@ -17,6 +18,7 @@ afterEach(() => {
   for (const item of openRenderers.splice(0)) {
     act(() => item.renderer.destroy())
   }
+  act(() => applyTheme("dark-mint"))
   return destroyTreeSitterClient()
 })
 
@@ -65,6 +67,69 @@ function findDescendants(root: any, predicate: (renderable: any) => boolean, fou
 }
 
 describe("OpenTUI application", () => {
+  test("previews, saves, restores, and resets the selected theme", async () => {
+    applyTheme("dark-mint")
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+
+    act(() => fake.emit({ version: 1, type: "ready", payload: { theme: "light" } }))
+    expect(getThemeID()).toBe("light")
+    expect(palette.bg).toBe("#f4f6f7")
+
+    await act(async () => { await setup.mockInput.typeText("/theme") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes("Color theme") && frame.includes("High Contrast"))
+    await act(async () => setup.mockInput.pressKey("ARROW_DOWN"))
+    await act(async () => setup.mockInput.pressEnter())
+
+    expect(getThemeID()).toBe("high-contrast")
+    expect(palette.bg).toBe("#000000")
+    const save = fake.sent.filter((item) => item.type === "theme_set").at(-1)!
+    expect(save.payload).toEqual({ theme: "high-contrast" })
+    act(() => fake.emit({ version: 1, id: save.id, type: "theme_set", payload: { theme: "high-contrast" } }))
+    await setup.waitForFrame((frame) => frame.includes("High Contrast theme saved"))
+
+    const menuFrame = setup.captureCharFrame()
+    const darkMintRow = menuFrame.split("\n").findIndex((line) => line.includes("Dark Mint"))
+    expect(darkMintRow).toBeGreaterThan(0)
+    await act(async () => setup.mockMouse.click(menuFrame.split("\n")[darkMintRow]!.indexOf("Dark Mint"), darkMintRow))
+    expect(getThemeID()).toBe("dark-mint")
+    const reset = fake.sent.filter((item) => item.type === "theme_set").at(-1)!
+    expect(reset.payload).toEqual({ theme: "dark-mint" })
+    act(() => fake.emit({ version: 1, id: reset.id, type: "theme_set", payload: { theme: "dark-mint" } }))
+  })
+
+  test("restores the confirmed theme when a preview cannot be saved", async () => {
+    applyTheme("dark-mint")
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { theme: "dark-mint" } }))
+    await act(async () => { await setup.mockInput.typeText("/theme light") })
+    act(() => setup.mockInput.pressEnter())
+    expect(getThemeID()).toBe("light")
+    const request = fake.sent.find((item) => item.type === "theme_set")!
+    act(() => fake.emit({ version: 1, id: request.id, type: "error", payload: { request_type: "theme_set", message: "save failed" } }))
+    expect(getThemeID()).toBe("dark-mint")
+    await setup.waitForFrame((frame) => frame.includes("restored Dark Mint"))
+  })
+
+  test("keeps theme choices and reset guidance visible on a narrow terminal", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 50, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/theme") })
+    act(() => setup.mockInput.pressEnter())
+    const frame = await setup.waitForFrame((value) => value.includes("Color theme") && value.includes("Dark Mint"))
+    expect(frame).toContain("High Contrast")
+    expect(frame).toContain("resets the default")
+    expect(frame).toContain("Esc close")
+  })
+
   test("stream status becomes explicitly stale after silence and resumes on a fresh update", () => {
     const started = 1_000
     expect(streamProgressStatus({ label: "Model is thinking", updatedAt: started }, started + 14_999)).toBe("Model is thinking")
@@ -633,12 +698,16 @@ describe("OpenTUI application", () => {
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("A quiet workspace"))
     act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "old-session" } }))
+    act(() => fake.emit({ version: 1, type: "usage", payload: { input_tokens: 888, output_tokens: 44, cached_input_tokens: 100 } }))
+    await setup.waitForFrame((frame) => frame.includes("in 888") && frame.includes("out 44"))
     await act(async () => { await setup.mockInput.typeText("/new") })
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     const request = fake.sent.find((item) => item.type === "new")!
     expect(request).toBeDefined()
     expect(setup.captureCharFrame()).not.toContain("A quiet workspace")
+    expect(setup.captureCharFrame()).not.toContain("in 888")
+    expect(setup.captureCharFrame()).toContain("latest tokens —")
     act(() => fake.emit({ version: 1, id: request.id, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "" } }))
     const frame = await setup.waitForFrame((value) => value.includes("A quiet workspace"))
     expect(frame).toContain("A quiet workspace")

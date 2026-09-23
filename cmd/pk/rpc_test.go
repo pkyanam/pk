@@ -971,6 +971,9 @@ func TestConfigCommandPersistsSelectedDefaults(t *testing.T) {
 	if code := runConfigCommand([]string{"set", "image-driver", "gpt-6-astra"}, &out, &errOut); code != 0 {
 		t.Fatalf("set image driver exit=%d: %s", code, errOut.String())
 	}
+	if code := runConfigCommand([]string{"set", "theme", "HIGH-CONTRAST"}, &out, &errOut); code != 0 {
+		t.Fatalf("set theme exit=%d: %s", code, errOut.String())
+	}
 	options, _, _, err := parseRunArgs([]string{"-p", "hello", "--workspace", t.TempDir()}, &errOut)
 	if err != nil {
 		t.Fatal(err)
@@ -982,13 +985,20 @@ func TestConfigCommandPersistsSelectedDefaults(t *testing.T) {
 	if err != nil || options.CompactCapturedOutput {
 		t.Fatalf("explicit full policy options=%+v err=%v", options, err)
 	}
-	if code := runConfigCommand([]string{"show"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "context_policy = compact") || !strings.Contains(out.String(), "image_driver = gpt-6-astra") {
+	if code := runConfigCommand([]string{"show"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "context_policy = compact") || !strings.Contains(out.String(), "theme = high-contrast") || !strings.Contains(out.String(), "image_driver = gpt-6-astra") {
 		t.Fatalf("show context policy exit=%d output=%q error=%q", code, out.String(), errOut.String())
+	}
+	if code := runConfigCommand([]string{"set", "theme", "neon"}, &out, &errOut); code != 2 {
+		t.Fatalf("invalid theme exit=%d: %s", code, errOut.String())
+	}
+	cfg, err := config.Load(filepath.Join(pkHome(), "config.json"))
+	if err != nil || cfg.Theme != config.ThemeHighContrast || cfg.Model != "gpt-6-astra" || cfg.Effort != "high" || cfg.ContextPolicy != config.ContextPolicyCompact {
+		t.Fatalf("config after theme selection=%+v err=%v", cfg, err)
 	}
 	if code := runConfigCommand([]string{"set", "image-driver", "off"}, &out, &errOut); code != 0 {
 		t.Fatalf("disable image driver exit=%d: %s", code, errOut.String())
 	}
-	cfg, err := config.Load(filepath.Join(pkHome(), "config.json"))
+	cfg, err = config.Load(filepath.Join(pkHome(), "config.json"))
 	if err != nil || cfg.ImageGenDriver != "" {
 		t.Fatalf("disabled image driver config=%+v err=%v", cfg, err)
 	}

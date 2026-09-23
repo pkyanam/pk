@@ -1,5 +1,6 @@
 import { useKeyboard, usePaste } from "@opentui/react"
 import { useEffect, useRef } from "react"
+import { palette } from "./theme"
 
 export type SecretInputProps = {
   focused: boolean
@@ -48,8 +49,8 @@ export function SecretInput({
   onChange,
   maxLength = DEFAULT_MAX_BYTES,
   placeholder = "Paste secret · masked",
-  color = "#e5e8eb",
-  mutedColor = "#858e96",
+  color = palette.text,
+  mutedColor = palette.muted,
   id = "secret-input",
 }: SecretInputProps) {
   const byteLimit = Math.min(DEFAULT_MAX_BYTES, Math.max(0, Math.floor(maxLength)))

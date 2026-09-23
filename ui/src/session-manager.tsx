@@ -1,6 +1,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import type { ServerEvent } from "./protocol"
+import { palette as colors } from "./theme"
 
 export type ManagedSession = {
   id: string
@@ -35,10 +36,6 @@ export type SessionManagerProps = {
   onLoad: (session: ManagedSession) => void
 }
 
-const colors = {
-  panel: "#181b1e", raised: "#202428", line: "#2b3035", text: "#e5e8eb",
-  muted: "#858e96", dim: "#5d666e", accent: "#8ab4a1", amber: "#d3ac72", red: "#d88787",
-}
 const listLimit = 500
 const maxQueryBytes = 512
 

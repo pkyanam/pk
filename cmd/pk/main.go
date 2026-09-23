@@ -638,7 +638,7 @@ Start work:
 
 Setup:
   pk login | logout | status    manage ChatGPT login
-  pk config [show|set ...]      view or change model, effort, context policy, image driver, context budget
+  pk config [show|set ...]      view or change model, effort, context policy, theme, image driver, context budget
   pk provider list|add|use ...  configure and select an OpenAI-compatible provider
 
 Tools and integrations:

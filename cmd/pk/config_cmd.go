@@ -26,11 +26,11 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 		if imageDriver == "" {
 			imageDriver = "off"
 		}
-		fmt.Fprintf(out, "model = %s\neffort = %s\ncontext_policy = %s\nimage_driver = %s\ncontext_unknown_input_budget_tokens = %d\ncontext_output_reserve_tokens = %d\ncontext_safety_margin_tokens = %d\nhistory_compaction = %t\nhistory_compaction_trigger_ratio = %.2f\nhistory_compaction_target_ratio = %.2f\nfile = %s\n", cfg.Model, cfg.Effort, cfg.ContextPolicy, imageDriver, *cfg.ContextBudget.UnknownInputBudgetTokens, *cfg.ContextBudget.OutputReserveTokens, *cfg.ContextBudget.SafetyMarginTokens, *cfg.HistoryCompaction.Enabled, *cfg.HistoryCompaction.TriggerRatio, *cfg.HistoryCompaction.TargetRatio, path)
+		fmt.Fprintf(out, "model = %s\neffort = %s\ncontext_policy = %s\ntheme = %s\nimage_driver = %s\ncontext_unknown_input_budget_tokens = %d\ncontext_output_reserve_tokens = %d\ncontext_safety_margin_tokens = %d\nhistory_compaction = %t\nhistory_compaction_trigger_ratio = %.2f\nhistory_compaction_target_ratio = %.2f\nfile = %s\n", cfg.Model, cfg.Effort, cfg.ContextPolicy, cfg.Theme, imageDriver, *cfg.ContextBudget.UnknownInputBudgetTokens, *cfg.ContextBudget.OutputReserveTokens, *cfg.ContextBudget.SafetyMarginTokens, *cfg.HistoryCompaction.Enabled, *cfg.HistoryCompaction.TriggerRatio, *cfg.HistoryCompaction.TargetRatio, path)
 		return 0
 	}
 	if len(args) != 3 || args[0] != "set" {
-		fmt.Fprintln(errOut, "usage: pk config [show | set model|effort|context-policy|image-driver VALUE | budget show | budget set --provider ID --model ID [--context N] [--input N] [--output N] [--reserve N] [--margin N] [--unknown-input N]]")
+		fmt.Fprintln(errOut, "usage: pk config [show | set model|effort|context-policy|theme|image-driver VALUE | budget show | budget set --provider ID --model ID [--context N] [--input N] [--output N] [--reserve N] [--margin N] [--unknown-input N]]")
 		return 2
 	}
 	cfg, err := config.Load(path)
@@ -51,6 +51,10 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "pk config: unsupported context policy %q (use full or compact)\n", value)
 		return 2
 	}
+	if args[1] == "theme" && !config.ValidTheme(value) {
+		fmt.Fprintf(errOut, "pk config: unsupported theme %q (use %s, %s, or %s)\n", value, config.ThemeDarkMint, config.ThemeLight, config.ThemeHighContrast)
+		return 2
+	}
 	if args[1] == "image-driver" && !strings.EqualFold(value, "off") && !config.ValidImageGenDriver(value) {
 		fmt.Fprintf(errOut, "pk config: invalid image driver %q\n", value)
 		return 2
@@ -58,7 +62,7 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 	if args[1] == "effort" {
 		value = strings.ToLower(value)
 	}
-	if args[1] == "context-policy" {
+	if args[1] == "context-policy" || args[1] == "theme" {
 		value = strings.ToLower(value)
 	}
 	switch args[1] {
@@ -68,13 +72,15 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 		cfg.Effort = value
 	case "context-policy":
 		cfg.ContextPolicy = value
+	case "theme":
+		cfg.Theme = value
 	case "image-driver":
 		if strings.EqualFold(value, "off") {
 			value = ""
 		}
 		cfg.ImageGenDriver = value
 	default:
-		fmt.Fprintf(errOut, "pk config: unknown key %q (use model, effort, context-policy, or image-driver)\n", args[1])
+		fmt.Fprintf(errOut, "pk config: unknown key %q (use model, effort, context-policy, theme, or image-driver)\n", args[1])
 		return 2
 	}
 	if err := config.Save(path, cfg); err != nil {

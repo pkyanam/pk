@@ -1,6 +1,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import type { ServerEvent } from "./protocol"
+import { palette as colors } from "./theme"
 
 export type MCPServer = {
   id: string
@@ -27,7 +28,6 @@ type AuthMode = "anonymous" | "oauth" | "bearer_env" | "header_env" | "bearer_se
 type RequestKind = "list" | "add" | "remove" | "login" | "logout"
 type Pending = { kind: RequestKind; id?: string; preservedNotice?: string }
 
-const colors = { panel: "#181b1e", raised: "#202428", line: "#2b3035", text: "#e5e8eb", muted: "#858e96", dim: "#5d666e", accent: "#8ab4a1", amber: "#d3ac72", red: "#d88787" }
 const authModes: AuthMode[] = ["anonymous", "oauth", "bearer_env", "header_env", "bearer_secret", "header_secret"]
 const maxField = 1024
 

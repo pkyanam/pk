@@ -4,6 +4,7 @@ import { open, realpath } from "node:fs/promises"
 import path from "node:path"
 import { useEffect, useRef, useState } from "react"
 import { fg, imageInfo, link, NativeImage, StyledText, type ImageRenderProtocol, underline } from "@opentui/core"
+import { palette, useThemePalette } from "./theme"
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024
 const MAX_IMAGE_DIMENSION = 8192
@@ -199,6 +200,7 @@ type PreviewLease = { image: NativeImage | null; releasePixels: (() => void) | n
 
 /** Native OpenTUI image preview. Its ImageRenderable owns load cancellation and disposal. */
 export function InlineImage({ source, workspace, alt, width, height, protocol, preview = true }: InlineImageProps) {
+  useThemePalette()
   const [localPath, setLocalPath] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<NativeImage | null>(null)
   const [sourceSize, setSourceSize] = useState<{ width: number; height: number } | null>(null)
@@ -272,15 +274,15 @@ export function InlineImage({ source, workspace, alt, width, height, protocol, p
   if (!localPath) return <text>{failed ? `Image preview unavailable · ${safeAlt(alt)}` : "Loading image preview…"}</text>
   const filename = safeAlt(path.basename(localPath)).slice(0, 64)
   const fileURL = pathToFileURL(localPath).href
-  const fileLink = <text style={{ height: 1, flexShrink: 0 }} content={new StyledText([link(fileURL)(underline(fg("#858e96")("Open original")))])} />
-  const caption = <text style={{ height: 1, flexShrink: 0 }} fg="#8ab4a1" content={`Preview · ${filename}`} />
+  const fileLink = <text style={{ height: 1, flexShrink: 0 }} content={new StyledText([link(fileURL)(underline(fg(palette.muted)("Open original")))])} />
+  const caption = <text style={{ height: 1, flexShrink: 0 }} fg={palette.accent} content={`Preview · ${filename}`} />
   if (!preview) return <box style={{ flexDirection: "row", gap: 1, width: "auto", flexShrink: 0 }}>
-    <text style={{ height: 1, flexShrink: 0 }} fg="#8ab4a1" content={`Image · ${filename}`} />
+    <text style={{ height: 1, flexShrink: 0 }} fg={palette.accent} content={`Image · ${filename}`} />
     {fileLink}
   </box>
   const frameSize = fittedPreviewSize(sourceSize?.width ?? 1, sourceSize?.height ?? 1, previewWidth, previewHeight)
   if (previewSkipped || failed || loadError || !previewImage) return <box flexDirection="column" width="auto">
-    <text fg="#8ab4a1">{previewSkipped ? `Preview unavailable · ${filename}` : failed || loadError ? `Preview unavailable · ${filename}` : "Loading image preview…"}</text>
+    <text fg={palette.accent}>{previewSkipped ? `Preview unavailable · ${filename}` : failed || loadError ? `Preview unavailable · ${filename}` : "Loading image preview…"}</text>
     {fileLink}
   </box>
   return <box style={{ flexDirection: "column", width: "auto", alignItems: "flex-start", marginTop: 1, marginBottom: 1, flexShrink: 0 }}>

@@ -17,6 +17,8 @@ export const WORDMARK_FRAME_MS = 1000 / 60
 
 const MINT_PEAK = "#d0ffe9"
 const METAL_GLOW = "#f1fff8"
+const DARK_PEAK = "#0b4734"
+const DARK_GLOW = "#123b2f"
 const SWEEP_COLUMNS = Math.max(...PK_WORDMARK_LINES.map((line) => line.length))
 
 export function reducedMotionEnabled(value = process.env.PK_REDUCED_MOTION): boolean {
@@ -39,11 +41,11 @@ function blend(base: [number, number, number], glow: [number, number, number], a
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
 }
 
-export function wordmarkColorAt(accent: string, elapsedMs: number, column: number, row = 0): string {
+export function wordmarkColorAt(accent: string, elapsedMs: number, column: number, row = 0, lightSurface = false): string {
   const base = parseHexColor(accent)
   if (!base) return accent
-  const mint = parseHexColor(MINT_PEAK)!
-  const metal = parseHexColor(METAL_GLOW)!
+  const mint = parseHexColor(lightSurface ? DARK_PEAK : MINT_PEAK)!
+  const metal = parseHexColor(lightSurface ? DARK_GLOW : METAL_GLOW)!
   const phase = (((elapsedMs % WORDMARK_LOOP_MS) + WORDMARK_LOOP_MS) % WORDMARK_LOOP_MS) / WORDMARK_LOOP_MS * Math.PI * 2
   const waveCenter = wordmarkSweepPosition(elapsedMs) + Math.sin(phase + row * 0.78) * 0.6
   const distance = Math.abs(column - waveCenter)
@@ -55,7 +57,7 @@ export function wordmarkColorAt(accent: string, elapsedMs: number, column: numbe
   return blend(tinted, metal, metalAmount)
 }
 
-export function Wordmark({ color = "#8ab4a1", reducedMotion }: { color?: string; reducedMotion?: boolean }) {
+export function Wordmark({ color = "#8ab4a1", reducedMotion, lightSurface = false }: { color?: string; reducedMotion?: boolean; lightSurface?: boolean }) {
   const renderer = useRenderer()
   const noMotion = reducedMotion ?? reducedMotionEnabled()
   const [elapsed, setElapsed] = useState(0)
@@ -87,7 +89,7 @@ export function Wordmark({ color = "#8ab4a1", reducedMotion }: { color?: string;
 
   return <box id="pk-wordmark" style={{ flexDirection: "column" }}>
     {PK_WORDMARK_LINES.map((line, row) => <text key={row} selectable={false}>
-      {[...line].map((character, column) => <span key={column} fg={noMotion ? color : wordmarkColorAt(color, elapsed, column, row)}>{character}</span>)}
+      {[...line].map((character, column) => <span key={column} fg={noMotion ? color : wordmarkColorAt(color, elapsed, column, row, lightSurface)}>{character}</span>)}
     </text>)}
   </box>
 }

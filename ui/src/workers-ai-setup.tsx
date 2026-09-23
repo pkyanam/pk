@@ -1,11 +1,7 @@
 import { useKeyboard, usePaste, useRenderer } from "@opentui/react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { SecretInput } from "./secret-input"
-
-const colors = {
-  panel: "#181b1e", raised: "#202428", line: "#2b3035", text: "#e5e8eb",
-  muted: "#858e96", dim: "#5d666e", accent: "#8ab4a1", amber: "#d3ac72", red: "#d88787",
-}
+import { palette as colors } from "./theme"
 
 export type WorkersAISetupProps = {
   open: boolean

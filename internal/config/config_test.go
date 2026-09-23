@@ -70,6 +70,34 @@ func TestContextPolicyValidationAndNormalization(t *testing.T) {
 	}
 }
 
+func TestThemeDefaultsValidationAndRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	got, err := Load(path)
+	if err != nil || got.Theme != DefaultTheme {
+		t.Fatalf("default theme=%q err=%v", got.Theme, err)
+	}
+	for _, theme := range []string{ThemeDarkMint, ThemeLight, ThemeHighContrast} {
+		cfg := got
+		cfg.Theme = theme
+		if err := Save(path, cfg); err != nil {
+			t.Fatalf("save theme %q: %v", theme, err)
+		}
+		loaded, err := Load(path)
+		if err != nil || loaded.Theme != theme {
+			t.Fatalf("round-trip theme=%q err=%v want=%q", loaded.Theme, err, theme)
+		}
+	}
+	if err := Save(path, Config{Theme: "neon"}); err == nil {
+		t.Fatal("unsupported theme was saved")
+	}
+	if err := os.WriteFile(path, []byte(`{"theme":"neon"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("unsupported theme was loaded")
+	}
+}
+
 func TestImageGenDriverOptInRoundTripAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	got, err := Load(path)

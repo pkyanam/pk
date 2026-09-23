@@ -900,3 +900,13 @@ User supplied the official GLM-5.3-Flash model page with a 1,310,720-token conte
 - Downloaded the GitHub macOS archive, verified its SHA-256 and bundled native source/binary provenance, installed into `/tmp/pk-v0114-verify`, and launched the installed CLI in a 120×36 PTY (composer present, clean exit). Its actual RPC restored one image card from a private copy of the user's existing saved image session, with no model call.
 - macOS archive SHA-256: `a182304a359b4d1480550d0d39a22659e319f8877c6e9dcc596d6f5b9794a24c`; Linux: `017163665dbd790c8d90406a61108ae1a0740d2d2fb4df30abb03bbfffae582a`.
 - Published https://github.com/pkyanam/pk/releases/tag/v0.1.14. User installation and running sessions were not replaced; update remains user-triggered with `pk update`.
+
+
+### Theme completion and branch consolidation
+
+- Finished the theme implementation after the earlier pk task ended at research: `/theme` offers Dark Mint, Light, and High Contrast with immediate apply/save, keyboard/mouse selection, reset, persisted configuration, and visible save-error rollback. The palette reaches Markdown, tool rows, menus, usage, image captions, and the light-surface wordmark. `pk config set theme` provides a scripting path.
+- Fixed stale latest input/output/cache/throughput state when starting or switching sessions. The existing session/context totals reset separately.
+- Confirmed ImageGen is independent of the chat provider and delegates to the separately authenticated Codex CLI; added an external-provider catalog regression without a paid model request.
+- Fetched/pruned origin and audited all six stale worktrees. Every detached/branch commit was already an ancestor of main. The two dirty benchmark snapshots contained only identical or superseded main files, confirmed by a second review. Preserved their patches, changed/untracked files, and source commit IDs under `~/.pk/recovery/branch-consolidation-20260923-183915` before removal. Removed the merged `fix/file-tools-followup` branch and stale worktrees; local and remote now have only main. No history rewrite.
+- Kept the user’s untracked `generated_images/` content untouched and outside the release commit.
+- Final local checks: full Go tests and vet, RPC/config race tests, UI typecheck/build, and 213 UI tests passed. Theme tests cover keyboard selection, mouse reset, ready restore, save failure, 50×24 layout, and the new-session token reset.

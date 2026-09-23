@@ -84,6 +84,7 @@ type rpcServer struct {
 	providerReasoningEnabled   bool
 	session                    string
 	providerID                 string
+	theme                      string
 	providerModelsRequestID    string
 	providerModelsCancel       context.CancelFunc
 	pendingProviderModels      *providerModelsRequest
@@ -532,7 +533,7 @@ type turnDone struct {
 }
 
 func rpcCapabilities(steeringEnabled bool) []string {
-	capabilities := []string{"attach", "cancel", "detach", "set_model"}
+	capabilities := []string{"attach", "cancel", "detach", "set_model", "theme_set"}
 	if steeringEnabled {
 		capabilities = append(capabilities, "steer")
 	}
@@ -709,8 +710,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		s.started = true
+		s.theme = cfg.Theme
 		capabilities := rpcCapabilities(steeringEnabled)
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": s.providerReasoningEnabled, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "theme": cfg.Theme, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": s.providerReasoningEnabled, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
@@ -1373,7 +1375,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		imageGenDriver := s.opts.ImageGenFingerprint
-		steeringEnabled, providerID := s.steeringEnabled, s.providerID
+		steeringEnabled, providerID, theme := s.steeringEnabled, s.providerID, s.theme
 		providerReasoningEnabled := s.providerReasoningEnabled
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
@@ -1381,7 +1383,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "attached": true, "provider_reasoning_enabled": providerReasoningEnabled, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "theme": theme, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "attached": true, "provider_reasoning_enabled": providerReasoningEnabled, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "new":
 		s.mu.Lock()
 		active, sessionID := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive, s.session
@@ -1408,13 +1410,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.opts.SessionID = ""
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
+		s.theme = cfg.Theme
 		s.opts.ImageGenFingerprint = cfg.ImageGenDriver
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		imageGenDriver := s.opts.ImageGenFingerprint
-		steeringEnabled, providerID := s.steeringEnabled, s.providerID
+		steeringEnabled, providerID, theme := s.steeringEnabled, s.providerID, s.theme
 		providerReasoningEnabled := s.providerReasoningEnabled
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": providerReasoningEnabled, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "theme": theme, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": providerReasoningEnabled, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "history_before":
 		var request struct {
 			SessionID      string `json:"session_id"`
@@ -2473,6 +2476,26 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			s.mu.Unlock()
 		}
 		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID})
+	case "theme_set":
+		theme := strings.ToLower(strings.TrimSpace(get("theme")))
+		if !config.ValidTheme(theme) {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "unsupported theme (use dark-mint, light, or high-contrast)", "recoverable": true})
+			return
+		}
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not load pk defaults: " + err.Error(), "recoverable": true})
+			return
+		}
+		cfg.Theme = theme
+		if err := config.Save(s.cfgPath, cfg); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save theme: " + err.Error(), "recoverable": true})
+			return
+		}
+		s.mu.Lock()
+		s.theme = theme
+		s.mu.Unlock()
+		_ = s.emit(msg.ID, "theme_set", map[string]any{"theme": theme})
 	case "shutdown":
 		s.quit = true
 		_ = s.emit(msg.ID, "shutdown", map[string]any{"session_id": s.session})

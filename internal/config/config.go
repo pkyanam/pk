@@ -15,6 +15,10 @@ const (
 	DefaultModel                             = "gpt-6-luna"
 	DefaultEffort                            = "medium"
 	DefaultImageGenDriver                    = "gpt-6-astra"
+	ThemeDarkMint                            = "dark-mint"
+	ThemeLight                               = "light"
+	ThemeHighContrast                        = "high-contrast"
+	DefaultTheme                             = ThemeDarkMint
 	ContextPolicyFull                        = "full"
 	ContextPolicyCompact                     = "compact"
 	DefaultUnknownInputBudgetTokens    int64 = 128_000
@@ -36,6 +40,7 @@ type Config struct {
 	ImageGenDriver    string                  `json:"imagegen_driver,omitempty"`
 	ContextBudget     ContextBudgetConfig     `json:"context_budget,omitempty"`
 	HistoryCompaction HistoryCompactionConfig `json:"history_compaction,omitempty"`
+	Theme             string                  `json:"theme,omitempty"`
 }
 
 type HistoryCompactionConfig struct {
@@ -67,7 +72,7 @@ type ContextBudgetOverride struct {
 }
 
 func Defaults() Config {
-	return Config{Model: DefaultModel, Effort: DefaultEffort, ContextPolicy: ContextPolicyFull, ContextBudget: DefaultContextBudgetConfig(), HistoryCompaction: DefaultHistoryCompactionConfig()}
+	return Config{Model: DefaultModel, Effort: DefaultEffort, ContextPolicy: ContextPolicyFull, Theme: DefaultTheme, ContextBudget: DefaultContextBudgetConfig(), HistoryCompaction: DefaultHistoryCompactionConfig()}
 }
 
 func DefaultContextBudgetConfig() ContextBudgetConfig {
@@ -202,6 +207,16 @@ func ValidContextPolicy(policy string) bool {
 		return false
 	}
 }
+
+func ValidTheme(theme string) bool {
+	switch strings.ToLower(strings.TrimSpace(theme)) {
+	case ThemeDarkMint, ThemeLight, ThemeHighContrast:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c Config) Normalized() Config {
 	if strings.TrimSpace(c.Model) == "" {
 		c.Model = DefaultModel
@@ -217,6 +232,11 @@ func (c Config) Normalized() Config {
 		c.ContextPolicy = strings.ToLower(strings.TrimSpace(c.ContextPolicy))
 	}
 	c.ImageGenDriver = strings.TrimSpace(c.ImageGenDriver)
+	if strings.TrimSpace(c.Theme) == "" {
+		c.Theme = DefaultTheme
+	} else {
+		c.Theme = strings.ToLower(strings.TrimSpace(c.Theme))
+	}
 	c.ContextBudget = c.ContextBudget.Normalized()
 	c.HistoryCompaction = c.HistoryCompaction.Normalized()
 	return c
@@ -240,6 +260,9 @@ func Load(path string) (Config, error) {
 	if !ValidImageGenDriver(c.ImageGenDriver) {
 		return Config{}, fmt.Errorf("invalid imagegen_driver %q", c.ImageGenDriver)
 	}
+	if !ValidTheme(c.Theme) {
+		return Config{}, fmt.Errorf("invalid theme %q (use %s, %s, or %s)", c.Theme, ThemeDarkMint, ThemeLight, ThemeHighContrast)
+	}
 	if err := c.ContextBudget.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -255,6 +278,9 @@ func Save(path string, c Config) error {
 	}
 	if !ValidImageGenDriver(c.ImageGenDriver) {
 		return fmt.Errorf("invalid imagegen_driver %q", c.ImageGenDriver)
+	}
+	if !ValidTheme(c.Theme) {
+		return fmt.Errorf("invalid theme %q (use %s, %s, or %s)", c.Theme, ThemeDarkMint, ThemeLight, ThemeHighContrast)
 	}
 	if err := c.ContextBudget.Validate(); err != nil {
 		return err

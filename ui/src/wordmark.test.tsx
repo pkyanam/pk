@@ -65,4 +65,12 @@ describe("Wordmark", () => {
     expect(WORDMARK_FRAME_MS).toBeGreaterThanOrEqual(16)
     expect(WORDMARK_FRAME_MS).toBeLessThan(17)
   })
+
+  test("uses a darker shimmer on light surfaces", () => {
+    const base = "#167653"
+    const darkSurface = wordmarkColorAt(base, 1100, 8)
+    const lightSurface = wordmarkColorAt(base, 1100, 8, 0, true)
+    expect(lightSurface).not.toBe(darkSurface)
+    expect(lightSurface.toLowerCase()).not.toBe("#f1fff8")
+  })
 })

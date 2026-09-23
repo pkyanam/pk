@@ -73,6 +73,12 @@ needed.
 See [model providers](providers.md) for supported protocols, credential storage, and capability
 limits.
 
+## Appearance
+
+Use `/theme` to preview Dark Mint, Light, or High Contrast with the keyboard or mouse. Selecting a preset applies and saves it immediately. Reset returns to Dark Mint. The selected palette applies to chat, Markdown, tools, menus, and status indicators without starting a new conversation, and persists across launches. Terminal font family and size remain controlled by your terminal application.
+
+For scripts or agents, use `pk config set theme light` (also accepts `dark-mint` and `high-contrast`); this takes effect on the next launch.
+
 ## Choose defaults
 
 The initial defaults are `gpt-6-luna` and `medium` reasoning effort. Inspect or change them with:
@@ -248,7 +254,7 @@ separate from pk's chat model; it is off by default. In the TUI, use `/image` to
 it, then start a new session for the change to apply. The default driver when enabled is
 `gpt-6-astra`. From a shell, `pk config set image-driver gpt-6-astra` enables it persistently and
 `pk config set image-driver off` disables it. One-shot `--image-driver MODEL` overrides remain
-available. Image generation uses the Codex CLI and its existing ChatGPT authentication.
+available. Image generation uses the Codex CLI and its existing ChatGPT authentication, independently of the chat provider. A tool-capable chat model on Workers AI or another provider can invoke it without changing models. Codex CLI must be installed and signed in; pk’s own login is not a substitute for the worker’s Codex login.
 
 Use `/skills` to browse available skills and insert one into the prompt. Use `/plugins` to list
 installed plugins or discover a source. To add one, open the plugin source prompt and enter a

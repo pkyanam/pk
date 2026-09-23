@@ -12,6 +12,7 @@ import { SecretInput } from "./secret-input"
 import { ContextUsage, type ContextUsageSnapshot } from "./context-usage"
 import { WorkersAISetup, type SetupKey } from "./workers-ai-setup"
 import { InlineImage, isLocalImageReference } from "./inline-image"
+import { applyTheme, getThemeID, isThemeID, palette, themeDefinitions, useThemePalette, type ThemeID } from "./theme"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type HistoryAttachment = { name: string; kind: string; contentType?: string; truncated?: boolean; pagesExtracted?: number; pagesTotal?: number }
@@ -33,7 +34,7 @@ type StreamProgress = { outerId: string; requestId: string; label: string; updat
 type ProviderReasoning = { outerId: string; requestId: string; attempt: number; text: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; taskID?: string; dismissed?: boolean; answerRequestID?: string; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "plugin_commands" | "history" | "usage" | "compact" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "theme" | "plugin_commands" | "history" | "usage" | "compact" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type CompactionUsage = {
   attempts: number
@@ -237,6 +238,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/provider", description: "Connect a named provider, inspect models, or select one for a new session", action: "provider" },
   { name: "/providers", description: "Open the provider connection and setup menu", action: "provider" },
   { name: "/image", description: "Opt in to ImageGen for new sessions · disabled by default", action: "image" },
+  { name: "/theme", description: "Choose a color theme · previews immediately and saves your choice", action: "theme" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
   { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
   { name: "/reload", description: "Restart pk and resume this session", action: "reload" },
@@ -253,26 +255,29 @@ const slashCommands: SlashCommand[] = [
   { name: "/help", description: "Show keyboard shortcuts", action: "help" },
   { name: "/exit", description: "Close pk", action: "exit" },
 ]
-const palette = {
-  bg: "#111315", panel: "#181b1e", raised: "#202428", line: "#2b3035",
-  text: "#e5e8eb", muted: "#858e96", dim: "#5d666e", accent: "#8ab4a1",
-  blue: "#9db8d8", amber: "#d3ac72", red: "#d88787", green: "#8ab4a1",
+const markdownStyles = new Map<ThemeID, SyntaxStyle>()
+function markdownStyleFor(theme: ThemeID): SyntaxStyle {
+  const cached = markdownStyles.get(theme)
+  if (cached) return cached
+  const colors = themeDefinitions[theme].palette
+  const style = SyntaxStyle.fromStyles({
+    default: { fg: colors.text },
+    "markup.heading": { fg: colors.text, bold: true },
+    "markup.heading.1": { fg: colors.text, bold: true },
+    "markup.list": { fg: colors.accent },
+    "markup.link": { fg: colors.blue, underline: true },
+    "markup.link.label": { fg: colors.blue, underline: true },
+    "markup.link.url": { fg: colors.blue, underline: true },
+    "markup.raw": { fg: colors.accent },
+    "markup.raw.block": { fg: colors.accent },
+    "markup.quote": { fg: colors.muted, italic: true },
+    "markup.bold": { fg: colors.text, bold: true },
+    "markup.strong": { fg: colors.text, bold: true },
+    "markup.italic": { fg: colors.text, italic: true },
+  })
+  markdownStyles.set(theme, style)
+  return style
 }
-const markdownStyle = SyntaxStyle.fromStyles({
-  default: { fg: palette.text },
-  "markup.heading": { fg: palette.text, bold: true },
-  "markup.heading.1": { fg: palette.text, bold: true },
-  "markup.list": { fg: palette.accent },
-  "markup.link": { fg: palette.blue, underline: true },
-  "markup.link.label": { fg: palette.blue, underline: true },
-  "markup.link.url": { fg: palette.blue, underline: true },
-  "markup.raw": { fg: palette.accent },
-  "markup.raw.block": { fg: palette.accent },
-  "markup.quote": { fg: palette.muted, italic: true },
-  "markup.bold": { fg: palette.text, bold: true },
-  "markup.strong": { fg: palette.text, bold: true },
-  "markup.italic": { fg: palette.text, italic: true },
-})
 
 function shortTime(milliseconds: number) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000))
@@ -800,6 +805,7 @@ export function parsePastedPaths(input: string, mimeType = ""): { paths: string[
 }
 
 export function PkApp({ transport, workspace, initialSession }: { transport: PkTransport; workspace: string; initialSession?: string }) {
+  useThemePalette()
   const renderer = useRenderer()
   const textarea = useRef<TextareaRenderable>(null)
   const pluginSourceTextarea = useRef<TextareaRenderable>(null)
@@ -815,7 +821,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_presets" | "provider_models" | "image" | "extension_commands" | "history" | "usage" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_presets" | "provider_models" | "image" | "theme" | "extension_commands" | "history" | "usage" | null>(null)
+  const [themeSaving, setThemeSaving] = useState(false)
+  const [themeNotice, setThemeNotice] = useState("")
+  const pendingThemeSets = useRef(new Map<string, { theme: ThemeID; previous: ThemeID }>())
+  const latestThemeSet = useRef("")
   const [sessionUsage, setSessionUsage] = useState<SessionUsage | null>(null)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | null>(null)
   const [contextBudget, setContextBudget] = useState<ContextBudget | null>(null)
@@ -1065,6 +1075,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       sessionIdentity.current = nextSessionId
       contextRequestReadoutRef.current = null
       setContextRequestReadout(null)
+      setUsage(null)
       cancelSessionUsageRequest()
       setSessionUsage(null)
       setContextUsage(null)
@@ -1625,6 +1636,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         providerReasoningEnabledRef.current = data.provider_reasoning_enabled === true
         setProviderReasoningEnabled(providerReasoningEnabledRef.current)
         clearProviderReasoning()
+        if (!latestThemeSet.current && isThemeID(data.theme)) applyTheme(data.theme)
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
@@ -2640,6 +2652,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "error":
         const errorID = String(event.id ?? "")
+        if (errorID && pendingThemeSets.current.has(errorID)) {
+          const pendingTheme = pendingThemeSets.current.get(errorID)!
+          pendingThemeSets.current.delete(errorID)
+          if (latestThemeSet.current === errorID) {
+            latestThemeSet.current = ""
+            applyTheme(pendingTheme.previous)
+            setThemeSaving(false)
+            setThemeNotice(`Could not save ${themeDefinitions[pendingTheme.theme].label}; restored ${themeDefinitions[pendingTheme.previous].label}.`)
+            if (selector !== "theme") addEntry("system", `Could not save ${themeDefinitions[pendingTheme.theme].label}; restored ${themeDefinitions[pendingTheme.previous].label}.`)
+          }
+          break
+        }
         if (event.id && pendingUsageCancels.current.delete(event.id)) break
         if (event.id && pendingClipboardRequests.current.has(event.id)) pendingClipboardRequests.current.delete(event.id)
         if (event.id && event.id === pendingContextBudgetRequest.current) {
@@ -2814,6 +2838,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setTools([])
         }
         break
+      case "theme_set": {
+        const requestID = String(event.id ?? "")
+        const pendingTheme = pendingThemeSets.current.get(requestID)
+        if (!pendingTheme) break
+        pendingThemeSets.current.delete(requestID)
+        if (latestThemeSet.current === requestID) {
+          latestThemeSet.current = ""
+          if (isThemeID(data.theme)) applyTheme(data.theme)
+          setThemeSaving(false)
+          setThemeNotice(`${themeDefinitions[getThemeID()].label} theme saved.`)
+          if (selector !== "theme") addEntry("system", `${themeDefinitions[getThemeID()].label} theme saved.`)
+        }
+        break
+      }
       case "log": {
         const line = String(data.text ?? "")
         if (!/^\[pk\] (Running|Finished) /.test(line)) addEntry("system", line)
@@ -3122,6 +3160,29 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setPluginSourceModalOpen(true)
   }
 
+  const chooseTheme = (theme: ThemeID) => {
+    if (latestThemeSet.current) {
+      setThemeNotice("Saving the current theme…")
+      return
+    }
+    const previous = getThemeID()
+    if (previous === theme) {
+      setThemeNotice(`${themeDefinitions[theme].label} is selected.`)
+      return
+    }
+    applyTheme(theme)
+    setThemeNotice(`Previewing ${themeDefinitions[theme].label}…`)
+    const requestID = transport.send("theme_set", { theme })
+    if (!requestID) {
+      applyTheme(previous)
+      setThemeNotice("Could not save the theme because pk is disconnected.")
+      return
+    }
+    pendingThemeSets.current.set(requestID, { theme, previous })
+    latestThemeSet.current = requestID
+    setThemeSaving(true)
+  }
+
   const runSlashCommand = (raw: string) => {
     const [head, ...args] = parseSlashWords(raw)
     const command = slashCommands.find((item) => item.name === head)
@@ -3290,6 +3351,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else if (operation === "disable" || operation === "off") configureImagegen(false)
         else if (!operation || operation === "status") requestImageStatus()
         else addEntry("system", "Usage: /image · /image enable · /image disable. ImageGen uses the Astra driver and applies to new sessions.")
+        break
+      }
+      case "theme": {
+        if (args[0]) {
+          const themeID = args[0] === "reset" ? "dark-mint" : args[0]
+          if (isThemeID(themeID)) chooseTheme(themeID)
+          else addEntry("system", "Choose /theme dark-mint, /theme light, or /theme high-contrast.")
+        } else {
+          setThemeNotice("")
+          setSelectionIndex(Object.keys(themeDefinitions).indexOf(getThemeID()))
+          setSelector("theme")
+        }
         break
       }
       case "plugin": {
@@ -3552,6 +3625,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         : `MCP ${server.id} · ${server.command} · ${server.arguments_count} args · environment keys: ${server.environment_keys.join(", ") || "none"} · ${server.working_directory || "default working directory"}. Use /mcp remove ${server.id} to remove it; changes apply to new sessions.`)
     } else if (selector === "image") {
       configureImagegen(!imagegenEnabled)
+    } else if (selector === "theme") {
+      const theme = (Object.keys(themeDefinitions) as ThemeID[])[index]
+      if (theme) chooseTheme(theme)
     } else if (selector === "providers") {
       if (index === providers.length + 1) { openProviderPresets(); return }
       const provider = index === 0 ? null : providers[index - 1]
@@ -3805,7 +3881,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (selector) {
-      const count = selector === "usage" ? 0 : selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 2 : selector === "provider_presets" ? filteredProviderPresets.length : selector === "provider_models" ? filteredProviderModels.length : selector === "image" ? 1 : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      const count = selector === "usage" ? 0 : selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 2 : selector === "provider_presets" ? filteredProviderPresets.length : selector === "provider_models" ? filteredProviderModels.length : selector === "image" ? 1 : selector === "theme" ? Object.keys(themeDefinitions).length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
       if (selector === "plugin_candidates" && pluginSourceOperation && isCancel) {
         if (isCtrlC) key.preventDefault()
         transport.send("plugin_source_cancel" as any)
@@ -4026,6 +4102,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     return providerModels.filter((item) => !query || `${item.id} ${item.owned_by ?? ""} ${item.object ?? ""} ${item.task ?? ""} ${item.description ?? ""} ${item.capabilities?.join(" ") ?? ""}`.toLowerCase().includes(query))
   }, [providerModels, providerModelQuery])
   const selectedOptions = selector === "usage" || selector === "provider_presets" ? []
+    : selector === "theme" ? (Object.keys(themeDefinitions) as ThemeID[]).map((id) => ({ label: themeDefinitions[id].label, value: id, description: themeDefinitions[id].description, state: id === getThemeID() ? "selected" : id === "dark-mint" ? "default" : "" }))
     : selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
     : selector === "history" ? [
       ...historyEntries.map((item) => ({ label: `${item.role === "user" ? "You" : item.role === "tool" ? `Tool · ${item.toolName ?? "tool"}${item.toolState ? ` · ${item.toolState}` : ""}` : "pk"} · #${item.sequence}`, value: `entry-${item.sequence}`, description: savedHistoryPreview(item).slice(0, 240), state: "saved" })),
@@ -4177,8 +4254,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setProviderModelHoverIndex(null)
         const direction = event.scroll.direction === "down" ? 1 : event.scroll.direction === "up" ? -1 : 0
         if (direction) setSelectionIndex((index) => Math.max(0, Math.min(filteredProviderModels.length - 1, index + direction * Math.max(1, Math.round(event.scroll!.delta)))))
-      } : undefined} style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "usage" ? "6%" : selector === "provider_models" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "usage" ? "8%" : selector === "provider_models" ? "5%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: selector === "provider_models" ? 1 : 2, flexDirection: "column", minHeight: selector === "usage" || selector === "provider_models" ? 0 : undefined, overflow: selector === "usage" || selector === "provider_models" ? "hidden" : undefined }}>
-        <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+      } : undefined} style={{ position: "absolute", left: selector === "theme" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "theme" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "6%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "8%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: selector === "provider_models" || selector === "theme" ? 1 : 2, flexDirection: "column", minHeight: selector === "usage" || selector === "provider_models" || selector === "theme" ? 0 : undefined, overflow: selector === "usage" || selector === "provider_models" || selector === "theme" ? "hidden" : undefined }}>
+        <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "theme" ? "Color theme" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "usage" && <>
           {usage?.tokensPerSecond !== undefined && <text fg={palette.muted} content={`Latest response · ${usage.tokensPerSecond.toFixed(1)} output tokens/sec · average includes provider wait; excludes tools`} />}
           <scrollbox id="usage-scroll" ref={usageScroll} focused style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 1 }}>
@@ -4270,6 +4347,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
         {selector === "providers" && <text fg={palette.dim} content="Enter selects a connected provider · choose Connect a provider to add one · changes apply to a new session" />}
         {selector === "image" && <text fg={imageConfigPending ? palette.accent : palette.dim} content={imageConfigPending ? "Saving ImageGen preference…" : "Uses a separate Astra image worker with your ChatGPT login. Your chat model stays unchanged. Start a new session with /new to apply."} />}
+        {selector === "theme" && <text fg={themeSaving ? palette.accent : palette.dim} content={themeNotice || "Choose to preview and save · Dark Mint resets the default"} />}
         {selector === "provider_models" && <>
           {providerSetupModelID && !providerModelsLoading && <ProviderFilter id="provider-model-search" value={providerModelQuery} placeholder="Type to filter models…" maxLength={120} onChange={(value) => { setProviderModelQuery(value); setSelectionIndex(0); setProviderModelHoverIndex(null) }} />}
           <text fg={palette.dim} content={providerModelsLoading ? "Contacting provider model catalog…" : providerSetupModelID ? `↑↓ browse · Enter uses model${sessionHasPrompt.current ? " · starts a new session" : " in a new session"}${providers.find((item) => item.id === providerSetupModelID)?.supports_reasoning_effort === false ? " · effort provider-controlled" : ""}` : "Model discovery is read-only · use /provider use ID before the first prompt"} />
@@ -4308,7 +4386,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={savedHistoryPreview(historyEntries[historyDetailIndex]!).slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
-        {selector !== "usage" && <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "image" ? "Enter or click to toggle · disabled by default · /new activates changes · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />}
+        {selector !== "usage" && <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "theme" ? "↑↓ choose · Enter or click previews and saves · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "image" ? "Enter or click to toggle · disabled by default · /new activates changes · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />}
         {selector === "usage" && <text fg={palette.dim} content={contextBudgetEditing ? "Type token counts · Tab next field · Enter save on last field · Ctrl-U clears current field · Esc cancel" : `B budget · ${sessionUsage?.compaction ? "H summary usage · " : ""}R refresh · E edit · C compact · ↑↓ scroll · Esc close`} />}
       </box>}
       {pluginSourceModalOpen && <box style={{ position: "absolute", left: "18%", right: "18%", top: "30%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
@@ -4425,6 +4503,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 }
 
 const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clock, expanded, onToggle }: { entries: Entry[]; clock: number; expanded: boolean; onToggle: () => void }) {
+  useThemePalette()
   const renderer = useRenderer()
   const first = entries[0]!
   const failed = entries.some((entry) => entry.toolState === "failed")
@@ -4477,7 +4556,7 @@ const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clo
 function WelcomeEntry({ onAction }: { onAction: (command: string) => void }) {
   const actions = ["/skills", "/plugins", "/mcp", "/provider"]
   return <box style={{ flexDirection: "column", paddingLeft: 2, paddingTop: 1, paddingBottom: 1 }}>
-    <Wordmark color={palette.accent} />
+    <Wordmark color={palette.accent} lightSurface={getThemeID() === "light"} />
     <text fg={palette.muted} content="A quiet workspace for your next task." />
     <box style={{ flexDirection: "row", gap: 2, paddingTop: 1 }}>
       {actions.map((command) => <box key={command} onMouseDown={(event) => {
@@ -4493,6 +4572,7 @@ function WelcomeEntry({ onAction }: { onAction: (command: string) => void }) {
 }
 
 const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock, workspace, generatedImageSources }: { entry: Entry; clock: number; workspace: string; generatedImageSources: ReadonlySet<string> }) {
+  useThemePalette()
   const renderer = useRenderer()
   if (entry.role === "system") return <box style={{ paddingLeft: 2, paddingBottom: 1 }}><text fg={palette.dim} content={entry.text} /></box>
   if (entry.role === "tool") return <box style={{ flexDirection: "column", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: entry.toolState === "failed" ? palette.red : palette.accent }}>
@@ -4518,12 +4598,12 @@ const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock, worksp
         : part.kind === "omitted"
           ? <text key={`omitted-${index}`} fg={palette.dim} content={`Image preview omitted · ${part.alt || part.source}`} />
         : part.text.trim() ? hasMarkdownSyntax(part.text)
-          ? <markdown key={`markdown-${index}`} content={part.text} syntaxStyle={markdownStyle} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />
+          ? <markdown key={`markdown-${index}`} content={part.text} syntaxStyle={markdownStyleFor(getThemeID())} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />
           : <text key={`text-${index}`} fg={palette.text} content={part.text} />
           : null)}
     </box> : entry.text && (isUser || entry.provisional || !markdown
       ? <text fg={palette.text} content={entry.text} />
-      : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />)}
+      : <markdown content={entry.text} syntaxStyle={markdownStyleFor(getThemeID())} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />)}
     {isUser && entry.historyAttachments?.length ? <box style={{ flexDirection: "row", gap: 1, flexWrap: "wrap", paddingTop: entry.text ? 1 : 0 }}>
       {entry.historyAttachments.slice(0, 8).map((attachment, index) => {
         const maxName = renderer.width < 90 ? 18 : 32
@@ -4572,6 +4652,7 @@ export function transcriptTimelineShouldUpdate(previous: TranscriptTimelineProps
 }
 
 const TranscriptTimeline = memo(function TranscriptTimeline({ groups, clock, workspace, expandedToolGroups, onToggle }: TranscriptTimelineProps) {
+  useThemePalette()
   const renderer = useRenderer()
   const generatedImageSources = new Set<string>()
   for (const group of groups) {
