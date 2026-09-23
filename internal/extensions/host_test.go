@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,15 +99,15 @@ func TestSlashCommandCatalogIsNamespacedAndExecutionIsExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 2 || len(report.Disabled) != 0 {
+	if len(report.Registered) != 2 || len(report.Loaded) != 0 || len(report.Disabled) != 0 {
 		t.Fatalf("load report: %+v", report)
 	}
 	commands := host.SlashCommands()
 	if len(commands) != 2 || commands[0].Name != "/ext:alpha:stats" || commands[1].Name != "/ext:beta:stats" || commands[0].Description != first.Commands[0].Description {
 		t.Fatalf("slash catalog not deterministic or namespaced: %+v", commands)
 	}
-	if workers["alpha"].commandCalls != 0 || workers["beta"].commandCalls != 0 {
-		t.Fatal("listing commands invoked an extension command")
+	if workers["alpha"] != nil || workers["beta"] != nil {
+		t.Fatal("listing commands started an extension worker")
 	}
 	if _, err := host.ExecuteCommand(context.Background(), "stats", ""); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous legacy command should be rejected, got %v", err)
@@ -115,7 +116,7 @@ func TestSlashCommandCatalogIsNamespacedAndExecutionIsExplicit(t *testing.T) {
 	if err != nil || result != "0 files, 0 directories, 0 bytes" {
 		t.Fatalf("namespaced execution result=%q err=%v", result, err)
 	}
-	if workers["alpha"].commandCalls != 1 || workers["beta"].commandCalls != 0 || workers["alpha"].commandArgs[0] != "report now" {
+	if workers["alpha"] == nil || workers["alpha"].commandCalls != 1 || workers["beta"] != nil || workers["alpha"].commandArgs[0] != "report now" {
 		t.Fatalf("execution routed incorrectly: alpha=%+v beta=%+v", workers["alpha"], workers["beta"])
 	}
 }
@@ -165,6 +166,146 @@ func statsManifest(id, toolName string) Manifest {
 		Commands: []CommandSpec{{Name: "stats", Description: "Count workspace files"}}}
 }
 
+func TestHostRegistersManifestWithoutStartingWorkerUntilToolUse(t *testing.T) {
+	var starts atomic.Int32
+	manifest := statsManifest("deferred", "deferred_tool")
+	host, report, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		starts.Add(1)
+		return &fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if starts.Load() != 0 || len(report.Registered) != 1 || len(report.Loaded) != 0 {
+		t.Fatalf("registration started a worker: starts=%d report=%+v", starts.Load(), report)
+	}
+	if got := host.Tools(); len(got) != 1 || got[0].Name != "deferred_tool" {
+		t.Fatalf("manifest tool schema was not registered lazily: %+v", got)
+	}
+	result, err := host.ExecuteTool(context.Background(), "deferred_tool", "call-1", json.RawMessage(`{}`))
+	if err != nil || len(result.Content) != 1 || starts.Load() != 1 {
+		t.Fatalf("first tool call result=%+v err=%v starts=%d", result, err, starts.Load())
+	}
+}
+
+func TestConcurrentFirstToolCallsShareOneWorkerInitialization(t *testing.T) {
+	var starts atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manifest := statsManifest("concurrent", "concurrent_tool")
+	host, _, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		if starts.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return &fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	results := make(chan error, 2)
+	for _, id := range []string{"call-a", "call-b"} {
+		go func(callID string) {
+			_, err := host.ExecuteTool(context.Background(), "concurrent_tool", callID, json.RawMessage(`{}`))
+			results <- err
+		}(id)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first tool call did not start worker initialization")
+	}
+	close(release)
+	for range 2 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent tool call did not complete")
+		}
+	}
+	if starts.Load() != 1 {
+		t.Fatalf("concurrent first calls started %d workers", starts.Load())
+	}
+}
+
+func TestInitializationTimeoutReturnsOnceAndRetriesOnlyOnNextInvocation(t *testing.T) {
+	var starts atomic.Int32
+	manifest := statsManifest("init-timeout", "init_timeout_tool")
+	host, _, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(context.Context, Manifest, string) (Worker, error) {
+		starts.Add(1)
+		return nil, context.DeadlineExceeded
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	for expected := int32(1); expected <= 2; expected++ {
+		_, err := host.ExecuteTool(context.Background(), "init_timeout_tool", fmt.Sprintf("call-%d", expected), json.RawMessage(`{}`))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("initialization attempt %d returned %v", expected, err)
+		}
+		if got := starts.Load(); got != expected {
+			t.Fatalf("factory started %d times after explicit attempt %d", got, expected)
+		}
+	}
+}
+
+type cancelInitWorker struct{ closed atomic.Bool }
+
+func (w *cancelInitWorker) Call(ctx context.Context, method string, _ any, _ any) error {
+	if method == "initialize" {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return errors.New("unexpected call")
+}
+func (w *cancelInitWorker) Close() error { w.closed.Store(true); return nil }
+
+func TestHostCloseCancelsAndClosesWorkerDuringLazyInitialization(t *testing.T) {
+	manifest := statsManifest("cancel-init", "cancel_init_tool")
+	workerCreated := make(chan *cancelInitWorker, 1)
+	host, _, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(context.Context, Manifest, string) (Worker, error) {
+		worker := &cancelInitWorker{}
+		workerCreated <- worker
+		return worker, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callDone := make(chan error, 1)
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	go func() {
+		_, err := host.ExecuteTool(callCtx, "cancel_init_tool", "call", json.RawMessage(`{}`))
+		callDone <- err
+	}()
+	var worker *cancelInitWorker
+	select {
+	case worker = <-workerCreated:
+	case <-time.After(time.Second):
+		t.Fatal("worker was not constructed")
+	}
+	cancelCall()
+	select {
+	case err := <-callDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled first invocation returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled first invocation remained blocked on initialization")
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !worker.closed.Load() {
+		t.Fatal("worker created during startup was not closed")
+	}
+}
+
 func TestHostLoadsWorkspaceStatsToolAndCommand(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.Mkdir(filepath.Join(workspace, "sub"), 0o700); err != nil {
@@ -182,7 +323,7 @@ func TestHostLoadsWorkspaceStatsToolAndCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 1 || report.Loaded[0] != "stats-extension" || len(report.Disabled) != 0 {
+	if len(report.Registered) != 1 || report.Registered[0] != "stats-extension" || len(report.Loaded) != 0 || len(report.Disabled) != 0 {
 		t.Fatalf("load report: %+v", report)
 	}
 	result, err := host.ExecuteTool(context.Background(), "workspace_stats", "call-1", json.RawMessage(`{}`))
@@ -300,11 +441,14 @@ func TestHostIsolatesFailedAndConflictingExtensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 1 || report.Loaded[0] != "first" || len(report.Disabled) != 2 {
+	if len(report.Registered) != 2 || report.Registered[0] != "first" || len(report.Loaded) != 0 || len(report.Disabled) != 1 {
 		t.Fatalf("report: %+v", report)
 	}
-	if len(host.Tools()) != 1 || host.Tools()[0].Name != "shared_tool" {
+	if len(host.Tools()) != 2 || host.Tools()[1].Name != "shared_tool" {
 		t.Fatalf("conflict broke valid extension: %+v", host.Tools())
+	}
+	if _, err := host.ExecuteTool(context.Background(), "bad_tool", "call-bad", json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "cannot start") {
+		t.Fatalf("deferred worker failure was not reported at invocation: %v", err)
 	}
 }
 
@@ -362,7 +506,7 @@ func TestLifecycleNotificationsRequireWorkerOptInAndDeliverMetadata(t *testing.T
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 1 || len(report.Disabled) != 0 {
+	if len(report.Loaded) != 1 || report.Loaded[0] != "observer" || len(report.Disabled) != 0 {
 		t.Fatalf("load report: %+v", report)
 	}
 	event := LifecycleEvent{Type: LifecycleRunStart, RunID: "run-1", SessionID: "session-1", Model: "gpt-6-luna", Workspace: "/untrusted/override", Status: "started"}
@@ -442,7 +586,7 @@ func TestLifecycleQueueIsNonblockingBoundedAndCloseIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Loaded) != 1 {
+	if len(report.Loaded) != 1 || len(report.Registered) != 1 {
 		t.Fatalf("load report: %+v", report)
 	}
 	start := time.Now()
@@ -538,7 +682,7 @@ func TestHostTimeoutDisablesOnlyItsWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 2 {
+	if len(report.Loaded) != 0 || len(report.Registered) != 2 {
 		t.Fatalf("report: %+v", report)
 	}
 	fingerprint := host.SchemaFingerprint()
@@ -547,6 +691,9 @@ func TestHostTimeoutDisablesOnlyItsWorker(t *testing.T) {
 	}
 	if _, err := host.ExecuteTool(context.Background(), "blocked_tool", "call", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("blocked worker did not time out")
+	}
+	if _, err := host.ensureWorker(context.Background(), host.tools["blocked_tool"]); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("disabled cached worker was returned after timeout: %v", err)
 	}
 	if len(host.Tools()) != 2 || host.SchemaFingerprint() != fingerprint {
 		t.Fatalf("runtime failure changed frozen schema: %+v", host.Tools())
@@ -581,7 +728,7 @@ func TestHostDeliversProgressWithModelToolCallID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 1 {
+	if len(report.Loaded) != 0 || len(report.Registered) != 1 {
 		t.Fatalf("load report: %+v", report)
 	}
 	got := make(chan ProgressEvent, 1)

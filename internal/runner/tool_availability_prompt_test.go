@@ -56,7 +56,7 @@ func TestAssembledPromptDistinguishesLoadedSessionToolsFromWorkspaceDocs(t *test
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 1 || report.Loaded[0] != manifest.ID {
+	if len(report.Registered) != 1 || report.Registered[0] != manifest.ID || len(report.Loaded) != 0 {
 		t.Fatalf("plugin registration: %+v", report)
 	}
 	base := newToolRegistryBase(workspace, filepath.Join(workspace, ".pk", "operations"))

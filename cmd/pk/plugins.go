@@ -130,7 +130,11 @@ func configureRPCPluginSession(ctx context.Context, options *runner.Options, man
 		}})
 	}
 	extra = append(extra, additional...)
-	return configureCLIExtensions(ctx, options, manifests, nil, diagnostics, extra...)
+	// Interactive turns register extension schemas from their manifests but
+	// defer starting ordinary workers until the model actually invokes one.
+	// Keep routine registration/startup chatter out of every turn; failures are
+	// still surfaced on invocation and warnings remain visible.
+	return configureCLIExtensionsQuiet(ctx, options, manifests, nil, diagnostics, extra...)
 }
 
 // prepareRPCPluginSession must run after the host is constructed and before

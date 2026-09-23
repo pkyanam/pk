@@ -179,3 +179,34 @@ func TestCLIQuietExtensionSetupSuppressesOnlySuccessfulLoadNotice(t *testing.T) 
 		t.Fatalf("quiet setup repeated startup notice: %q", diagnostics.String())
 	}
 }
+
+func TestRPCPluginRegistrationDoesNotStartWorkerOrLogOnOrdinaryTurn(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "mail-plugin.json")
+	manifest := extensions.Manifest{
+		APIVersion: extensions.ProtocolVersion,
+		ID:         "agentmail-readonly", Version: "0.1.0", Executable: "/does/not/start/unless-used",
+		Tools: []extensions.ToolSpec{{Name: "mail_inboxes", Description: "List inboxes", Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics strings.Builder
+	options := runner.Options{Workspace: t.TempDir()}
+	host, err := configureRPCPluginSession(context.Background(), &options, []string{manifestPath}, nil, &diagnostics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host == nil || len(host.Tools()) != 1 || host.Tools()[0].Name != "mail_inboxes" {
+		t.Fatalf("manifest schemas were not registered: host=%v tools=%+v", host != nil, host.Tools())
+	}
+	if diagnostics.Len() != 0 {
+		t.Fatalf("ordinary RPC turn printed worker-registration chatter: %q", diagnostics.String())
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -299,7 +299,7 @@ func TestWorkspaceStatsSampleOverRealProcessProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if len(report.Loaded) != 1 {
+	if len(report.Loaded) != 0 || len(report.Registered) != 1 {
 		t.Fatalf("sample worker did not load: %+v", report)
 	}
 	result, err := host.ExecuteTool(context.Background(), "workspace_stats", "call-real", json.RawMessage(`{}`))

@@ -25,17 +25,27 @@ const (
 )
 
 type Report struct {
-	Loaded   []string
-	Disabled []error
+	Registered []string
+	Loaded     []string
+	Disabled   []error
 }
 
 type loadedExtension struct {
 	manifest        Manifest
 	worker          Worker
+	factory         WorkerFactory
+	workspace       string
+	startMu         sync.Mutex
+	starting        *extensionStart
 	lifecycle       map[string]bool
 	lifecycleEvents chan LifecycleEvent
-	mu              sync.Mutex
 	disabled        error
+}
+
+type extensionStart struct {
+	done   chan struct{}
+	worker Worker
+	err    error
 }
 
 // SlashCommand is a discoverable, explicitly invokable command registration.
@@ -70,6 +80,7 @@ type Host struct {
 	lifecycleStop     chan struct{}
 	lifecycleWG       sync.WaitGroup
 	lifecycleDone     chan struct{}
+	startWG           sync.WaitGroup
 }
 
 // NewHost loads only the manifests passed by its caller. Invalid or failing
@@ -104,31 +115,20 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 			report.Disabled = append(report.Disabled, conflict)
 			continue
 		}
-		worker, err := factory(ctx, manifest, workspace)
-		if err != nil {
-			report.Disabled = append(report.Disabled, fmt.Errorf("load extension %q: %w", manifest.ID, err))
-			continue
-		}
-		loaded := &loadedExtension{manifest: manifest, worker: worker}
-		initParams := InitializeParams{APIVersion: ProtocolVersion, ID: manifest.ID, Version: manifest.Version, Workspace: workspace, Capabilities: append([]string(nil), manifest.Capabilities...), HostFeatures: []string{HostFeatureToolProgress, HostFeatureLifecycle}}
-		var initResult InitializeResult
-		initCtx, initCancel := context.WithTimeout(ctx, defaultCallTimeout)
-		err = worker.Call(initCtx, "initialize", initParams, &initResult)
-		initCancel()
-		if err == nil {
-			err = validateInitialize(manifest, initResult)
-		}
-		if err != nil {
-			_ = worker.Close()
-			report.Disabled = append(report.Disabled, fmt.Errorf("initialize extension %q: %w", manifest.ID, err))
-			continue
-		}
+		loaded := &loadedExtension{manifest: manifest, factory: factory, workspace: workspace}
 		if len(manifest.Hooks) > 0 {
 			loaded.lifecycle = make(map[string]bool, len(manifest.Hooks))
 			for _, hook := range manifest.Hooks {
 				loaded.lifecycle[hook.Event] = true
 			}
 			loaded.lifecycleEvents = make(chan LifecycleEvent, MaxLifecycleQueue)
+			// Lifecycle observers must receive run-start even when the model never
+			// invokes one of their tools, so their worker remains eager.
+			if err := host.startExtension(ctx, loaded); err != nil {
+				report.Disabled = append(report.Disabled, fmt.Errorf("initialize extension %q: %w", manifest.ID, err))
+				continue
+			}
+			report.Loaded = append(report.Loaded, manifest.ID)
 		}
 		host.byID[manifest.ID] = loaded
 		if loaded.lifecycleEvents != nil {
@@ -148,10 +148,146 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 			slashName := SlashCommandName(manifest.ID, spec.Name)
 			host.slashCommands[slashName] = commandBinding{extension: loaded, name: spec.Name}
 		}
-		report.Loaded = append(report.Loaded, manifest.ID)
+		report.Registered = append(report.Registered, manifest.ID)
 	}
 	go func() { host.lifecycleWG.Wait(); close(host.lifecycleDone) }()
 	return host, report, nil
+}
+
+func (h *Host) startExtension(ctx context.Context, ext *loadedExtension) error {
+	worker, err := h.initializeWorker(ctx, ext)
+	if err != nil {
+		return err
+	}
+	ext.startMu.Lock()
+	ext.worker = worker
+	ext.startMu.Unlock()
+	return nil
+}
+
+// ensureWorker starts a registered extension on its first command/tool use.
+// Concurrent first calls share one initialization attempt. A canceled caller
+// stops waiting promptly; initialization remains session-scoped and the next
+// call can join the same attempt.
+func (h *Host) ensureWorker(ctx context.Context, ext *loadedExtension) (Worker, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		h.mu.RLock()
+		if h.closed {
+			h.mu.RUnlock()
+			return nil, errors.New("extension host is closed")
+		}
+		ext.startMu.Lock()
+		if ext.disabled != nil {
+			err := ext.disabled
+			ext.startMu.Unlock()
+			h.mu.RUnlock()
+			return nil, fmt.Errorf("extension %q is disabled: %w", ext.manifest.ID, err)
+		}
+		if ext.worker != nil {
+			worker := ext.worker
+			ext.startMu.Unlock()
+			h.mu.RUnlock()
+			return worker, nil
+		}
+		attempt := ext.starting
+		if attempt != nil {
+			ext.startMu.Unlock()
+			h.mu.RUnlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-attempt.done:
+			}
+			if attempt.err != nil {
+				return nil, attempt.err
+			}
+			return attempt.worker, nil
+		}
+		attempt = &extensionStart{done: make(chan struct{})}
+		ext.starting = attempt
+		ext.startMu.Unlock()
+		h.mu.RUnlock()
+
+		h.mu.Lock()
+		if h.closed {
+			h.mu.Unlock()
+			err := errors.New("extension host is closed")
+			ext.finishStart(attempt, nil, err, false)
+			return nil, err
+		}
+		h.startWG.Add(1)
+		h.mu.Unlock()
+		go func() {
+			defer h.startWG.Done()
+			worker, err := h.initializeWorker(h.ctx, ext)
+			if err != nil {
+				// Host shutdown cancellation is retryable; a real load or protocol
+				// failure disables the extension for this frozen session.
+				ext.finishStart(attempt, nil, err, !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded))
+				return
+			}
+			h.mu.Lock()
+			if h.closed {
+				h.mu.Unlock()
+				_ = worker.Close()
+				ext.finishStart(attempt, nil, errors.New("extension host closed during initialization"), false)
+				return
+			}
+			// Publish under the host lock. Close marks the host closed before
+			// waiting for startWG, so it cannot miss a newly initialized worker.
+			ext.finishStart(attempt, worker, nil, false)
+			h.mu.Unlock()
+		}()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-attempt.done:
+		}
+		if attempt.err != nil {
+			return nil, attempt.err
+		}
+		return attempt.worker, nil
+	}
+}
+
+func (ext *loadedExtension) finishStart(attempt *extensionStart, worker Worker, err error, disable bool) {
+	ext.startMu.Lock()
+	attempt.worker = worker
+	attempt.err = err
+	if worker != nil {
+		ext.worker = worker
+	}
+	if disable && err != nil && ext.disabled == nil {
+		ext.disabled = err
+	}
+	if ext.starting == attempt {
+		ext.starting = nil
+	}
+	close(attempt.done)
+	ext.startMu.Unlock()
+}
+
+func (h *Host) initializeWorker(ctx context.Context, ext *loadedExtension) (Worker, error) {
+	worker, err := ext.factory(ctx, ext.manifest, ext.workspace)
+	if err != nil {
+		return nil, fmt.Errorf("start extension %q: %w", ext.manifest.ID, err)
+	}
+	initParams := InitializeParams{APIVersion: ProtocolVersion, ID: ext.manifest.ID, Version: ext.manifest.Version, Workspace: ext.workspace, Capabilities: append([]string(nil), ext.manifest.Capabilities...), HostFeatures: []string{HostFeatureToolProgress, HostFeatureLifecycle}}
+	var initResult InitializeResult
+	initCtx, initCancel := context.WithTimeout(ctx, defaultCallTimeout)
+	err = worker.Call(initCtx, "initialize", initParams, &initResult)
+	initCancel()
+	if err == nil {
+		err = validateInitialize(ext.manifest, initResult)
+	}
+	if err != nil {
+		_ = worker.Close()
+		return nil, fmt.Errorf("initialize extension %q: %w", ext.manifest.ID, err)
+	}
+	return worker, nil
 }
 
 func validateInitialize(manifest Manifest, result InitializeResult) error {
@@ -318,12 +454,15 @@ func (h *Host) ownerOfTool(name string) string {
 }
 
 func (h *Host) disable(ext *loadedExtension, cause error) {
-	ext.mu.Lock()
+	ext.startMu.Lock()
 	if ext.disabled == nil {
 		ext.disabled = cause
 	}
-	ext.mu.Unlock()
-	_ = ext.worker.Close()
+	worker := ext.worker
+	ext.startMu.Unlock()
+	if worker != nil {
+		_ = worker.Close()
+	}
 }
 
 func (h *Host) orderedManifests() []Manifest {
@@ -340,6 +479,10 @@ func (h *Host) ExecuteTool(ctx context.Context, name, callID string, arguments j
 	if ext == nil {
 		return ToolResult{}, fmt.Errorf("extension tool %q is unavailable", name)
 	}
+	worker, err := h.ensureWorker(ctx, ext)
+	if err != nil {
+		return ToolResult{}, fmt.Errorf("extension %q is unavailable: %w", ext.manifest.ID, err)
+	}
 	callCtx, cancel := h.callContext(ctx)
 	defer cancel()
 	var progressCount atomic.Int32
@@ -350,7 +493,7 @@ func (h *Host) ExecuteTool(ctx context.Context, name, callID string, arguments j
 		return h.enqueueProgress(ProgressEvent{ExtensionID: ext.manifest.ID, ToolName: name, CallID: callID, Text: sanitizeProgress(text)})
 	})
 	var result ToolResult
-	err := ext.worker.Call(callCtx, "tool.execute", ToolExecuteParams{Name: name, CallID: callID, Arguments: arguments, Workspace: h.workspace}, &result)
+	err = worker.Call(callCtx, "tool.execute", ToolExecuteParams{Name: name, CallID: callID, Arguments: arguments, Workspace: h.workspace}, &result)
 	if err != nil {
 		h.failWorker(ext, err)
 		return ToolResult{}, fmt.Errorf("extension %q tool %q: %w", ext.manifest.ID, name, err)
@@ -469,7 +612,11 @@ func (h *Host) dispatchLifecycle(ext *loadedExtension) {
 }
 
 func (h *Host) deliverLifecycle(ext *loadedExtension, event LifecycleEvent) {
-	if notifier, ok := ext.worker.(LifecycleNotifier); ok {
+	worker := ext.worker
+	if worker == nil {
+		return
+	}
+	if notifier, ok := worker.(LifecycleNotifier); ok {
 		notifier.NotifyLifecycle(event)
 		return
 	}
@@ -478,7 +625,7 @@ func (h *Host) deliverLifecycle(ext *loadedExtension, event LifecycleEvent) {
 	var ignored struct{}
 	// Notification failures are isolated from tool/command execution and do
 	// not disable the extension or alter model-visible content.
-	_ = ext.worker.Call(ctx, "lifecycle.notify", event, &ignored)
+	_ = worker.Call(ctx, "lifecycle.notify", event, &ignored)
 }
 
 func (h *Host) dispatchProgress() {
@@ -513,6 +660,9 @@ func (h *Host) ExecuteCommand(ctx context.Context, name, arguments string) (stri
 	if ext == nil {
 		return "", fmt.Errorf("extension command %q is unavailable", name)
 	}
+	if _, err := h.ensureWorker(ctx, ext); err != nil {
+		return "", fmt.Errorf("extension %q is unavailable: %w", ext.manifest.ID, err)
+	}
 	return h.executeCommand(ctx, ext, name, arguments)
 }
 
@@ -528,6 +678,9 @@ func (h *Host) ExecuteSlashCommand(ctx context.Context, name, arguments string) 
 	}
 	if h.lookup(map[string]*loadedExtension{binding.name: binding.extension}, binding.name) == nil {
 		return "", fmt.Errorf("extension slash command %q is unavailable", name)
+	}
+	if _, err := h.ensureWorker(ctx, binding.extension); err != nil {
+		return "", fmt.Errorf("extension %q is unavailable: %w", binding.extension.manifest.ID, err)
 	}
 	return h.executeCommand(ctx, binding.extension, binding.name, arguments)
 }
@@ -564,13 +717,28 @@ func (h *Host) lookup(table map[string]*loadedExtension, name string) *loadedExt
 	if closed || ext == nil {
 		return nil
 	}
-	ext.mu.Lock()
+	ext.startMu.Lock()
 	disabled := ext.disabled
-	ext.mu.Unlock()
+	ext.startMu.Unlock()
 	if disabled != nil {
 		return nil
 	}
 	return ext
+}
+
+func (h *Host) startedWorkers() []Worker {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	workers := make([]Worker, 0, len(h.byID))
+	for _, ext := range h.byID {
+		ext.startMu.Lock()
+		worker := ext.worker
+		ext.startMu.Unlock()
+		if worker != nil {
+			workers = append(workers, worker)
+		}
+	}
+	return workers
 }
 
 func (h *Host) failWorker(ext *loadedExtension, err error) {
@@ -601,16 +769,13 @@ func (h *Host) Close() error {
 	}
 	h.closed = true
 	close(h.lifecycleStop)
-	workers := make([]Worker, 0, len(h.byID))
-	for _, ext := range h.byID {
-		workers = append(workers, ext.worker)
-	}
 	h.mu.Unlock()
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), lifecycleCloseDrain)
 	select {
 	case <-h.lifecycleDone:
 	case <-drainCtx.Done():
 	}
+	workers := h.startedWorkers()
 	if drainCtx.Err() == nil {
 		for _, worker := range workers {
 			if drainer, ok := worker.(LifecycleDrainer); ok {
@@ -620,6 +785,8 @@ func (h *Host) Close() error {
 	}
 	drainCancel()
 	h.cancel()
+	h.startWG.Wait()
+	workers = h.startedWorkers()
 	var closeErr error
 	for _, worker := range workers {
 		if err := worker.Close(); err != nil && closeErr == nil {

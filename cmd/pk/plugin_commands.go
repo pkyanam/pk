@@ -81,7 +81,7 @@ func executePluginSlashCommand(ctx context.Context, workspace string, manifestPa
 				return "", err
 			}
 			defer host.Close()
-			if len(report.Disabled) != 0 || len(report.Loaded) != 1 {
+			if len(report.Disabled) != 0 || len(report.Registered) != 1 {
 				if len(report.Disabled) != 0 {
 					return "", report.Disabled[0]
 				}
