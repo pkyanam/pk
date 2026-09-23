@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pkyanam/pk/internal/auth"
+	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/openaicodex"
@@ -33,6 +34,14 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		command = args[0]
 	}
 	switch command {
+	case "rpc":
+		return rpcMain(ctx, stdin, stdout, stderr)
+	case "config":
+		return runConfigCommand(args[1:], stdout, stderr)
+	case "task", "tasks":
+		return runTaskCommand(ctx, args[1:], stdout, stderr)
+	case "__task-worker":
+		return runTaskWorker(ctx, args[1:], stderr)
 	case "login":
 		if len(args) != 1 {
 			fmt.Fprintln(stderr, "usage: pk login")
@@ -76,6 +85,10 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	default:
 		if hasPromptFlag(args) {
 			return runOneShot(ctx, args, stdout, stderr)
+		}
+		plain, args := removeFlag(args, "--plain")
+		if !plain {
+			return launchOpenTUI(args, stdin, stdout, stderr)
 		}
 		return runInteractiveCommand(ctx, args, stdin, stdout, stderr)
 	}
@@ -266,8 +279,12 @@ func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runn
 	var skills stringList
 	flags.StringVar(&options.Prompt, "p", "", "prompt to send")
 	flags.StringVar(&options.Prompt, "prompt", "", "prompt to send")
-	flags.StringVar(&options.Model, "model", "gpt-6-astra", "model ID (default gpt-6-astra)")
-	flags.StringVar(&options.Effort, "effort", "xhigh", "reasoning effort: low, medium, high, xhigh, max")
+	defaults, configErr := config.Load(filepath.Join(pkHome(), "config.json"))
+	if configErr != nil {
+		return runner.Options{}, false, "", fmt.Errorf("load config: %w", configErr)
+	}
+	flags.StringVar(&options.Model, "model", defaults.Model, "model ID (default from pk config)")
+	flags.StringVar(&options.Effort, "effort", defaults.Effort, "reasoning effort: low, medium, high, xhigh, max")
 	flags.StringVar(&options.Workspace, "workspace", "", "working directory for Bash and relative image paths")
 	flags.StringVar(&options.SessionID, "session", "", "resume an existing session ID")
 	flags.StringVar(&options.SystemPrompt, "system", "", "additional system instructions")
@@ -278,6 +295,7 @@ func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runn
 	if err := flags.Parse(args); err != nil {
 		return runner.Options{}, false, "", err
 	}
+	options.Effort = strings.ToLower(strings.TrimSpace(options.Effort))
 	if flags.NArg() != 0 {
 		return runner.Options{}, false, "", fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
@@ -286,6 +304,9 @@ func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runn
 	}
 	if codexAuth != "" && !useCodex {
 		return runner.Options{}, false, "", errors.New("--codex-auth-file requires --use-codex")
+	}
+	if !config.ValidEffort(options.Effort) {
+		return runner.Options{}, false, "", fmt.Errorf("unsupported reasoning effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)", options.Effort)
 	}
 	if options.Workspace == "" {
 		var err error
@@ -360,15 +381,20 @@ func userHome() string {
 func usage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
   pk [OPTIONS]               start an interactive agent in the current directory
+  pk --plain [OPTIONS]       use the line-based interactive fallback
   pk -p PROMPT [OPTIONS]     send one prompt and exit
+  pk rpc                     start the JSONL frontend backend
+  pk task create -p PROMPT   start a durable background task
+  pk task list|status|attach|cancel|resume ...
+  pk config [show|set model|set effort VALUE]
   pk login
   pk logout
   pk status
   pk run -p PROMPT [OPTIONS]
 
 Run options:
-  --model MODEL              model ID (default gpt-6-astra)
-  --effort EFFORT            reasoning effort (default xhigh)
+  --model MODEL              model ID (default gpt-6-luna)
+  --effort EFFORT            reasoning effort (default medium)
   --workspace DIR            working directory for tools
   --session ID               resume a saved session
   --use-codex                reuse existing Codex credentials read-only

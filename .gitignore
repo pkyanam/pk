@@ -4,5 +4,7 @@
 !.env.example
 /bin/
 /dist/
+ui/node_modules/
+ui/dist/
 *.test
 coverage.out

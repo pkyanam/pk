@@ -11,6 +11,7 @@ import (
 )
 
 func TestParseRunArgsDefaultsAndRepeatedSkillDirs(t *testing.T) {
+	t.Setenv("PK_HOME", t.TempDir())
 	var stderr bytes.Buffer
 	options, useCodex, codexPath, err := parseRunArgs([]string{
 		"--prompt", "inspect this repo", "--workspace", t.TempDir(),
@@ -22,7 +23,7 @@ func TestParseRunArgsDefaultsAndRepeatedSkillDirs(t *testing.T) {
 	if useCodex || codexPath != "" {
 		t.Fatalf("Codex credential reuse = (%v, %q), want disabled", useCodex, codexPath)
 	}
-	if options.Model != "gpt-6-astra" || options.Effort != "xhigh" || !options.JSONL {
+	if options.Model != "gpt-6-luna" || options.Effort != "medium" || !options.JSONL {
 		t.Errorf("defaults/options = model %q, effort %q, JSONL %v", options.Model, options.Effort, options.JSONL)
 	}
 	if !reflect.DeepEqual(options.SkillsDirs, []string{"/tmp/one", "/tmp/two"}) {

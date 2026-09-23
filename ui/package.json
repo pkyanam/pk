@@ -1,0 +1,21 @@
+{
+  "name": "pk-tui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/main.tsx",
+    "build": "bun build src/main.tsx --outdir dist --target=bun --packages=external",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "0.5.12",
+    "@opentui/react": "0.5.12",
+    "react": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "bun-types": "1.3.14",
+    "typescript": "5.9.3"
+  }
+}

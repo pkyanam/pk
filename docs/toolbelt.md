@@ -4,9 +4,9 @@ pk should make small, deliberate actions easy for an agent to combine. The toolb
 
 ## Current foundation
 
-The pinned Unreal harness already supplies **Bash**, **ViewImage**, and **SkillUse**. Bash and ViewImage translate calls into durable operations; SkillUse selects a registered skill. The local operation manager runs the built-in shell and image operations. Unreal's `tool.Translator` is a clean seam, but its static registry is closed over Bash and ViewImage, and its local manager does not accept arbitrary operation types. A pk tool can implement `tool.Translator`, but it must submit an operation type that the chosen manager can execute. See [the integration notes](research/unreal-integration.md) for the boundary.
+The pinned Unreal harness already supplies **Bash**, **ViewImage**, and **SkillUse**. Bash and ViewImage translate calls into durable operations; SkillUse selects a registered skill. The pk runner's default local operation manager executes the built-in shell and image operations. `runner.Options.RegistryFactory` is a composition seam for an in-repository host to provide a registry, but it does not replace the operation manager. A custom translator must submit an operation type that the selected manager can execute. New side effects need a compatible durable operation path. See [the integration notes](research/unreal-integration.md) for the boundary.
 
-That distinction matters: a new schema is easy; a new durable operation is a fork or a pk-owned manager. We should not present a proposed affordance as shipped until its translator is registered and its operation path is executable.
+That distinction matters: a new schema is easy; a new durable operation requires an executable operation path. We should not present a proposed affordance as shipped until its translator is registered and its operation path is executable.
 
 ## Toolbelt design
 

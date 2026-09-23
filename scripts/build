@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT"
+if ! command -v bun >/dev/null 2>&1; then
+  echo "bun is required to build the OpenTUI frontend" >&2
+  exit 1
+fi
+(cd ui && bun install --frozen-lockfile && bun run build)
+mkdir -p bin
+go build -o bin/pk ./cmd/pk

@@ -58,3 +58,26 @@ jobs:
           TZ: UTC
           OLLAMA_TEST_MODEL: ''
         run: go test -race -count=1 -timeout 120s ./...
+
+  ui:
+    name: Verify OpenTUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - name: Install locked UI dependencies
+        working-directory: ui
+        run: bun install --frozen-lockfile
+      - name: Typecheck and test UI
+        working-directory: ui
+        run: |
+          bun run build
+          bun run check
+          bun test
