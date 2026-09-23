@@ -19,6 +19,9 @@ func TestInternalSummarySuppressesObserverAndKeepsCancellation(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx := WithoutObserver(WithObserver(parent, func(Event) { t.Error("internal summary leaked into UI") }))
+	// The RPC progress adapter installs its observer inside Respond. Suppression
+	// must survive that later wrapper, rather than only clearing the outer one.
+	ctx = WithObserver(ctx, func(Event) { t.Error("inner adapter re-enabled summary streaming") })
 	client := &Client{adapter: observerCheckAdapter{inspect: func(ctx context.Context) {
 		if ctx.Value(callKey{}) != nil {
 			t.Error("summary request created a streaming UI observer")
@@ -43,6 +46,10 @@ func TestOutputTrackerSeesFailedCoalescedDelta(t *testing.T) {
 			sawFailure = true
 		}
 	}))
+	// Model progress wrappers may replace the visible callback after tracking is
+	// installed; that must not remove the internal output guard.
+	previous := ctx.Value(observerKey{}).(observerConfig).callback
+	ctx = WithObserver(ctx, previous)
 	client := &Client{adapter: partialFailureAdapter{}}
 	if _, err := client.Respond(ctx, llm.Request{}, llm.RequestOptions{}); err == nil {
 		t.Fatal("expected provider failure")

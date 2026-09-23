@@ -59,8 +59,9 @@ type observerKey struct{}
 type callKey struct{}
 
 type observerConfig struct {
-	callback func(Event)
-	onOutput func()
+	callback   func(Event)
+	onOutput   func()
+	suppressed bool
 }
 
 type callState struct {
@@ -84,14 +85,19 @@ func WithObserver(ctx context.Context, callback func(Event)) context.Context {
 	if callback == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, observerKey{}, observerConfig{callback: callback})
+	config, _ := ctx.Value(observerKey{}).(observerConfig)
+	if config.suppressed {
+		return ctx
+	}
+	config.callback = callback
+	return context.WithValue(ctx, observerKey{}, config)
 }
 
 // WithoutObserver prevents internal model work, such as context summaries, from
 // appearing as assistant text in the user's conversation. Cancellation and other
 // context values are preserved.
 func WithoutObserver(ctx context.Context) context.Context {
-	return context.WithValue(ctx, observerKey{}, observerConfig{})
+	return context.WithValue(ctx, observerKey{}, observerConfig{suppressed: true})
 }
 
 // TrackOutput observes output before UI coalescing, including deltas discarded
