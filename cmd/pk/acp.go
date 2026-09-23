@@ -3,11 +3,15 @@ package main
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +19,13 @@ import (
 	"github.com/pkyanam/pk/internal/acp"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/unreallabsai/unreal-agent/harness/inbox"
+	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/operation"
+	"github.com/unreallabsai/unreal-agent/harness/session"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 // runACPCommand serves ACP v1 over stdio.
@@ -46,22 +57,35 @@ func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reade
 		fmt.Fprintf(diagnostics, "pk acp: unsupported reasoning effort %q\n", *effort)
 		return 2
 	}
-	server, err := acp.NewServer(input, output, acp.Config{Model: *model, Effort: *effort, Run: func(turnCtx context.Context, turn acp.Turn, emit func(acp.Update) error) (acp.TurnResult, error) {
-		client, err := prepare(turnCtx)
-		if err != nil {
-			return acp.TurnResult{}, err
-		}
-		defer client.Close()
-		writer := &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}
-		options := runner.Options{Prompt: turn.Prompt, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, SessionDir: filepathJoin(pkHome(), "sessions"), SkillsDirs: defaultSkillDirs(), Adapter: client, Output: writer, Diagnostics: diagnostics, JSONL: true}
-		var sessionID string
-		options.OnSession = func(id string) { sessionID = id }
-		result, err := runner.Run(turnCtx, options)
-		if result.SessionID != "" {
-			sessionID = result.SessionID
-		}
-		return acp.TurnResult{SessionID: sessionID}, err
-	}})
+	sessionDir := filepathJoin(pkHome(), "sessions")
+	server, err := acp.NewServer(input, output, acp.Config{Model: *model, Effort: *effort,
+		NewSession: func(sessionCtx context.Context, id, _ string) error {
+			store, err := localfile.New(sessionDir)
+			if err != nil {
+				return err
+			}
+			_, err = store.Create(sessionCtx, session.ID(id))
+			return err
+		},
+		LoadSession: func(sessionCtx context.Context, id, workspace string, emit func(acp.Update) error) error {
+			return replayACPSession(sessionCtx, sessionDir, id, workspace, emit)
+		},
+		Run: func(turnCtx context.Context, turn acp.Turn, emit func(acp.Update) error) (acp.TurnResult, error) {
+			client, err := prepare(turnCtx)
+			if err != nil {
+				return acp.TurnResult{}, err
+			}
+			defer client.Close()
+			writer := &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}
+			options := runner.Options{Prompt: turn.Prompt, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Adapter: client, Output: writer, Diagnostics: diagnostics, JSONL: true}
+			var sessionID string
+			options.OnSession = func(id string) { sessionID = id }
+			result, err := runner.Run(turnCtx, options)
+			if result.SessionID != "" {
+				sessionID = result.SessionID
+			}
+			return acp.TurnResult{SessionID: sessionID}, err
+		}})
 	if err != nil {
 		fmt.Fprintf(diagnostics, "pk acp: %v\n", err)
 		return 1
@@ -74,6 +98,154 @@ func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reade
 		return 1
 	}
 	return 0
+}
+
+func replayACPSession(ctx context.Context, sessionDir, id, workspace string, emit func(acp.Update) error) error {
+	store, err := localfile.New(sessionDir)
+	if err != nil {
+		return err
+	}
+	if _, err := store.Inspect(ctx, session.ID(id)); err != nil {
+		return fmt.Errorf("session is not available")
+	}
+	savedWorkspace, err := savedACPSessionWorkspace(sessionDir, id)
+	if err != nil {
+		return err
+	}
+	resolvedWorkspace, err := filepath.Abs(workspace)
+	if err != nil || filepath.Clean(resolvedWorkspace) != filepath.Clean(savedWorkspace) {
+		return fmt.Errorf("session belongs to a different workspace")
+	}
+	var after sessionstore.Sequence
+	for {
+		page, err := store.Items(ctx, session.ID(id), after, 256)
+		if err != nil {
+			return fmt.Errorf("read session history: %w", err)
+		}
+		for _, item := range page.Items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			switch item.Kind {
+			case sessionstore.ItemInput:
+				input, ok := item.Data.(inbox.Input)
+				if !ok || input.Kind != inbox.InputExternal {
+					continue
+				}
+				var text string
+				if err := json.Unmarshal([]byte(input.Payload), &text); err != nil || text == "" {
+					continue
+				}
+				messageID, err := newACPMessageID()
+				if err != nil {
+					return err
+				}
+				if err := emit(acp.Update{Kind: "user", MessageID: messageID, Text: text}); err != nil {
+					return err
+				}
+			case sessionstore.ItemModelResponse:
+				response, ok := item.Data.(sessionstore.ModelResponse)
+				if !ok {
+					continue
+				}
+				for _, output := range response.Response.Output {
+					switch output.Type {
+					case llm.ItemMessage:
+						message, ok := output.Data.(llm.Message)
+						if !ok || message.Role != llm.RoleAssistant || message.Text == "" {
+							continue
+						}
+						messageID, err := newACPMessageID()
+						if err != nil {
+							return err
+						}
+						if err := emit(acp.Update{Kind: "assistant", MessageID: messageID, Text: message.Text}); err != nil {
+							return err
+						}
+					case llm.ItemToolCall:
+						call, ok := output.Data.(llm.ToolCall)
+						if !ok {
+							continue
+						}
+						if err := emit(acp.Update{Kind: "tool_call", ToolCallID: call.CallID, Title: call.Name, ToolKind: acpToolKind(call.Name), Status: "pending"}); err != nil {
+							return err
+						}
+					}
+				}
+			case sessionstore.ItemToolCallStatus:
+				status, ok := item.Data.(sessionstore.ToolCallStatus)
+				if !ok {
+					continue
+				}
+				state := acpStatusFromTool(status.Status, status.Operations)
+				update := acp.Update{Kind: "tool_call_update", ToolCallID: status.CallID, Status: state}
+				if status.Status.Error != "" {
+					update.Content = []any{map[string]any{"type": "content", "content": map[string]string{"type": "text", "text": status.Status.Error}}}
+				}
+				if err := emit(update); err != nil {
+					return err
+				}
+			}
+		}
+		if !page.More {
+			return nil
+		}
+		after = page.NextAfter
+	}
+}
+
+func acpStatusFromTool(status tool.CallStatus, operations []operation.Operation) string {
+	if status.Error != "" {
+		return "failed"
+	}
+	if len(status.WaitingFor) == 0 {
+		return "completed"
+	}
+	states := make(map[operation.ID]operation.Status, len(operations))
+	for _, item := range operations {
+		states[item.ID] = item.Status
+	}
+	for _, id := range status.WaitingFor {
+		switch states[id] {
+		case operation.StatusFailed:
+			return "failed"
+		case operation.StatusCanceled:
+			return "cancelled"
+		case operation.StatusCompleted:
+		default:
+			return "in_progress"
+		}
+	}
+	return "completed"
+}
+
+func savedACPSessionWorkspace(sessionDir, id string) (string, error) {
+	digest := sha256.Sum256([]byte(id))
+	path := filepath.Join(sessionDir, hex.EncodeToString(digest[:])+".context.json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 128<<20 {
+		return "", fmt.Errorf("session has no readable saved workspace context")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("session has no readable saved workspace context")
+	}
+	defer file.Close()
+	var snapshot struct {
+		Workspace string `json:"Workspace"`
+	}
+	if err := json.NewDecoder(io.LimitReader(file, 128<<20)).Decode(&snapshot); err != nil || snapshot.Workspace == "" {
+		return "", fmt.Errorf("session has no readable saved workspace context")
+	}
+	return snapshot.Workspace, nil
+}
+
+func newACPMessageID() (string, error) {
+	var raw [12]byte
+	if _, err := cryptorand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "pk_" + hex.EncodeToString(raw[:]), nil
 }
 
 // filepathJoin lives here to keep the ACP entry point isolated from main.go.

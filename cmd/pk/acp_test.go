@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkyanam/pk/internal/acp"
+	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
 
@@ -101,5 +103,29 @@ func TestACPCommandRunsPromptThroughRunnerWithInjectedAdapter(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("ACP command did not exit")
+	}
+}
+
+func TestACPReplayLoadsRunnerSessionAndChecksWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	model := &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "history-answer", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "saved answer"}}}}}}}
+	result, err := runner.Run(context.Background(), runner.Options{Prompt: "saved question", Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium", Adapter: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updates []acp.Update
+	err = replayACPSession(context.Background(), sessions, result.SessionID, workspace, func(update acp.Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) < 2 || updates[0].Kind != "user" || updates[0].Text != "saved question" || updates[1].Kind != "assistant" || updates[1].Text != "saved answer" {
+		t.Fatalf("replayed updates=%+v", updates)
+	}
+	if err := replayACPSession(context.Background(), sessions, result.SessionID, t.TempDir(), func(acp.Update) error { return nil }); err == nil {
+		t.Fatal("loaded session into a different workspace")
 	}
 }

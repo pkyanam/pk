@@ -46,7 +46,13 @@ type RunFunc func(context.Context, Turn, func(Update) error) (TurnResult, error)
 type Config struct {
 	Model, Effort string
 	Run           RunFunc
-	MaxLineBytes  int
+	// NewSession reserves the ACP session ID in the backing durable store.
+	// When configured, the ACP ID is also the runner session ID.
+	NewSession func(context.Context, string, string) error
+	// LoadSession validates and replays a durable session before session/load
+	// returns. It must emit history through emit in chronological order.
+	LoadSession  func(context.Context, string, string, func(Update) error) error
+	MaxLineBytes int
 }
 
 type request struct {
@@ -200,9 +206,12 @@ func (s *Server) handle(ctx context.Context, req request) error {
 		s.mu.Lock()
 		s.initialized = true
 		s.mu.Unlock()
-		return s.reply(req, map[string]any{"protocolVersion": ProtocolVersion, "agentCapabilities": map[string]any{"promptCapabilities": map[string]any{}, "sessionCapabilities": map[string]any{}}, "agentInfo": map[string]string{"name": "pk", "title": "pk", "version": "dev"}, "authMethods": []any{}})
+		loadSession := s.cfg.LoadSession != nil
+		return s.reply(req, map[string]any{"protocolVersion": ProtocolVersion, "agentCapabilities": map[string]any{"loadSession": loadSession, "promptCapabilities": map[string]any{}, "sessionCapabilities": map[string]any{}}, "agentInfo": map[string]string{"name": "pk", "title": "pk", "version": "dev"}, "authMethods": []any{}})
 	case "session/new":
-		if len(req.ID) == 0 { return nil }
+		if len(req.ID) == 0 {
+			return nil
+		}
 		if !s.isInitialized() {
 			return rpcErrf(-32002, "initialize must be called before session/new")
 		}
@@ -227,12 +236,66 @@ func (s *Server) handle(ctx context.Context, req request) error {
 		if err != nil {
 			return fmt.Errorf("create ACP session ID: %w", err)
 		}
+		runnerID := ""
+		if s.cfg.NewSession != nil {
+			if err := s.cfg.NewSession(ctx, id, filepath.Clean(p.CWD)); err != nil {
+				return rpcErrf(-32000, "create durable session: %v", err)
+			}
+			runnerID = id
+		}
 		s.mu.Lock()
-		s.sessions[id] = &session{id: id, workspace: filepath.Clean(p.CWD)}
+		s.sessions[id] = &session{id: id, workspace: filepath.Clean(p.CWD), runnerID: runnerID}
 		s.mu.Unlock()
 		return s.reply(req, map[string]string{"sessionId": id})
+	case "session/load":
+		if len(req.ID) == 0 {
+			return nil
+		}
+		if !s.isInitialized() {
+			return rpcErrf(-32002, "initialize must be called before session/load")
+		}
+		if s.cfg.LoadSession == nil {
+			return rpcErrf(-32601, "session/load is not supported")
+		}
+		var p struct {
+			SessionID  string            `json:"sessionId"`
+			CWD        string            `json:"cwd"`
+			MCPServers []json.RawMessage `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil || strings.TrimSpace(p.SessionID) == "" {
+			return rpcErrf(-32602, "invalid session/load parameters")
+		}
+		if len(p.MCPServers) > 0 {
+			return rpcErrf(-32602, "pk ACP does not support MCP server declarations")
+		}
+		if !filepath.IsAbs(p.CWD) {
+			return rpcErrf(-32602, "cwd must be an absolute path")
+		}
+		info, err := os.Stat(p.CWD)
+		if err != nil || !info.IsDir() {
+			return rpcErrf(-32602, "cwd must be an existing directory")
+		}
+		s.mu.Lock()
+		if existing := s.sessions[p.SessionID]; existing != nil {
+			s.mu.Unlock()
+			return rpcErrf(-32000, "session is already active")
+		}
+		s.mu.Unlock()
+		workspace := filepath.Clean(p.CWD)
+		err = s.cfg.LoadSession(ctx, p.SessionID, workspace, func(update Update) error {
+			return s.emitUpdate(p.SessionID, update)
+		})
+		if err != nil {
+			return rpcErrf(-32001, "load session: %v", err)
+		}
+		s.mu.Lock()
+		s.sessions[p.SessionID] = &session{id: p.SessionID, workspace: workspace, runnerID: p.SessionID}
+		s.mu.Unlock()
+		return s.reply(req, map[string]any{})
 	case "session/prompt":
-		if len(req.ID) == 0 { return nil }
+		if len(req.ID) == 0 {
+			return nil
+		}
 		if !s.isInitialized() {
 			return rpcErrf(-32002, "initialize must be called before session/prompt")
 		}
@@ -318,6 +381,14 @@ func (s *Server) handleCancel(req request) {
 func (s *Server) emitUpdate(sessionID string, u Update) error {
 	var data map[string]any
 	switch u.Kind {
+	case "user":
+		if u.Text == "" {
+			return nil
+		}
+		if u.MessageID == "" {
+			u.MessageID, _ = newID()
+		}
+		data = map[string]any{"sessionUpdate": "user_message_chunk", "messageId": u.MessageID, "content": map[string]string{"type": "text", "text": u.Text}}
 	case "assistant":
 		if u.Text == "" {
 			return nil
@@ -409,5 +480,5 @@ func newID() (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
-	return "pk_" + hex.EncodeToString(b[:]), nil
+	return "pk-" + hex.EncodeToString(b[:]), nil
 }

@@ -106,6 +106,75 @@ func TestServerV1PromptSendsStreamingSessionUpdates(t *testing.T) {
 	}
 }
 
+func TestServerAdvertisesAndLoadsSavedSessionWithOrderedReplay(t *testing.T) {
+	inR, inW := io.Pipe()
+	out := &testWriter{lines: make(chan []byte, 16)}
+	const sessionID = "pk_durable-session"
+	seen := make(chan Turn, 1)
+	server, err := NewServer(inR, out, Config{
+		LoadSession: func(_ context.Context, id, workspace string, emit func(Update) error) error {
+			if id != sessionID || workspace != "/tmp" {
+				t.Fatalf("load args id=%q workspace=%q", id, workspace)
+			}
+			if err := emit(Update{Kind: "user", MessageID: "old-user", Text: "prior question"}); err != nil {
+				return err
+			}
+			return emit(Update{Kind: "assistant", MessageID: "old-assistant", Text: "prior answer"})
+		},
+		Run: func(_ context.Context, turn Turn, _ func(Update) error) (TurnResult, error) {
+			seen <- turn
+			return TurnResult{SessionID: turn.SessionID}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(context.Background()) }()
+	sendLine(t, inW, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": 1}})
+	initialized := nextMessage(t, out)
+	caps := initialized["result"].(map[string]any)["agentCapabilities"].(map[string]any)
+	if caps["loadSession"] != true {
+		t.Fatalf("initialize capabilities=%v", caps)
+	}
+	sendLine(t, inW, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "session/load", "params": map[string]any{"sessionId": sessionID, "cwd": "/tmp", "mcpServers": []any{}}})
+	var replay []string
+	for {
+		message := nextMessage(t, out)
+		if method, _ := message["method"].(string); method == "session/update" {
+			params := message["params"].(map[string]any)
+			if params["sessionId"] != sessionID {
+				t.Fatalf("replay session=%v", params)
+			}
+			update := params["update"].(map[string]any)
+			replay = append(replay, update["sessionUpdate"].(string))
+		} else if message["id"] == float64(2) {
+			if _, ok := message["result"].(map[string]any); !ok {
+				t.Fatalf("load response=%v", message)
+			}
+			break
+		}
+	}
+	if len(replay) != 2 || replay[0] != "user_message_chunk" || replay[1] != "agent_message_chunk" {
+		t.Fatalf("replay sequence=%v", replay)
+	}
+	sendLine(t, inW, map[string]any{"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": map[string]any{"sessionId": sessionID, "prompt": []any{map[string]any{"type": "text", "text": "continue"}}}})
+	for {
+		message := nextMessage(t, out)
+		if message["id"] == float64(3) {
+			break
+		}
+	}
+	turn := <-seen
+	if turn.SessionID != sessionID || turn.Prompt != "continue" {
+		t.Fatalf("loaded turn=%+v", turn)
+	}
+	_ = inW.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServerCancelReturnsCancelledStopReason(t *testing.T) {
 	inR, inW := io.Pipe()
 	out := &testWriter{lines: make(chan []byte, 16)}
