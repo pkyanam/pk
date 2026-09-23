@@ -317,6 +317,139 @@ func TestRPCPromptUsesAdapterPreparedDuringAsyncSetup(t *testing.T) {
 	_ = adapter.Close()
 }
 
+func TestRPCCompletesTwoSequentialPromptsOnOneSession(t *testing.T) {
+	workspace, sessions := t.TempDir(), t.TempDir()
+	model := &mockModelAdapter{replies: []adapterReply{
+		{response: llm.Response{ID: "first", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "first answer"}}}}},
+		{response: llm.Response{ID: "second", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "second answer"}}}}},
+	}}
+	sink := &rpcEventSink{events: make(chan []byte, 64)}
+	reader, writer := io.Pipe()
+	server := &rpcServer{ctx: context.Background(), input: reader, output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}, requestTypes: map[string]string{}}
+	served := make(chan error, 1)
+	go func() { served <- server.serve() }()
+	writeCommand := func(id, text string) {
+		t.Helper()
+		payload, _ := json.Marshal(map[string]string{"text": text})
+		command, _ := json.Marshal(rpcMessage{Version: 1, ID: id, Type: "prompt", Payload: payload})
+		if _, err := writer.Write(append(command, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitTurn := func(id string) {
+		t.Helper()
+		timer := time.NewTimer(8 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case raw := <-sink.events:
+				var event rpcEvent
+				if err := json.Unmarshal(raw, &event); err != nil {
+					t.Fatal(err)
+				}
+				if event.ID == id && event.Type == "turn_finished" {
+					return
+				}
+				if event.ID == id && event.Type == "error" {
+					t.Fatalf("prompt %s failed: %v", id, event.Payload)
+				}
+			case <-timer.C:
+				t.Fatalf("prompt %s did not finish", id)
+			}
+		}
+	}
+	writeCommand("prompt-one", "first prompt")
+	waitTurn("prompt-one")
+	server.mu.Lock()
+	if server.active {
+		t.Fatal("server remained active after first turn_finished")
+	}
+	sessionID := server.session
+	server.mu.Unlock()
+	if sessionID == "" {
+		t.Fatal("first prompt did not create a session")
+	}
+	writeCommand("prompt-two", "second prompt")
+	waitTurn("prompt-two")
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("model calls=%d, want two", calls)
+	}
+	shutdown, _ := json.Marshal(rpcMessage{Version: 1, ID: "shutdown", Type: "shutdown"})
+	_, _ = writer.Write(append(shutdown, '\n'))
+	_ = writer.Close()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RPC server did not stop after two turns")
+	}
+}
+
+func TestRPCTurnFinishesAfterToolThenAssistantResponse(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"command": "printf rpc-tool-result"})
+	workspace, sessions := t.TempDir(), t.TempDir()
+	model := &mockModelAdapter{replies: []adapterReply{
+		{response: llm.Response{ID: "tool-turn", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "shell-1", Name: "Bash", Arguments: string(args)}}}}},
+		{response: llm.Response{ID: "final-turn", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "command complete"}}}}},
+	}}
+	sink := &rpcEventSink{events: make(chan []byte, 64)}
+	reader, writer := io.Pipe()
+	server := &rpcServer{ctx: context.Background(), input: reader, output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}, requestTypes: map[string]string{}}
+	served := make(chan error, 1)
+	go func() { served <- server.serve() }()
+	prompt, _ := json.Marshal(rpcMessage{Version: 1, ID: "tool-turn", Type: "prompt", Payload: json.RawMessage(`{"text":"run a command"}`)})
+	if _, err := writer.Write(append(prompt, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.NewTimer(8 * time.Second)
+	defer deadline.Stop()
+	var assistantSeen bool
+	for {
+		select {
+		case raw := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type == "assistant" && strings.Contains(fmt.Sprint(event.Payload), "command complete") {
+				assistantSeen = true
+			}
+			if event.ID == "tool-turn" && event.Type == "turn_finished" {
+				if !assistantSeen {
+					t.Fatal("turn_finished arrived before the final assistant event")
+				}
+				server.mu.Lock()
+				active := server.active
+				server.mu.Unlock()
+				if active {
+					t.Fatal("server remained active after tool turn completion")
+				}
+				goto finished
+			}
+		case <-deadline.C:
+			t.Fatal("RPC turn did not finish after Bash and assistant response")
+		}
+	}
+
+finished:
+	shutdown, _ := json.Marshal(rpcMessage{Version: 1, ID: "shutdown", Type: "shutdown"})
+	_, _ = writer.Write(append(shutdown, '\n'))
+	_ = writer.Close()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RPC server did not stop after tool turn")
+	}
+}
+
 func TestRPCCancelInterruptsBlockedAttachmentSetup(t *testing.T) {
 	workspace, sessions := t.TempDir(), t.TempDir()
 	entered := make(chan struct{})

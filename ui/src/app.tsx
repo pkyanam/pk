@@ -131,6 +131,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const promptCommandId = useRef("")
   const preferenceErrors = useRef(new Map<string, () => void>())
 
+  const clearComposer = (focus = false) => {
+    textarea.current?.clear()
+    setDraft("")
+    if (focus) textarea.current?.focus()
+  }
+
   const addEntry = (role: Role, text: string) => {
     if (!text.trim()) return
     setEntries((previous) => [...previous, { id: entryId.current++, role, text }].slice(-300))
@@ -148,7 +154,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return [item?.type ?? "operation", item?.state, error || output, item?.exit_code === undefined ? "" : `exit ${item.exit_code}`].filter(Boolean).join(" · ")
     }).filter(Boolean).join("\n") : ""
     const detail = preview(operation, 900)
-    const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded"].includes(status.toLowerCase())
+    const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes(status.toLowerCase())
     const error = preview(data.status?.error ?? data.error)
     const displayState = error ? "failed" : terminal ? status : status === "awaiting" ? "working" : status
     setEntries((current) => {
@@ -219,8 +225,6 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (question?.id === String(data.id ?? "")) {
           if (question.submittedAnswer) addEntry("user", `Answer · ${question.submittedAnswer}`)
           setQuestion(null)
-          if (textarea.current) textarea.current.initialValue = ""
-          setDraft("")
         }
         break
       case "question_cancelled":
@@ -342,9 +346,21 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (!/^\[pk\] (Running|Finished) /.test(line)) addEntry("system", line)
         break
       }
-      case "rpc_closed":
+      case "rpc_closed": {
         setConnected(false)
+        setBusy(false)
+        setEntries((entries) => entries.map((entry) => entry.role === "tool" && !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase())
+          ? { ...entry, toolState: "interrupted", text: entry.text || "Agent connection closed before this tool finished." }
+          : entry))
+        setTools([])
+        setQuestion(null)
+        waiting.current = false
+        turnActive.current = false
+        promptCommandId.current = ""
+        setActiveTaskId("")
+        addEntry("system", "Agent connection closed. Relaunch pk to reconnect.")
         break
+      }
     }
   }
 
@@ -362,20 +378,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (!answer) return
       transport.send("answer_question" as any, { id: question.id, answer })
       setQuestion({ ...question, answering: true, submittedAnswer: answer })
-      textarea.current!.initialValue = ""
-      setDraft("")
+      clearComposer(true)
       return
     }
     if (!text || !connected || (waiting.current && !activeTaskId)) return
     if (text.startsWith("/")) {
       runSlashCommand(text)
-      textarea.current!.initialValue = ""
-      setDraft("")
+      clearComposer(true)
       return
     }
     addEntry("user", text)
-    textarea.current!.initialValue = ""
-    setDraft("")
+    clearComposer(true)
     if (activeTaskId) {
       transport.send("send_input" as any, { task_id: activeTaskId, text })
       return
@@ -488,8 +501,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     if (!question || question.answering || !answer) return
     transport.send("answer_question" as any, { id: question.id, answer })
     setQuestion({ ...question, answering: true, submittedAnswer: answer })
-    if (textarea.current) textarea.current.initialValue = ""
-    setDraft("")
+    clearComposer(true)
   }
 
   const toggleToolGroup = (key: string) => {
@@ -554,7 +566,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
     }
     if (key.ctrl && key.name === "p") {
-      textarea.current!.initialValue = "/"
+      textarea.current!.setText("/")
       setDraft("/")
       textarea.current?.focus()
       return
@@ -566,7 +578,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         key.preventDefault()
         const selected = filtered[slashIndex % filtered.length]
         if (selected && selected.action !== "task" && selected.action !== "attach") runSlashCommand(selected.name)
-        else if (selected) { textarea.current!.initialValue = `${selected.name} `; setDraft(`${selected.name} `) }
+        else if (selected) { textarea.current!.setText(`${selected.name} `); setDraft(`${selected.name} `) }
         return
       }
       if (filtered.length && (key.name === "up" || key.name === "down")) {
@@ -577,7 +589,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (filtered.length && key.name === "tab") {
         key.preventDefault()
         const selected = filtered[slashIndex % filtered.length]
-        if (selected) { textarea.current!.initialValue = `${selected.name} `; setDraft(`${selected.name} `) }
+        if (selected) { textarea.current!.setText(`${selected.name} `); setDraft(`${selected.name} `) }
         return
       }
     }
@@ -588,7 +600,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if (isEscape && draft.startsWith("/")) {
       key.preventDefault()
-      textarea.current!.initialValue = ""
+      textarea.current!.clear()
       setDraft("")
       return
     }
@@ -628,7 +640,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <text fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
         <text fg={palette.dim} content={usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"} />
       </box>
-      <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }} focused={!selector}>
+      <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
         {groupTranscript(entries).map((item) => item.kind === "entry"
           ? <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
           : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
@@ -640,13 +652,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.muted} content="Message" />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea id="composer" ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
             setSlashIndex(slashWindowStart + localIndex)
             if (item.action === "task" || item.action === "attach") {
-              textarea.current!.initialValue = `${item.name} `
+              textarea.current!.setText(`${item.name} `)
               setDraft(`${item.name} `)
               textarea.current?.focus()
             } else runSlashCommand(item.name)
@@ -688,12 +700,13 @@ function ToolTranscriptGroup({ entries, clock, expanded, onToggle }: { entries: 
   const renderer = useRenderer()
   const first = entries[0]!
   const failed = entries.some((entry) => entry.toolState === "failed")
-  const running = entries.some((entry) => !["completed", "complete", "failed", "canceled", "cancelled", "succeeded"].includes((entry.toolState ?? "").toLowerCase()))
+  const interrupted = entries.some((entry) => entry.toolState === "interrupted")
+  const running = entries.some((entry) => !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase()))
   const elapsed = entries.reduce((total, entry) => total + (entry.elapsedMs ?? (entry.startedAt ? Math.max(0, clock - entry.startedAt) : 0)), 0)
   const summary = entries.length > 1
     ? `${first.toolName ?? "tool"} · Ran ${entries.length} ${first.toolName === "Bash" ? "commands" : "calls"}`
     : `${first.toolName ?? "tool"} · ${first.commandPreview || "operation"}`
-  const color = failed ? palette.red : running ? palette.accent : palette.green
+  const color = failed ? palette.red : interrupted ? palette.amber : running ? palette.accent : palette.green
   const available = Math.max(24, Math.min(112, renderer.width - 24))
   const compactSummary = summary.length > available ? `${summary.slice(0, available - 1)}…` : summary
   return <box focusable onMouseDown={(event) => {
@@ -701,7 +714,6 @@ function ToolTranscriptGroup({ entries, clock, expanded, onToggle }: { entries: 
     event.preventDefault()
     event.stopPropagation()
     onToggle()
-    event.currentTarget?.focus()
   }} onKeyDown={(key) => {
     if (key.name === "return" || key.name === "space") {
       key.preventDefault()
@@ -709,7 +721,7 @@ function ToolTranscriptGroup({ entries, clock, expanded, onToggle }: { entries: 
     }
   }} style={{ flexDirection: "column", width: "100%", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: failed ? palette.red : palette.accent }}>
     <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
-      <text fg={color} content={running ? "◌" : failed ? "!" : "✓"} />
+      <text fg={color} content={running ? "◌" : failed ? "!" : interrupted ? "↯" : "✓"} />
       <text fg={palette.text} content={compactSummary} />
       <text fg={palette.dim} content={shortTime(elapsed)} />
       <text fg={palette.dim} content={expanded ? "▾" : "›"} />
