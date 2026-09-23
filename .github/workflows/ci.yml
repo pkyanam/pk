@@ -64,11 +64,11 @@ jobs:
   ui:
     name: Verify OpenTUI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -77,6 +77,12 @@ jobs:
       - name: Install locked UI dependencies
         working-directory: ui
         run: bun install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pk/opentui-native
+          key: opentui-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/prepare-opentui-native') }}
+      - name: Build pinned native image renderer
+        run: scripts/prepare-opentui-native
       - name: Typecheck and test UI
         working-directory: ui
         run: |

@@ -45,10 +45,15 @@ jobs:
           printf 'Runner: %s / %s; Go: %s\n' "$(uname -s)" "$(uname -m)" "$actual"
       - name: Test Go source
         run: go test ./...
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pk/opentui-native
+          key: opentui-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/prepare-opentui-native') }}
       - name: Test OpenTUI source
         working-directory: ui
         run: |
           bun install --frozen-lockfile
+          ../scripts/prepare-opentui-native "$PWD"
           bun run check
           bun test
       - name: Build and import-smoke paired release

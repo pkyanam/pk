@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+# Rebuild the pinned OpenTUI 0.5.12 host-native package and install it into a
+# UI checkout without running Bun's package installer in the target checkout.
+readonly SOURCE_COMMIT=4b1474e009bf78365a7a4866e83a9e522533ef42
+readonly ZIG_VERSION=0.16.0
+readonly BUN_VERSION=1.4.1
+readonly ZIG_BASE=https://ziglang.org/download/0.16.0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/prepare-opentui-native [ui-directory]
+
+Builds OpenTUI's native core at a pinned source commit with Zig 0.16.0, then
+replaces only node_modules/@opentui/core-<platform>-<arch> in the UI directory.
+The script uses a private cache under XDG_CACHE_HOME (or ~/.cache).
+EOF
+}
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then usage; exit 0; fi
+if [[ $# -gt 1 ]]; then usage >&2; exit 2; fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+ui_dir=${1:-$repo_root/ui}
+ui_dir=$(cd -- "$ui_dir" && pwd -P)
+cache_base=${PK_OPENTUI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/pk/opentui-native}
+mkdir -p "$cache_base"
+chmod 700 "$cache_base"
+work=
+lock_dir=
+lock_acquired=0
+cleanup() {
+  [[ -z "$work" ]] || rm -rf "$work"
+  (( lock_acquired == 0 )) || rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+hash_file() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else sha256sum "$1" | awk '{print $1}'; fi
+}
+
+os=$(uname -s)
+machine=$(uname -m)
+case "$os/$machine" in
+  Darwin/arm64|Darwin/aarch64)
+    platform=darwin; arch=arm64; zig_asset=aarch64-macos
+    zig_sha=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
+    zig_bytes=52238004
+    bun_asset=darwin-aarch64
+    bun_sha=d8973ce835fa7867e5cc79afee6fc6f1ae0117aa4bd5fc2546fd00c512f71386
+    bun_bytes=25395498
+    ;;
+  Linux/x86_64|Linux/amd64)
+    platform=linux; arch=x64; zig_asset=x86_64-linux
+    zig_sha=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+    zig_bytes=55478392
+    bun_asset=linux-x64
+    bun_sha=74c1c3bee7cd998500c8f969cd8972355ac6a07207e94a39eece1999b56ffabf
+    bun_bytes=36659492
+    ;;
+  *) echo "unsupported native build host: $os/$machine (supported: macOS arm64, Linux x86_64)" >&2; exit 1 ;;
+esac
+
+target_package="$ui_dir/node_modules/@opentui/core-$platform-$arch"
+[[ -d "$ui_dir/node_modules/@opentui/core" ]] || { echo "missing installed @opentui/core in $ui_dir; run the UI's frozen dependency install first" >&2; exit 1; }
+[[ -d "$ui_dir/node_modules/@opentui" ]] || { echo "missing $ui_dir/node_modules/@opentui" >&2; exit 1; }
+mkdir -p "$cache_base/locks"
+lock_dir="$cache_base/locks/$SOURCE_COMMIT-$platform-$arch.lock"
+lock_attempt=0
+until mkdir "$lock_dir" 2>/dev/null; do
+  lock_attempt=$((lock_attempt + 1))
+  if (( lock_attempt >= 120 )); then echo "timed out waiting for native build cache lock: $lock_dir" >&2; exit 1; fi
+  sleep 1
+done
+lock_acquired=1
+
+bun_host=${BUN_BIN:-$(command -v bun || true)}
+if [[ -n "${BUN_BIN:-}" ]]; then
+  [[ -x "$bun_host" && $($bun_host --version 2>/dev/null || true) == "$BUN_VERSION" ]] || { echo "BUN_BIN must point to Bun $BUN_VERSION" >&2; exit 1; }
+elif [[ -n "$bun_host" && $($bun_host --version 2>/dev/null || true) == "$BUN_VERSION" ]]; then
+  :
+else
+  bun_home="$cache_base/toolchains/bun-$BUN_VERSION-$bun_asset"
+  bun_host="$bun_home/bun"
+  if [[ ! -x "$bun_host" || $($bun_host --version 2>/dev/null || true) != "$BUN_VERSION" ]]; then
+    work=$(mktemp -d "$cache_base/work.XXXXXXXX")
+    archive="$work/bun.zip"
+    mkdir -p "$bun_home"
+    echo "Downloading pinned Bun $BUN_VERSION for $bun_asset..."
+    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --max-filesize "$bun_bytes" "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-$bun_asset.zip" -o "$archive"
+    [[ $(wc -c < "$archive" | tr -d ' ') == "$bun_bytes" ]] || { echo "Bun archive size mismatch" >&2; exit 1; }
+    [[ $(hash_file "$archive") == "$bun_sha" ]] || { echo "Bun archive SHA-256 mismatch" >&2; exit 1; }
+    unzip -q "$archive" -d "$work/bun"
+    bun_download="$work/bun/bun-$bun_asset/bun"
+    [[ -x "$bun_download" ]] || { echo "verified Bun archive is missing its executable" >&2; exit 1; }
+    [[ $($bun_download --version) == "$BUN_VERSION" ]] || { echo "downloaded Bun version mismatch" >&2; exit 1; }
+    cp "$bun_download" "$bun_host"
+    chmod 700 "$bun_host"
+    rm -rf "$work"
+    work=
+  fi
+fi
+bun_bin=$bun_host
+core_version=$("$bun_bin" -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$ui_dir/node_modules/@opentui/core/package.json")
+[[ "$core_version" == 0.5.12 ]] || { echo "target UI has @opentui/core $core_version, expected 0.5.12" >&2; exit 1; }
+
+verify_package() {
+  local package=$1 marker="$1/pk-native-provenance.json" lib="$1/libopentui.dylib"
+  [[ $platform == linux ]] && lib="$1/libopentui.so"
+  [[ -f "$marker" && -f "$lib" ]] || return 1
+  local metadata
+  metadata=$("$bun_bin" -e 'const x=await Bun.file(process.argv[1]).json(); if(x.source_commit!==process.argv[2]||x.package_version!=="0.5.12"||x.platform!==process.argv[3]||x.arch!==process.argv[4]||x.zig_version!==process.argv[5]) process.exit(1); console.log(x.binary_sha256)' "$marker" "$SOURCE_COMMIT" "$platform" "$arch" "$ZIG_VERSION") || return 1
+  [[ $metadata =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ $(hash_file "$lib") == "$metadata" ]]
+}
+
+cache_package="$cache_base/builds/$SOURCE_COMMIT/$platform-$arch"
+if ! verify_package "$cache_package"; then
+  work=$(mktemp -d "$cache_base/work.XXXXXXXX")
+  source="$work/opentui"
+  echo "Fetching OpenTUI $SOURCE_COMMIT..."
+  mkdir "$source"
+  git -C "$source" init --quiet
+  git -C "$source" remote add origin https://github.com/anomalyco/opentui.git
+  git -C "$source" fetch --quiet --depth=1 origin "$SOURCE_COMMIT"
+  git -C "$source" checkout --quiet --detach FETCH_HEAD
+  [[ $(git -C "$source" rev-parse HEAD) == "$SOURCE_COMMIT" ]] || { echo "OpenTUI source revision mismatch" >&2; exit 1; }
+  [[ $("$bun_bin" -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$source/packages/core/package.json") == 0.5.12 ]] || { echo "pinned OpenTUI source is not version 0.5.12" >&2; exit 1; }
+  lock_before=$(hash_file "$source/bun.lock")
+  (cd "$source" && "$bun_bin" install --frozen-lockfile)
+  [[ $(hash_file "$source/bun.lock") == "$lock_before" ]] || { echo "frozen install unexpectedly changed upstream bun.lock" >&2; exit 1; }
+
+  zig_bin=${ZIG_BIN:-$(command -v zig || true)}
+  if [[ -n "$zig_bin" ]] && [[ $($zig_bin version 2>/dev/null || true) != "$ZIG_VERSION" ]]; then
+    echo "ignoring non-pinned Zig at $zig_bin" >&2
+    zig_bin=
+  fi
+  if [[ -z "$zig_bin" ]]; then
+    zig_home="$cache_base/toolchains/zig-$ZIG_VERSION-$zig_asset"
+    zig_bin="$zig_home/zig"
+    if [[ ! -x "$zig_bin" || $($zig_bin version 2>/dev/null || true) != "$ZIG_VERSION" ]]; then
+      mkdir -p "$zig_home"
+      archive="$work/zig.tar.xz"
+      url="$ZIG_BASE/zig-$zig_asset-$ZIG_VERSION.tar.xz"
+      echo "Downloading pinned Zig $ZIG_VERSION for $zig_asset..."
+      curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --max-filesize "$zig_bytes" "$url" -o "$archive"
+      [[ $(wc -c < "$archive" | tr -d ' ') == "$zig_bytes" ]] || { echo "Zig archive size mismatch" >&2; exit 1; }
+      [[ $(hash_file "$archive") == "$zig_sha" ]] || { echo "Zig archive SHA-256 mismatch" >&2; exit 1; }
+      mkdir -p "$work/zig"
+      tar -xJf "$archive" -C "$work/zig"
+      extracted="$work/zig/zig-$zig_asset-$ZIG_VERSION/zig"
+      [[ -x "$extracted" && $($extracted version) == "$ZIG_VERSION" ]] || { echo "downloaded Zig version mismatch" >&2; exit 1; }
+      rm -rf "$zig_home"
+      mkdir -p "$(dirname "$zig_home")"
+      mv "$work/zig/zig-$zig_asset-$ZIG_VERSION" "$zig_home"
+    fi
+  fi
+  export PATH="$(dirname "$zig_bin"):$(dirname "$bun_bin"):$PATH"
+
+  echo "Building OpenTUI native core with Zig $ZIG_VERSION..."
+  (cd "$source/packages/core" && "$bun_bin" run build:native)
+  built="$source/packages/core/node_modules/@opentui/core-$platform-$arch"
+  [[ -f "$built/package.json" ]] || { echo "native build did not produce the expected $platform-$arch package" >&2; exit 1; }
+  lib="$built/libopentui.dylib"; [[ $platform == linux ]] && lib="$built/libopentui.so"
+  [[ -f "$lib" ]] || { echo "native package is missing $(basename "$lib")" >&2; exit 1; }
+  binary_sha=$(hash_file "$lib")
+  mkdir -p "$(dirname "$cache_package")"
+  staged="$cache_base/builds/$SOURCE_COMMIT/.$platform-$arch.tmp"
+  rm -rf "$staged"
+  mkdir -p "$staged"
+  cp -R "$built/." "$staged/"
+  "$bun_bin" -e 'const m={source_commit:process.argv[1],package_version:"0.5.12",platform:process.argv[2],arch:process.argv[3],zig_version:process.argv[4],binary_sha256:process.argv[5]}; await Bun.write(process.argv[6],JSON.stringify(m,null,2)+"\n")' "$SOURCE_COMMIT" "$platform" "$arch" "$ZIG_VERSION" "$binary_sha" "$staged/pk-native-provenance.json"
+  rm -rf "$cache_package"
+  mv "$staged" "$cache_package"
+  if ! verify_package "$cache_package"; then echo "cached native package failed post-build verification" >&2; exit 1; fi
+fi
+
+# Use a copied package, never a hardlink: Bun's package installer and other
+# tools may mutate installed files independently of this verified cache.
+install_stage="$ui_dir/node_modules/@opentui/.$(basename "$target_package").pk-new.$$"
+backup="$ui_dir/node_modules/@opentui/.$(basename "$target_package").pk-old.$$"
+[[ ! -L "$target_package" ]] || { echo "refusing to replace symlinked native package: $target_package" >&2; exit 1; }
+rm -rf "$install_stage" "$backup"
+mkdir -p "$install_stage"
+cp -R "$cache_package/." "$install_stage/"
+if ! verify_package "$install_stage"; then rm -rf "$install_stage"; echo "staged native package failed verification" >&2; exit 1; fi
+if [[ -e "$target_package" ]]; then mv "$target_package" "$backup"; fi
+if ! mv "$install_stage" "$target_package"; then
+  [[ ! -e "$backup" ]] || mv "$backup" "$target_package"
+  echo "could not publish native package" >&2; exit 1
+fi
+rm -rf "$backup"
+echo "Installed OpenTUI native $platform-$arch from $SOURCE_COMMIT"
+echo "Binary SHA-256: $(hash_file "$target_package/$( [[ $platform == linux ]] && echo libopentui.so || echo libopentui.dylib )")"

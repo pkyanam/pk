@@ -77,6 +77,22 @@ and input/output/cache counters with per-counter call coverage. Failed
 provider attempts remain in the ledger; missing counters remain unknown.
 There is no cost estimate.
 
+## Footer readout
+
+The right side of the status bar shows `ctx ~106k / 1.3m` for a known model
+window, or `ctx ~106k / budget 128k` when only an operational fallback is known.
+The `~` marks a heuristic estimate of the latest projected request actually sent,
+not a provider tokenizer count or a continuously recomputed draft size. It updates
+for each model request, including after compaction. Latest provider input/output
+and cache counts remain separate; cached input is part of input, not added to it.
+Use `/usage` for the full budget and source details.
+
+For Workers AI `@cf/zai-org/glm-5.3-flash`, pk uses the
+[documented 1,310,720-token window](https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/)
+when discovery omits limits. This fallback applies only on the official Workers AI
+endpoint. Explicit overrides and fresh provider metadata take precedence. Output,
+safety, and compaction reserves still reduce the input budget and trigger threshold.
+
 ## Inspect and configure
 
 The TUI `/usage` panel can edit the active provider/model override, operational

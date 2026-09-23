@@ -56,6 +56,7 @@ if [ "${PK_RELEASE_SKIP_TESTS:-0}" != 1 ]; then
 	go test ./...
 fi
 (cd ui && bun install --frozen-lockfile)
+"$ROOT/scripts/prepare-opentui-native" "$ROOT/ui"
 if [ "${PK_RELEASE_SKIP_TESTS:-0}" != 1 ]; then
 	(cd ui && bun run check && bun test)
 fi
@@ -64,6 +65,7 @@ CGO_ENABLED=1 go build -trimpath -o "$stage/pk" ./cmd/pk
 
 cp ui/package.json ui/bun.lock "$stage/ui/"
 (cd "$stage/ui" && bun install --production --frozen-lockfile)
+"$ROOT/scripts/prepare-opentui-native" "$stage/ui"
 cp -R ui/dist "$stage/ui/dist"
 
 if [ ! -x "$stage/pk" ] || [ ! -f "$stage/ui/dist/main.js" ] || [ ! -f "$stage/ui/package.json" ] || [ ! -f "$stage/ui/bun.lock" ] || [ ! -d "$stage/ui/node_modules" ]; then

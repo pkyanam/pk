@@ -6,6 +6,8 @@ if ! command -v bun >/dev/null 2>&1; then
   echo "bun is required to build the OpenTUI frontend" >&2
   exit 1
 fi
-(cd ui && bun install --frozen-lockfile && bun run build)
+(cd ui && bun install --frozen-lockfile)
+"$ROOT/scripts/prepare-opentui-native" "$ROOT/ui"
+(cd ui && bun run build)
 mkdir -p bin
 go build -o bin/pk ./cmd/pk

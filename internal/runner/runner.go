@@ -872,6 +872,19 @@ func toolCallJSONEvent(id session.ID, status sessionstore.ToolCallStatus, metada
 
 func operationJSONEvent(current operation.Operation) map[string]any {
 	result := map[string]any{"id": current.ID, "type": current.Type, "state": string(current.Status)}
+	if current.Type == operation.TypeRemoteJob && current.Status == operation.StatusCompleted {
+		if state, err := operation.DecodeRemoteJobState(current); err == nil && state.Plan.Type == "pk.imagegen" {
+			var generated struct {
+				Path   string `json:"path"`
+				Width  int    `json:"width"`
+				Height int    `json:"height"`
+				MIME   string `json:"mime"`
+			}
+			if json.Unmarshal([]byte(state.TerminalResult), &generated) == nil && generated.Path != "" {
+				result["generated_image"] = generated
+			}
+		}
+	}
 	if current.Type != operation.TypeShell {
 		return result
 	}

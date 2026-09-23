@@ -924,7 +924,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			opts.ProviderID = providerID
 			opts.Adapter = client
 			s.mu.Unlock()
-			out := &rpcRunnerOutput{server: s, id: msg.ID}
+			out := &rpcRunnerOutput{server: s, id: msg.ID, workspace: workspace}
 			opts.Prompt = text
 			if len(loadedAttachments) > 0 {
 				if record, recordErr := presentation.NewRecord(originalUserText, text, loadedAttachments); recordErr != nil {
@@ -1428,7 +1428,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		s.mu.Lock()
-		currentSession, sessionDir := s.session, s.sessionDir
+		currentSession, sessionDir, workspace := s.session, s.sessionDir, s.opts.Workspace
 		s.mu.Unlock()
 		if currentSession == "" || request.SessionID != currentSession {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "history cursor belongs to a different or no-longer-active session", "recoverable": true})
@@ -1439,7 +1439,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			if err != nil {
 				return nil, err
 			}
-			entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(ctx, store, request.SessionID, request.BeforeSequence, s.sessionDir)
+			entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(ctx, store, request.SessionID, request.BeforeSequence, s.sessionDir, workspace)
 			if err != nil {
 				return nil, err
 			}
@@ -2522,13 +2522,14 @@ func taskPayload(t tasks.Task) map[string]any {
 }
 
 type historyEntry struct {
-	Role        string                    `json:"role"`
-	Text        string                    `json:"text"`
-	Sequence    uint64                    `json:"sequence"`
-	Name        string                    `json:"name,omitempty"`
-	State       string                    `json:"state,omitempty"`
-	ToolCallID  string                    `json:"tool_call_id,omitempty"`
-	Attachments []presentation.Attachment `json:"attachments,omitempty"`
+	Role            string                    `json:"role"`
+	Text            string                    `json:"text"`
+	Sequence        uint64                    `json:"sequence"`
+	Name            string                    `json:"name,omitempty"`
+	State           string                    `json:"state,omitempty"`
+	ToolCallID      string                    `json:"tool_call_id,omitempty"`
+	Attachments     []presentation.Attachment `json:"attachments,omitempty"`
+	GeneratedImages []generatedImage          `json:"generated_images,omitempty"`
 }
 
 const (
@@ -2542,7 +2543,10 @@ func (s *rpcServer) emitSessionHistory(requestID, id string) error {
 	if err != nil {
 		return err
 	}
-	entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, id, 0, s.sessionDir)
+	s.mu.Lock()
+	workspace := s.opts.Workspace
+	s.mu.Unlock()
+	entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, id, 0, s.sessionDir, workspace)
 	if err != nil {
 		return err
 	}
@@ -2574,7 +2578,11 @@ func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, 
 	if err != nil {
 		return nil, false, false, 0, err
 	}
-	entries, hasEarlier, truncated := projectHistory(page.Items)
+	var workspace string
+	if len(presentationDirs) > 1 {
+		workspace = presentationDirs[1]
+	}
+	entries, hasEarlier, truncated := projectHistory(page.Items, workspace)
 	if len(presentationDirs) > 0 && presentationDirs[0] != "" {
 		var presentationEarlier, presentationTruncated bool
 		entries, presentationEarlier, presentationTruncated = enrichHistoryPresentation(presentationDirs[0], id, page.Items, entries)
@@ -2588,7 +2596,11 @@ func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, 
 	return entries, hasEarlier, truncated, cursor, nil
 }
 
-func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
+func projectHistory(items []sessionstore.Item, workspaces ...string) ([]historyEntry, bool, bool) {
+	workspace := ""
+	if len(workspaces) > 0 {
+		workspace = workspaces[0]
+	}
 	type toolKey struct {
 		turn session.TurnID
 		call string
@@ -2599,6 +2611,7 @@ func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
 		sequence uint64
 		state    string
 		detail   string
+		images   []generatedImage
 	}
 	calls := map[toolKey]callInfo{}
 	toolRows := map[toolKey]*callHistory{}
@@ -2632,6 +2645,14 @@ func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
 			}
 			row.info = calls[key]
 			row.state, row.detail = historyToolState(status.Status, status.Operations)
+			row.images = nil
+			if row.info.name == imagegen.ToolName && row.state == "completed" {
+				for _, current := range status.Operations {
+					if generated, ok := generatedImageFromOperation(current, workspace); ok {
+						row.images = append(row.images, generated)
+					}
+				}
+			}
 		}
 	}
 	entries := make([]historyEntry, 0, maxHistoryEntries)
@@ -2663,7 +2684,7 @@ func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
 				key := toolKey{status.TurnID, status.CallID}
 				if row := toolRows[key]; row != nil && row.sequence == uint64(item.Sequence) {
 					role, text = "tool", historyToolText(row.info.arguments, row.detail)
-					extra = historyEntry{Name: historyPrefixUTF8(row.info.name, 256), State: row.state, ToolCallID: historyPrefixUTF8(status.CallID, 256)}
+					extra = historyEntry{Name: historyPrefixUTF8(row.info.name, 256), State: row.state, ToolCallID: historyPrefixUTF8(status.CallID, 256), GeneratedImages: append([]generatedImage(nil), row.images...)}
 				}
 			}
 		}
@@ -2704,6 +2725,9 @@ func historyEntrySize(entry historyEntry) int {
 	size := len(entry.Text) + len(entry.Name) + len(entry.State) + len(entry.ToolCallID)
 	for _, attachment := range entry.Attachments {
 		size += len(attachment.Name) + len(attachment.Kind) + len(attachment.ContentType) + 24
+	}
+	for _, generated := range entry.GeneratedImages {
+		size += len(generated.Path) + len(generated.MIME) + 24
 	}
 	return size
 }
@@ -2896,10 +2920,11 @@ func (w taskOutputWriter) Write(p []byte) (int, error) {
 }
 
 type rpcRunnerOutput struct {
-	server *rpcServer
-	id     string
-	mu     sync.Mutex
-	buffer []byte
+	server    *rpcServer
+	id        string
+	workspace string
+	mu        sync.Mutex
+	buffer    []byte
 }
 
 func (w *rpcRunnerOutput) Write(data []byte) (int, error) {
@@ -2919,6 +2944,38 @@ func (w *rpcRunnerOutput) Write(data []byte) (int, error) {
 		var obj map[string]any
 		if json.Unmarshal(line, &obj) == nil {
 			typ, _ := obj["type"].(string)
+			if typ == "tool_call" {
+				if name, _ := obj["name"].(string); name == imagegen.ToolName {
+					if operations, ok := obj["operations"].([]any); ok {
+						state, _ := obj["state"].(string)
+						var generated []generatedImage
+						for _, raw := range operations {
+							operation, ok := raw.(map[string]any)
+							if !ok {
+								continue
+							}
+							candidate, ok := operation["generated_image"]
+							delete(operation, "generated_image")
+							if !ok || state != "completed" || operation["state"] != "completed" {
+								continue
+							}
+							encoded, err := json.Marshal(candidate)
+							if err != nil {
+								continue
+							}
+							var image generatedImage
+							if json.Unmarshal(encoded, &image) == nil {
+								if validated, ok := validateGeneratedImage(image, w.workspace); ok {
+									generated = append(generated, validated)
+								}
+							}
+						}
+						if len(generated) > 0 {
+							obj["generated_images"] = generated
+						}
+					}
+				}
+			}
 			delete(obj, "type")
 			delete(obj, "session_id")
 			_ = w.server.emit(w.id, typ, obj)
