@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public source revision is `19f79b7` (`20260923T145253.657615000Z-6383862dff89-df8d3ba1`). The managed updater passed its build/test gates. Source `961fdba` added an opt-in subagent-schema benchmark and recorded live results; production still uses five subagent tools. Native reload/history/copy checks belong to earlier checkpoints below and were not repeated for this install. Earlier release references in dated checkpoints are historical.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed GitHub binary release is `v0.1.1` (source commit `28f1429`, managed release `legacy-20260923T150731-9d680d28`). The managed updater passed its build/test gates. Source `961fdba` added an opt-in subagent-schema benchmark and recorded live results; production still uses five subagent tools. Native reload/history/copy checks belong to earlier checkpoints below and were not repeated for this install. Earlier release references in dated checkpoints are historical.
 
 ## Product and implementation
 
@@ -121,7 +121,7 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 ### Open session usability fixes from native review
 
-- [ ] Make installation and updates snappy: publish platform-specific GitHub Release artifacts with checksums, prefer verified downloads for routine updates, keep atomic activation/rollback, and eliminate duplicate UI validation in source builds. Measure unchanged-version and actual-update wall time; retain source builds as an explicit development path.
+- [x] Make installation and updates snappy: publish platform-specific GitHub Release artifacts with checksums, prefer verified downloads for routine updates, keep atomic activation/rollback, and eliminate duplicate UI validation in source builds. Published/installed v0.1.1; public clean installer 4.596s, local archive install 1.969s, already-current check 0.195s on one Mac. Source builds remain available explicitly; see docs/updates.md for scope.
 
 - [x] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Committed `af07f05`; 11 focused tests pass including 80×24 visibility and active/busy protections. First installed in `347a609`.
 - [x] Restore compact tool activity on attach/reload/history paging, preserving event order, paging bounds, and excluding analysis. First installed in `347a609`; native reload retained grouped Bash and ViewImage activity, with Ctrl+O details.
@@ -130,6 +130,6 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 ### Latest reported defects and compatibility requests
 
 - [~] Fix `/sessions` overlapping previews, navigation back to the top, select-all/clear, and confusing purge controls. Installed from clean revision `19f79b7` after full build/test gates. Fifteen focused tests cover 63-session navigation, select-all/clear, purge guidance, and 80×24 Unicode rendering; native interactive retest remains. Purge applies to archived sessions in Trash.
-- [~] Fix copied Markdown exposing concealed formatting delimiters while preserving literal code and partial selections. Explicit visible link styling is installed; selection-copy correction remains in progress.
+- [x] Fix copied Markdown exposing concealed formatting delimiters while preserving literal code and partial selections. Installed v0.1.1 copies rendered cells within the visible transcript, with exact wrapped/Unicode/partial-selection fixtures; all 143 UI tests passed. Native cross-terminal coverage remains separate.
 - [ ] Evaluate and implement explicit compatibility adapters for community plugin formats where practical. Current plugins use pk.extensions/v1; OpenCode, Codex, Claude Code, and Pi executable plugin bundles are not drop-in compatible. Shared SKILL.md and MCP support do not imply bundle compatibility.
-- [ ] Expand bounded `pk -p` dogfooding into repeatable agent-driven regression tasks, with monitored completion, disposable workspaces, and recorded outcomes.
+- [x] Add a bounded `pk -p` regression script with isolated configuration, a disposable coding fixture, independent post-run holdout, timeout cleanup, and sanitized summaries. Two live attempts yielded one unverified test-call observation and one passing run; token usage was unavailable. See docs/dogfood.md. Broader regression coverage remains ongoing.

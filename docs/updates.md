@@ -61,3 +61,7 @@ and launch pk again.
 active release and its provenance. Publishing a release depends on the
 repository's release workflow; this documentation does not imply that a
 compatible release is already available.
+
+## Recorded v0.1.1 install check
+
+On the development Mac (2026-09-23, Bun 1.3.14), one public-installer run into fresh temporary install directories took **4.596 seconds**, including fetching install.sh, release metadata, checksums, and the macOS arm64 archive. A separate import from the already downloaded archive took **1.969 seconds**. An already-current `pk update` check took **0.195 seconds** and downloaded no archive. These are single local observations, not cross-machine latency guarantees or a matched source-build benchmark. The published macOS archive is 25,417,877 bytes; Linux amd64 is 28,005,681 bytes. Both platform release jobs passed their Go/UI tests and archive import smoke.

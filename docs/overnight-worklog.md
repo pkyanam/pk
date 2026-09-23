@@ -733,3 +733,13 @@ gates or imply that every backlog item is complete.
 Clean revision `19f79b7` passed the managed updater's Go/UI build and test gates and activated release `20260923T145253.657615000Z-6383862dff89-df8d3ba1`. Source worktree `/tmp/pk-session-manager-release` is retained for provenance. Running user sessions were not interrupted. Session-manager tests: 15 pass/58 assertions. A native interactive retest has not been performed for this install.
 
 Binary-first installer/updater and gated draft-release packaging are committed/pushed at `1d40806`; no GitHub binary release is published yet. CI run 35877358636 was queued at this checkpoint. The copy/Markdown correction remains under active implementation; this did not delay the session fix install.
+
+### First binary release gate
+
+Tag `v0.1.0` points to clean `da05621`; release run 35877602396 passed the Linux amd64 package job but failed on macOS 14 in Go updater tests. The failure is read-only staging-directory rename (`permission denied`), before publication; the publish job was skipped and no release assets are public. An updater portability fix is in progress. Keep the failed tag immutable and use a new tag for the corrected candidate.
+
+### 11:08 EDT — GitHub binaries published and installed
+
+Release run 35878570548 for clean tag `v0.1.1` / `28f1429` passed both native platform jobs after the macOS publish-order fix. Both downloaded SHA-256 checksums matched; an isolated macOS install and PTY UI startup passed. Published https://github.com/pkyanam/pk/releases/tag/v0.1.1 and installed its verified macOS archive without touching running user processes. Managed release `legacy-20260923T150731-9d680d28`, archive SHA `30567147dd64535a7d88f5bf1ade6f8642780014d8b102aad7f10f4d09a83ec0`. Measured local archive activation 1.969s and already-current network check 0.195s. A separate public install.sh run in fresh temp install dirs, including script/metadata/checksum/archive fetch, took 4.596s. Timings are single observations.
+
+The new user report confirms unwanted per-turn extension process startup; trace distinguishes UI stderr notices from actual manifest schemas in model requests. Lazy worker startup and complete synthetic provider payload captures are being developed separately. No private email was read.
