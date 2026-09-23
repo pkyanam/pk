@@ -86,3 +86,14 @@ notice, and got the exact expected PDF text marker from Luna; the composer was e
 Earlier CLI smokes also confirmed one-page PDF text extraction and an explicitly selected external
 PNG inspected through `ViewImage`. These checks validate the exercised routes, not broad format
 coverage. The TUI path is explicit text entry, not a native picker.
+
+## Native Cmux checks (2026-09-23)
+
+Two separately exercised paths reached the model successfully:
+
+- Finder: select a generated PNG whose filename contains a space, Cmd+C, then Cmd+V in pk. The file chip held the selected path; `ViewImage` inspected that path and Luna described the image correctly (session `03872f2a`).
+- Preview: select all pixels of that generated PNG, Cmd+C, then Cmd+V in Cmux. Cmux created a clipboard PNG; pk queued it, and `ViewImage` inspected it successfully (session `7c1a2e81`). This checks raw image copying through Cmux, not just copying a filename.
+
+These are terminal-specific observations, not a guarantee for every terminal or image encoding.
+Native cross-window drag/drop remains unverified: automated attempts did not produce a queued
+file. Use `/file`, Finder paste, or `/paste` while that interaction is still being validated.
