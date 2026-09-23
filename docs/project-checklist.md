@@ -115,3 +115,7 @@ Latest installed checkpoint: `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2
 - [~] Pursue exceptional quality and efficiency with matched evaluation. Current pilots do not demonstrate a general gain: the one-repetition pilot used more tokens for pk in most tasks, the replay pilot is mixed, and the output-cap probe did not exercise the policy. Expand success/quality, total-token, latency, reliability, cache, and resource measurements before making comparisons.
 
 Subagent checkpoint update: task-only mode and bounded FIFO queue are installed in `e5aba4a`; the natural-prompt three-child counting smoke passed without file writes. Do not confuse that bounded functional smoke with performance evidence.
+
+### Latest installed checkpoint: interactive ImageGen
+
+- Installed clean revision `616102f` adds `/image` opt-in settings with keyboard and mouse, default Astra image worker separate from Luna chat, and saved-driver consistency on resume. Installed RPC enable/new/disable/new registry smoke passed in an isolated home. Existing one-shot live image proof remains the generation evidence; no additional paid image was requested for this configuration check.

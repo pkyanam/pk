@@ -436,3 +436,9 @@ gates or imply that every backlog item is complete.
 - README now uses the reviewed real coding-demo frame (e2f6cc7), pushed to main. Concept assets remain labeled separately.
 - Added a barrier-controlled runtime regression proving two Bash operations overlap, running events are emitted before release, and the model receives the first result with a still-running placeholder for the second. Final request contains both outputs; model calls remain serialized. Luna reviewer ran ten race iterations; root independently reran successfully. This is behavioral evidence, not a speed or token-savings benchmark.
 - MCP form's six focused UI tests pass; installed f6d5783 already has context-specific hints and Enter saves only on the focused Save action.
+
+### 2026-09-23 — ImageGen interactive configuration checkpoint
+- Pushed 616102f: persisted opt-in ImageGen settings, `/image` keyboard/mouse UI, fresh tool preview, and saved-driver snapshot protection. Chat model is unchanged. Updated bundled pk skill and guides.
+- Root full race run passed all packages except two old fixtures; corrected fixture version and renamed the generic missing-tool fixture away from the reserved ImageGen builtin. Final affected-package race run passed cmd/pk, config, runner, integration, and skills. Full UI suite passed at 98 tests; three additional interaction regressions (late response after Escape, retry after error, mouse) also pass. Escape regression emits a React act warning; no failing assertions.
+- GitHub-source install completed: release `20260923T085707.844387000Z-2757d0f03172-f6baad42`, clean revision `616102f`. An isolated installed-RPC smoke verified disabled default → enable + new exposes ImageGen → disable + new removes ImageGen. No model requests, paid image generation, or user configuration changes were made.
+- Luna benchmark agent is preparing a bounded counterbalanced low-vs-medium effort pilot with full context; production effort default remains unchanged.
