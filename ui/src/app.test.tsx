@@ -1712,16 +1712,16 @@ describe("OpenTUI application", () => {
     const status = fake.sent.find((item) => item.type === "image_status")!
     act(() => fake.emit({ version: 1, id: status.id, type: "image_status", payload: { enabled: false, driver: "" } }))
     await setup.flush()
-    let frame = await setup.waitForFrame((value) => value.includes("ImageGen is off"))
+    let frame = await setup.waitForFrame((value) => value.includes("Enable ImageGen · disabled"))
     expect(frame).toContain("disabled by default")
-    expect(frame).toContain("uses existing ChatGPT")
+    expect(frame).toContain("uses your ChatGPT login")
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     const enable = fake.sent.find((item) => item.type === "image_configure")!
     expect(enable.payload).toEqual({ enabled: true, driver: "gpt-6-astra" })
     act(() => fake.emit({ version: 1, id: enable.id, type: "image_configured", payload: { enabled: true, driver: "gpt-6-astra", next_session_only: true } }))
     await setup.flush()
-    frame = await setup.waitForFrame((value) => value.includes("ImageGen enabled with gpt-6-astra"))
+    frame = await setup.waitForFrame((value) => value.includes("Enabled · gpt-6-astra"))
     expect(frame).toContain("ImageGen enabled")
     expect(frame).toContain("Start a new session with /new to apply this change.")
     act(() => setup.mockInput.pressEnter())
@@ -1760,7 +1760,7 @@ describe("OpenTUI application", () => {
     const status = fake.sent.find((item) => item.type === "image_status")!
     act(() => fake.emit({ version: 1, id: status.id, type: "image_status", payload: { enabled: false, driver: "" } }))
     await setup.flush()
-    await setup.waitForFrame((frame) => frame.includes("ImageGen is off"))
+    await setup.waitForFrame((frame) => frame.includes("Enable ImageGen · disabled"))
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     const first = fake.sent.filter((item) => item.type === "image_configure")[0]!
@@ -1768,7 +1768,7 @@ describe("OpenTUI application", () => {
     act(() => fake.emit({ version: 1, id: first.id, type: "error", payload: { request_type: "image_configure", message: "ImageGen configuration failed." } }))
     await setup.flush()
     let frame = await setup.waitForFrame((value) => value.includes("ImageGen setup · ImageGen configuration failed."))
-    expect(frame).toContain("ImageGen is off")
+    expect(frame).toContain("Enable ImageGen · disabled")
     expect(frame).not.toContain("Saving ImageGen preference")
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
@@ -1789,14 +1789,30 @@ describe("OpenTUI application", () => {
     await setup.flush()
     const status = fake.sent.find((item) => item.type === "image_status")!
     act(() => fake.emit({ version: 1, id: status.id, type: "image_status", payload: { enabled: false, driver: "" } }))
-    const frame = await setup.waitForFrame((value) => value.includes("ImageGen is off"))
-    const row = frame.split("\n").findIndex((line) => line.includes("Enable ImageGen with Astra"))
+    const frame = await setup.waitForFrame((value) => value.includes("Uses a separate Astra image worker"))
+    const row = frame.split("\n").findIndex((line) => line.includes("Enable ImageGen"))
     expect(row).toBeGreaterThanOrEqual(0)
-    const col = frame.split("\n")[row]!.indexOf("Enable ImageGen with Astra")
+    const col = frame.split("\n")[row]!.indexOf("Enable ImageGen")
     await act(async () => setup.mockMouse.click(col, row))
     await setup.flush()
     const configure = fake.sent.find((item) => item.type === "image_configure")
     expect(configure?.payload).toEqual({ enabled: true, driver: "gpt-6-astra" })
+  })
+
+  test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("ImageGen selector separates its action and status at $width × $height", async ({ width, height }) => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/image") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const status = fake.sent.find((item) => item.type === "image_status")!
+    act(() => fake.emit({ version: 1, id: status.id, type: "image_status", payload: { enabled: false, driver: "" } }))
+    const frame = await setup.waitForFrame((value) => value.includes("Uses a separate Astra image worker"))
+    expect(frame).toContain("Enable ImageGen · disabled")
+    expect(frame).toContain("model stays unchanged.")
+    expect(frame).toContain("session with /new to apply.")
   })
 
   test("subagent progress stays chronological and never renders child arguments or analysis", async () => {
