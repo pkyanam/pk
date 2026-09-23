@@ -26,8 +26,8 @@ afterEach(() => {
   sequence = 0
 })
 
-async function setupPanel() {
-  const setup = await testRender(<Harness />, { width: 120, height: 40 })
+async function setupPanel(width = 120, height = 40) {
+  const setup = await testRender(<Harness />, { width, height })
   renderers.push(setup)
   await setup.waitForFrame((frame) => frame.includes("MCP connections"))
   return setup
@@ -193,12 +193,12 @@ describe("MCPManager", () => {
     await setup.flush()
     await act(async () => setup.mockInput.pressKey("ARROW_RIGHT"))
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Connection type: Remote Streamable HTTP")
+    expect(setup.captureCharFrame()).toContain("Connection type: Remote HTTP")
     expect(setup.captureCharFrame()).toContain("←/→ change · Tab/Enter next · Esc cancels")
     await act(async () => setup.mockInput.pressEnter()) // ID, without changing connection type
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("› Server ID")
-    expect(setup.captureCharFrame()).toContain("Connection type: Remote Streamable HTTP")
+    expect(setup.captureCharFrame()).toContain("Connection type: Remote HTTP")
     await setup.flush()
     await act(async () => { await setup.mockInput.typeText("remote") })
     await setup.flush()
@@ -219,6 +219,75 @@ describe("MCPManager", () => {
     expect((setup.renderer.root as any).findDescendantById("mcp-save")).toBeDefined()
     await act(async () => setup.mockInput.pressEnter())
     expect(sent.find((item) => item.type === "mcp_add")?.payload?.server).toEqual({ id: "remote", url: "https://mcp.example.test/api", auth: { mode: "oauth" } })
+  })
+
+  test("mouse selector controls change connection type and authentication", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "mcp_list")!
+    emit(list.id, "mcp_catalog", { servers: [], tools: [] })
+    await setup.waitForFrame((frame) => frame.includes("No servers configured"))
+    await act(async () => setup.mockInput.pressKey("a"))
+    await setup.flush()
+
+    let frame = setup.captureCharFrame()
+    let row = frame.split("\n").findIndex((line) => line.includes("Connection type:"))
+    let column = frame.split("\n")[row]!.lastIndexOf("Next ›")
+    expect(column, frame).toBeGreaterThanOrEqual(0)
+    await act(async () => setup.mockMouse.click(column, row, 0))
+    await setup.flush()
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("Connection type: Remote HTTP")
+    expect(frame).toContain("Authentication: No auth")
+
+    row = frame.split("\n").findIndex((line) => line.includes("Authentication:"))
+    column = frame.split("\n")[row]!.lastIndexOf("Next ›")
+    expect(column).toBeGreaterThanOrEqual(0)
+    await act(async () => setup.mockMouse.click(column, row, 0))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Authentication: OAuth")
+  })
+
+  test("80-column form keeps long authentication selectors clickable and ignores right-click", async () => {
+    const setup = await setupPanel(80, 24)
+    const list = sent.find((item) => item.type === "mcp_list")!
+    emit(list.id, "mcp_catalog", { servers: [], tools: [] })
+    await setup.waitForFrame((frame) => frame.includes("No servers configured"))
+    await act(async () => setup.mockInput.pressKey("a"))
+    await setup.flush()
+
+    let frame = setup.captureCharFrame()
+    let lines = frame.split("\n")
+    let row = lines.findIndex((line) => line.includes("Connection type:"))
+    let column = lines[row]!.lastIndexOf("Next ›")
+    expect(column, frame).toBeGreaterThanOrEqual(0)
+    await act(async () => setup.mockMouse.click(column, row, 0))
+    await setup.flush()
+    frame = setup.captureCharFrame()
+
+    for (let index = 0; index < 3; index++) {
+      lines = frame.split("\n")
+      row = lines.findIndex((line) => line.includes("Authentication:"))
+      column = lines[row]!.lastIndexOf("Next ›")
+      expect(column).toBeGreaterThanOrEqual(0)
+      await act(async () => setup.mockMouse.click(column, row, 0))
+      await setup.flush()
+      frame = setup.captureCharFrame()
+    }
+    expect(frame).toContain("Authentication: Custom header · env var")
+    expect(frame).toContain("‹ Prev")
+    expect(frame).toContain("Next ›")
+    expect(frame).toContain("Save server")
+    expect(frame).toContain("Cancel · Esc")
+
+    lines = frame.split("\n")
+    row = lines.findIndex((line) => line.includes("Authentication:"))
+    column = lines[row]!.indexOf("‹ Prev")
+    await act(async () => setup.mockMouse.click(column, row, 2))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Authentication: Custom header · env var")
+    await act(async () => setup.mockMouse.click(column, row, 0))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Authentication: Bearer · env var")
   })
 
   test("invalid Save leaves the form open and does not send a request", async () => {
@@ -304,7 +373,7 @@ describe("MCPManager", () => {
 
     frame = setup.captureCharFrame()
     expect(frame).toContain("› Endpoint URL")
-    expect(frame).toContain("Connection type: Remote Streamable HTTP")
+    expect(frame).toContain("Connection type: Remote HTTP")
     expect(frame).toContain("    Authentication: No auth")
     expect(frame).not.toContain("› Authentication: No auth")
   })

@@ -42,6 +42,10 @@ function authLabel(mode: AuthMode) {
   return ({ anonymous: "No auth", oauth: "OAuth", bearer_env: "Bearer · environment variable", header_env: "Custom header · environment variable", bearer_secret: "Bearer · enter credential", header_secret: "Custom header · enter credential" } as const)[mode]
 }
 
+function authSelectorLabel(mode: AuthMode) {
+  return ({ anonymous: "No auth", oauth: "OAuth", bearer_env: "Bearer · env var", header_env: "Custom header · env var", bearer_secret: "Bearer · enter credential", header_secret: "Custom header · enter credential" } as const)[mode]
+}
+
 function leftClick(event: { button: number; preventDefault: () => void; stopPropagation: () => void }, action: () => void) {
   if (event.button !== 0) return
   event.preventDefault()
@@ -85,6 +89,8 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     const current = formOrder.indexOf(fieldIndex)
     setFieldIndex(formOrder[((current < 0 ? 0 : current) + 1) % formOrder.length]!)
   }
+  const stepMode = () => setMode((value) => value === "stdio" ? "http" : "stdio")
+  const stepAuth = (direction: -1 | 1) => setAuth((value) => authModes[(authModes.indexOf(value) + direction + authModes.length) % authModes.length]!)
 
   const request = (kind: RequestKind, type: string, payload?: Record<string, unknown>, preservedNotice?: string) => {
     const requestID = send(type, payload)
@@ -209,8 +215,8 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
         return
       }
       if (name === "left" || name === "right") {
-        if (fieldIndex === 0) setMode((value) => value === "stdio" ? "http" : "stdio")
-        else if (fieldIndex === 3 && mode === "http") setAuth((value) => authModes[(authModes.indexOf(value) + (name === "right" ? 1 : authModes.length - 1)) % authModes.length]!)
+        if (fieldIndex === 0) stepMode()
+        else if (fieldIndex === 3 && mode === "http") stepAuth(name === "right" ? 1 : -1)
         return
       }
       return
@@ -240,7 +246,12 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     {formOpen ? <>
       <text fg={colors.accent} content={fieldIndex === saveIndex ? "Enter saves · click Save · Tab to Cancel" : fieldIndex === cancelIndex ? "Enter or click Cancel · Esc cancels" : fieldIndex === 0 || (mode === "http" && fieldIndex === 3) ? "←/→ change · Tab/Enter next · Esc cancels" : "Type value · Tab/Enter next · Esc cancels"} />
       {formError && <text fg={colors.red} content={formError} />}
-      <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(0))} fg={fieldIndex === 0 ? colors.accent : colors.muted} content={`${fieldIndex === 0 ? "› " : "  "}Connection type: ${mode === "stdio" ? "Local stdio" : "Remote Streamable HTTP"} · ←/→ change`} />
+      <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}>
+        <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(0))} fg={fieldIndex === 0 ? colors.accent : colors.muted} content={`${fieldIndex === 0 ? "› " : "  "}Connection type: ${mode === "stdio" ? "Local stdio" : "Remote HTTP"}`} />
+        <box id="mcp-connection-previous" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(0); stepMode() })} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="‹ Prev" /></box>
+        <box id="mcp-connection-next" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(0); stepMode() })} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Next ›" /></box>
+        <text fg={colors.dim} content="←/→" />
+      </box>
       {field("Server ID", id, setID, 1, "lowercase letters, digits, . _ -")}
       {mode === "stdio" ? <>
         {field("Executable path", command, setCommand, 2, "/absolute/path/to/server")}
@@ -248,7 +259,12 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
         {field("Working directory (optional)", workingDirectory, setWorkingDirectory, 4, "Leave empty for home directory")}
       </> : <>
         {field("Endpoint URL", url, setURL, 2, "https://example.com/mcp")}
-        <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(3))} fg={fieldIndex === 3 ? colors.accent : colors.muted} content={`${fieldIndex === 3 ? "› " : "  "}Authentication: ${authLabel(auth)} · ←/→ change`} />
+        <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}>
+          <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(3))} fg={fieldIndex === 3 ? colors.accent : colors.muted} content={`${fieldIndex === 3 ? "› " : "  "}Authentication: ${authSelectorLabel(auth)}`} />
+          <box id="mcp-auth-previous" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(3); stepAuth(-1) })} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="‹ Prev" /></box>
+          <box id="mcp-auth-next" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(3); stepAuth(1) })} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Next ›" /></box>
+          <text fg={colors.dim} content="←/→" />
+        </box>
         {(auth === "header_env" || auth === "header_secret") && field("Header name", headerName, setHeaderName, 4, "X-API-Key")}
         {(auth === "bearer_env" || auth === "header_env") && field("Credential environment variable", credentialReference, setCredentialReference, 5, "MCP_API_KEY")}
         {(auth === "bearer_secret" || auth === "header_secret") && <>
