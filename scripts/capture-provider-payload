@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+source_revision=28f14298c9a59ef433fbe3128fbba0bab3290e06
+capture_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pk-provider-payload.XXXXXX")
+worktree_dir="$capture_tmp_dir/source"
+
+cleanup() {
+	if [ -d "$worktree_dir" ]; then
+		git -C "$repo_root" worktree remove --force "$worktree_dir" >/dev/null 2>&1 || true
+	fi
+	if [ -d "$capture_tmp_dir" ]; then
+		rmdir "$capture_tmp_dir" >/dev/null 2>&1 || true
+	fi
+}
+trap cleanup EXIT HUP INT TERM
+
+git -C "$repo_root" worktree add --detach "$worktree_dir" "$source_revision"
+cp "$repo_root/cmd/pk/provider_payload_example_test.go" "$worktree_dir/cmd/pk/provider_payload_example_test.go"
+mkdir -p "$repo_root/docs/examples/provider-payload"
+(
+	cd "$worktree_dir"
+	PK_CAPTURE_PROVIDER_PAYLOAD=1 \
+	PK_CAPTURE_OUTPUT_DIR="$repo_root/docs/examples/provider-payload" \
+	go test ./cmd/pk -run '^TestProviderPayloadExampleCapture$' -count=1 -v
+)
