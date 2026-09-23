@@ -20,3 +20,18 @@ Next useful evidence is more matched repetitions, with holdouts, success, provid
 The two-repetition Luna/low [webhook and jobqueue cohort](../benchmarks/results/replay-aggressive-webhook-jobqueue-2rep-20260923/summary.md) tested a 1,024-byte threshold and 256-rune head/tail excerpts. All four pristine holdouts per arm passed, but aggressive compaction reported 544,819 input tokens (97,331 uncached), 10,448 output, and 90 responses versus 127,054 input (55,374 uncached), 4,704 output, and 25 responses for full output. Smaller stored tool output did not yield lower usage. Cached tokens are part of input, not independent savings.
 
 This is a descriptive result for these fixtures. Shared-machine UI testing overlapped the run, so no latency comparison is claimed. Production full-context defaults remain unchanged. The complete source snapshot and sanitized run records accompany the result.
+
+## Delegation accounting boundary
+
+New headless CLI JSONL runs expose child start and usage metadata separately
+from parent events. pkbench keeps its historical parent columns and adds child
+and combined fields/tables. Combined token totals require complete per-response
+usage coverage; explicit zero counts are valid, missing or malformed counts are
+unavailable. Child identities namespace response IDs so different children do
+not collide. Sanitized traces retain these accounting events for reparsing.
+
+Earlier reports with only parent usage must not be used as whole-delegation
+cost evidence. The recorded clamp/intervals comparison used no child launches;
+new delegation experiments must include child accounting. The benchmark-only
+flat subagent dispatcher saves 807 serialized schema bytes in local tests, but
+has not been selected by a live benchmark policy or shown lower token cost.

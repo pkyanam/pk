@@ -133,6 +133,7 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "pk run: %v\n", err)
 		return 2
 	}
+	options.Output = synchronizedJSONLOutput(stdout)
 	if len(files) > 0 {
 		originalPrompt := options.Prompt
 		promptID, pageDir, cleanup, identityErr := prepareAttachmentIdentity(&options)
@@ -222,13 +223,13 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		PluginManifests: extensionPaths, MCPServers: mcpServers,
 		InheritPlugins: len(extensionPaths) > 0, InheritMCP: len(mcpServers) > 0,
 		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
+		Events: subagentJSONLForwarder(options.Output, options.JSONL),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "pk run: configure subagents: %v\n", err)
 		return 1
 	}
 	defer subagentManager.Close()
-	options.Output = stdout
 	options.Diagnostics = stderr
 	options.OnSession = func(id string) { fmt.Fprintf(stderr, "Session: %s\n", id) }
 	finishBenchmark, err := beginBenchmarkRun(&options)
@@ -266,7 +267,7 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 		defer closer.Close()
 	}
 	options.Adapter = client
-	options.Output = stdout
+	options.Output = synchronizedJSONLOutput(stdout)
 	options.Diagnostics = stderr
 	options.ToolEvents = true
 	if _, err := configureCLIExtensions(ctx, &options, nil, nil, stderr, tinyFishRegistryExtension(ctx)); err != nil {
@@ -295,6 +296,7 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 		Effort: options.Effort, CompactCapturedOutput: options.CompactCapturedOutput,
 		MCPServers: mcpServers, InheritMCP: len(mcpServers) > 0,
 		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
+		Events: subagentJSONLForwarder(options.Output, options.JSONL),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "pk: configure subagents: %v\n", err)

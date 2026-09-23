@@ -1261,7 +1261,9 @@ func sessionHasNoHistory(ctx context.Context, store sessionstore.Store, id sessi
 func usageJSONEvent(id session.ID, response llm.Response) map[string]any {
 	usage := response.Usage
 	if len(usage.Raw) == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CachedInputTokens == 0 && usage.CacheWriteInputTokens == 0 && usage.ReasoningTokens == 0 {
-		return nil
+		// Keep response coverage explicit even when the provider supplies no usage.
+		// Omitting the event would hide unmetered child/tool-only responses.
+		return map[string]any{"type": "usage", "session_id": id, "response_id": response.ID, "usage_available": false}
 	}
 	cachedAvailable := usage.CachedInputTokens != 0
 	writeAvailable := usage.CacheWriteInputTokens != 0

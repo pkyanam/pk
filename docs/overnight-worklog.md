@@ -656,3 +656,10 @@ gates or imply that every backlog item is complete.
 
 - Managed updater activated clean 8075acd as 20260923T125814.937959000Z-33a2ccfc6892-73392029 after all validation gates. Fresh ACP sessions no longer report a misleading resume warning. Existing running sessions were not interrupted.
 - Saved the ACP image-input boundary and required artifact lifecycle work in docs/research/acp-image-inputs.md. It is a proposal, not implemented image-block support.
+
+### Delegation accounting and schema experiment
+
+- Headless CLI now forwards allowlisted child lifecycle/usage JSONL through the same synchronized writer as parent output; child transcript content stays private. Unknown provider usage is emitted explicitly, including tool-only responses. Malformed child counts mark accounting unavailable.
+- pkbench retains parent-only columns and adds deduplicated child/combined totals with coverage flags. Missing/partial usage and dispatcher calls without child accounting cannot appear as free delegation. Parent component-capture correlation is unchanged.
+- Added a benchmark-only flat Subagent dispatcher with all five actions, conditional validation and stateless result decoding across resumed registries. Actual definitions measure 2,124 → 1,317 JSON bytes. It is not enabled by a CLI policy or production defaults; no live savings claim.
+- Full runner/CLI race suites, pkbench/experiment race suites, tagged CLI tests and the additional dispatcher-accounting regression pass. No live provider calls were made for this checkpoint.

@@ -61,6 +61,26 @@ type runRecord struct {
 	SessionID                    string `json:"session_id,omitempty"`
 	WallMS                       int64  `json:"wall_ms"`
 	ModelResponses               int    `json:"model_responses"`
+	SubagentModelResponses       int    `json:"subagent_model_responses"`
+	SubagentResponsesAvailable   bool   `json:"subagent_model_responses_available"`
+	SubagentInputTokens          int64  `json:"subagent_input_tokens"`
+	SubagentInputAvailable       bool   `json:"subagent_input_tokens_available"`
+	SubagentOutputTokens         int64  `json:"subagent_output_tokens"`
+	SubagentOutputAvailable      bool   `json:"subagent_output_tokens_available"`
+	SubagentCachedTokens         int64  `json:"subagent_cached_input_tokens"`
+	SubagentCachedAvailable      bool   `json:"subagent_cached_input_tokens_available"`
+	SubagentCacheWriteTokens     int64  `json:"subagent_cache_write_input_tokens"`
+	SubagentCacheWriteAvailable  bool   `json:"subagent_cache_write_input_tokens_available"`
+	CombinedModelResponses       int    `json:"combined_model_responses"`
+	CombinedResponsesAvailable   bool   `json:"combined_model_responses_available"`
+	CombinedInputTokens          int64  `json:"combined_input_tokens"`
+	CombinedInputAvailable       bool   `json:"combined_input_tokens_available"`
+	CombinedOutputTokens         int64  `json:"combined_output_tokens"`
+	CombinedOutputAvailable      bool   `json:"combined_output_tokens_available"`
+	CombinedCachedTokens         int64  `json:"combined_cached_input_tokens"`
+	CombinedCachedAvailable      bool   `json:"combined_cached_input_tokens_available"`
+	CombinedCacheWriteTokens     int64  `json:"combined_cache_write_input_tokens"`
+	CombinedCacheWriteAvailable  bool   `json:"combined_cache_write_input_tokens_available"`
 	ExplicitLimits               int64  `json:"explicit_bash_output_limits"`
 	OmittedLimits                int64  `json:"omitted_bash_output_limits"`
 	DefaultedLimits              int64  `json:"benchmark_default_applied"`
@@ -428,6 +448,28 @@ type usageSum struct {
 	replayMetricsAvailable                                                                                      bool
 	session                                                                                                     string
 	clean                                                                                                       []map[string]any
+	parentResponses                                                                                             map[string]*responseUsage
+	parentUnknownResponse                                                                                       bool
+	childStarted                                                                                                map[string]bool
+	childResponses                                                                                              map[responseKey]*responseUsage
+	childUnknownResponse                                                                                        bool
+	childActivityObserved                                                                                       bool
+	childStartToolSeen                                                                                          bool
+	subagentResponsesAvailable                                                                                  bool
+	subagentInput, subagentOutput, subagentCached, subagentWrites                                               int64
+	subagentInputAvailable, subagentOutputAvailable, subagentCachedAvailable, subagentWritesAvailable           bool
+	combinedResponses                                                                                           int
+	combinedResponsesAvailable                                                                                  bool
+	combinedInput, combinedOutput, combinedCached, combinedWrites                                               int64
+	combinedInputAvailable, combinedOutputAvailable, combinedCachedAvailable, combinedWritesAvailable           bool
+}
+
+type responseKey struct{ childID, responseID string }
+
+type responseUsage struct {
+	usageSeen                                                         bool
+	input, output, cached, writes                                     int64
+	inputAvailable, outputAvailable, cachedAvailable, writesAvailable bool
 }
 
 func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
@@ -521,6 +563,16 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		Engine: options.engine, Task: options.taskName, Repetition: options.repetition, Phase: options.phase, Effort: phaseEffort,
 		SessionMode: sessionMode(resumingSession),
 		SessionID:   usage.session, WallMS: wall.Milliseconds(), ModelResponses: usage.responses,
+		SubagentModelResponses: len(usage.childResponses), SubagentResponsesAvailable: usage.subagentResponsesAvailable,
+		SubagentInputTokens: usage.subagentInput, SubagentInputAvailable: usage.subagentInputAvailable,
+		SubagentOutputTokens: usage.subagentOutput, SubagentOutputAvailable: usage.subagentOutputAvailable,
+		SubagentCachedTokens: usage.subagentCached, SubagentCachedAvailable: usage.subagentCachedAvailable,
+		SubagentCacheWriteTokens: usage.subagentWrites, SubagentCacheWriteAvailable: usage.subagentWritesAvailable,
+		CombinedModelResponses: usage.combinedResponses, CombinedResponsesAvailable: usage.combinedResponsesAvailable,
+		CombinedInputTokens: usage.combinedInput, CombinedInputAvailable: usage.combinedInputAvailable,
+		CombinedOutputTokens: usage.combinedOutput, CombinedOutputAvailable: usage.combinedOutputAvailable,
+		CombinedCachedTokens: usage.combinedCached, CombinedCachedAvailable: usage.combinedCachedAvailable,
+		CombinedCacheWriteTokens: usage.combinedWrites, CombinedCacheWriteAvailable: usage.combinedWritesAvailable,
 		ExplicitLimits: usage.explicitLimits, OmittedLimits: usage.omittedLimits, DefaultedLimits: usage.defaultedLimits,
 		BashOutputBytes: usage.bashOutputBytes, BashErrorBytes: usage.bashErrorBytes,
 		BashRawOutputBytes: usage.bashRawOutputBytes, BashRawErrorBytes: usage.bashRawErrorBytes,
@@ -602,6 +654,24 @@ func parseOutput(engine string, output []byte) usageSum {
 		}
 		if engine == "pk" || strings.HasPrefix(engine, "pk-") {
 			typeName := stringValue(event["type"])
+			if typeName == "tool_call" && (stringValue(event["name"]) == "SubagentStart" || stringValue(event["name"]) == "Subagent") {
+				sum.childActivityObserved = true
+				sum.childStartToolSeen = true
+			}
+			switch typeName {
+			case "assistant":
+				observeParentResponse(&sum, event, false)
+			case "usage":
+				observeParentResponse(&sum, event, true)
+			case "subagent_started":
+				observeChildStart(&sum, event)
+			case "subagent_response":
+				observeChildResponse(&sum, event, false)
+			case "subagent_usage":
+				observeChildResponse(&sum, event, true)
+			case "subagent_accounting_unavailable":
+				observeChildAccountingUnavailable(&sum, event)
+			}
 			if typeName == "session" {
 				sum.session = stringValue(event["session_id"])
 			}
@@ -685,6 +755,7 @@ func parseOutput(engine string, output []byte) usageSum {
 			sum.clean = append(sum.clean, sanitizeUnrealEvent(event))
 		}
 	}
+	finalizeUsageAccounting(&sum)
 	return sum
 }
 
@@ -723,7 +794,7 @@ func sumValue(sum *usageSum, event map[string]any, field, availability string, d
 func sanitizePkEvent(event map[string]any) map[string]any {
 	typ := stringValue(event["type"])
 	out := map[string]any{"type": typ}
-	for _, key := range []string{"session_id", "response_id", "model", "effort", "phase", "call_id", "name", "state", "elapsed_ms", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cached_input_tokens_available", "cache_write_input_tokens", "cache_write_input_tokens_available", "usage_available", "explicit_bash_output_limits", "omitted_bash_output_limits", "benchmark_default_applied", "bash_output_bytes", "bash_error_bytes", "bash_raw_output_bytes", "bash_raw_error_bytes", "bash_output_truncated_operations", "bash_error_truncated_operations", "bash_metrics_available", "tool_description_bytes_before", "tool_description_bytes_after", "tool_description_fields_changed", "tool_schema_metrics_available", "mode"} {
+	for _, key := range []string{"session_id", "response_id", "child_id", "model", "effort", "phase", "call_id", "name", "state", "elapsed_ms", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cached_input_tokens_available", "cache_write_input_tokens", "cache_write_input_tokens_available", "usage_available", "explicit_bash_output_limits", "omitted_bash_output_limits", "benchmark_default_applied", "bash_output_bytes", "bash_error_bytes", "bash_raw_output_bytes", "bash_raw_error_bytes", "bash_output_truncated_operations", "bash_error_truncated_operations", "bash_metrics_available", "tool_description_bytes_before", "tool_description_bytes_after", "tool_description_fields_changed", "tool_schema_metrics_available", "mode"} {
 		if value, exists := event[key]; exists {
 			out[key] = value
 		}
@@ -1093,6 +1164,7 @@ func writeMarkdown(path string, result suite) error {
 		}
 	}
 	fmt.Fprintln(&out)
+	fmt.Fprintln(&out, "The response/token columns in the main table are parent-runner only. Child-agent usage and combined totals, when observed and fully covered, are reported separately below.")
 	if result.Experiment != "" {
 		if result.ReplayCompactionExperiment {
 			fmt.Fprintf(&out, "Both arms use the production CLI, prompt, model and effort, empty skills, and identical Git-initialized task fixtures. The treatment compacts completed Bash result text over the configured %d-byte threshold once, at translation, to a %d-rune head and tail, exact existing stdout/stderr capture paths, and exit code. It falls back to the original result if no capture file exists. The fixtures request ordinary verbose Go test output; they do not pad streams or modify tool output limits. Per-run eligible/compacted counts verify treatment exposure. Stored result bytes are a manipulation check only: provider-reported input, cached-input, output tokens and wall time are the efficiency measures. Holdout tests are restored from pristine fixtures after each run. Small stochastic results are descriptive and do not establish general task quality or cache savings.\n", result.ReplayThresholdBytes, result.ReplayExcerptRunes)
@@ -1163,7 +1235,44 @@ func writeMarkdown(path string, result suite) error {
 			fmt.Fprintf(&out, "| %s | %s | %d | %s | %s | %d | %s | %s | %s | %s | %d | %s |\n", record.Engine, record.Task, record.Repetition, record.SessionMode, record.Phase, record.ModelResponses, input, output, cached, writes, record.WallMS, correct)
 		}
 	}
+	writeSubagentUsageTable(&out, records)
 	return os.WriteFile(path, []byte(out.String()), 0o600)
+}
+
+func writeSubagentUsageTable(out *strings.Builder, records []runRecord) {
+	hasChildUsage := false
+	for _, record := range records {
+		if record.SubagentModelResponses > 0 || !record.SubagentResponsesAvailable {
+			hasChildUsage = true
+			break
+		}
+	}
+	if !hasChildUsage {
+		return
+	}
+	fmt.Fprint(out, "\n## Subagent usage (separate accounting)\n\n")
+	fmt.Fprintln(out, "Parent totals are not changed by this table. Combined values are available only when parent and child response usage is fully correlated; unavailable values are not treated as zero.")
+	fmt.Fprintln(out, "\n| Engine | Task | Rep | Phase | Child responses | Child input | Child output | Child cached | Child cache write | Combined responses | Combined input | Combined output | Combined cached | Combined cache write |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+	for _, record := range records {
+		childResponses := "unknown"
+		if record.SubagentResponsesAvailable {
+			childResponses = fmt.Sprint(record.SubagentModelResponses)
+		}
+		combinedResponses := "unknown"
+		if record.CombinedResponsesAvailable {
+			combinedResponses = fmt.Sprint(record.CombinedModelResponses)
+		}
+		fmt.Fprintf(out, "| %s | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			record.Engine, record.Task, record.Repetition, record.Phase, childResponses,
+			displayToken(record.SubagentInputTokens, record.SubagentInputAvailable),
+			displayToken(record.SubagentOutputTokens, record.SubagentOutputAvailable),
+			displayToken(record.SubagentCachedTokens, record.SubagentCachedAvailable),
+			displayToken(record.SubagentCacheWriteTokens, record.SubagentCacheWriteAvailable),
+			combinedResponses, displayToken(record.CombinedInputTokens, record.CombinedInputAvailable),
+			displayToken(record.CombinedOutputTokens, record.CombinedOutputAvailable),
+			displayToken(record.CombinedCachedTokens, record.CombinedCachedAvailable),
+			displayToken(record.CombinedCacheWriteTokens, record.CombinedCacheWriteAvailable))
+	}
 }
 
 func displayToken(value int64, available bool) string {
