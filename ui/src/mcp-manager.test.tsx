@@ -51,6 +51,9 @@ describe("MCPManager", () => {
     await act(async () => setup.mockInput.pressKey("ARROW_DOWN"))
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("calendar · Local stdio")
+    await act(async () => setup.mockInput.pressKey("x"))
+    await setup.waitForFrame((frame) => frame.includes("Remove MCP server “calendar”?"))
+    await act(async () => setup.mockInput.pressEscape())
   })
 
   test("adds a remote endpoint with a one-shot masked bearer credential", async () => {

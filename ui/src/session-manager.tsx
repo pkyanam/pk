@@ -221,8 +221,8 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     if (name === "/") { setSearchMode(true); return }
     if (name === "1") { setTabAndRefresh("sessions"); return }
     if (name === "2") { setTabAndRefresh("trash"); return }
-    if (name === "arrowup") { setSelectedIndex((index) => Math.max(0, index - 1)); return }
-    if (name === "arrowdown") { setSelectedIndex((index) => Math.min(visibleItems.length - 1, index + 1)); return }
+    if (name === "up" || name === "arrowup") { setSelectedIndex((index) => Math.max(0, index - 1)); return }
+    if (name === "down" || name === "arrowdown") { setSelectedIndex((index) => Math.min(visibleItems.length - 1, index + 1)); return }
     if (name === "space" || key.sequence === " ") { toggleSelected(); return }
     if (name === "a") { runArchive(); return }
     if (name === "r") { runRestore(); return }

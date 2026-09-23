@@ -61,6 +61,18 @@ describe("SessionManager", () => {
     expect(loaded).toEqual([sampleSession])
   })
 
+  test("arrow down selects and loads the second session", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    const second = { ...sampleSession, id: "session-b", title: "Build notes" }
+    emit(list.id, "sessions", { sessions: [sampleSession, second] })
+    await setup.waitForFrame((frame) => frame.includes("Build notes"))
+    await act(async () => setup.mockInput.pressKey("ARROW_DOWN"))
+    await setup.flush()
+    await act(async () => setup.mockInput.pressEnter())
+    expect(loaded).toEqual([second])
+  })
+
   test("reopening clears the previous search query before listing again", async () => {
     const setup = await setupPanel()
     await act(async () => setup.mockInput.pressKey("/"))
