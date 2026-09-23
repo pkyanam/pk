@@ -12,7 +12,9 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean }
+type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -24,6 +26,9 @@ const slashCommands: SlashCommand[] = [
   { name: "/model", description: "Choose the model for the next turn", action: "model" },
   { name: "/effort", description: "Set reasoning effort", action: "effort" },
   { name: "/tasks", description: "Browse durable agent tasks", action: "tasks" },
+  { name: "/skills", description: "Browse available skills and insert one into your prompt", action: "skills" },
+  { name: "/plugins", description: "Inspect installed plugins and their state", action: "plugins" },
+  { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
   { name: "/task", description: "Create, attach, or control a durable task", action: "task" },
   { name: "/file", description: "Queue an explicit file for your next prompt", action: "file" },
   { name: "/files", description: "Review, remove, or clear queued files", action: "files" },
@@ -207,7 +212,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [connected, setConnected] = useState(false)
   const [everConnected, setEverConnected] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | null>(null)
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
@@ -217,6 +222,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [draft, setDraft] = useState("")
   const [slashIndex, setSlashIndex] = useState(0)
   const [tasks, setTasks] = useState<Array<{ session_id: string; updated_at?: string; title?: string }>>([])
+  const [skills, setSkills] = useState<SkillOption[]>([])
+  const [plugins, setPlugins] = useState<PluginOption[]>([])
   const [activeTaskId, setActiveTaskId] = useState("")
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
@@ -607,6 +614,44 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           } else addEntry("system", "No durable tasks yet. Use /task new PROMPT to start one.")
         }
         break
+      case "skill_catalog": {
+        const available = Array.isArray(data.skills) ? data.skills.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({
+          name: String(item.name), description: String(item.description ?? ""), path: String(item.path ?? ""), bundled: item.bundled === true, saved: item.saved === true,
+        })) : []
+        setSkills(available)
+        setSelectionIndex(0)
+        setSelector("skills")
+        for (const warning of Array.isArray(data.warnings) ? data.warnings : []) addEntry("system", `Skills · ${String(warning)}`)
+        if (!available.length) addEntry("system", "No skills are available in this workspace or your configured skill directories.")
+        break
+      }
+      case "plugins":
+      case "plugins_updated": {
+        const available = Array.isArray(data.plugins) ? data.plugins.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
+          id: String(item.id), version: typeof item.version === "string" ? item.version : undefined,
+          manifest_path: typeof item.manifest_path === "string" ? item.manifest_path : undefined,
+          enabled: item.enabled === true, tools: Array.isArray(item.tools) ? item.tools.map(String) : [],
+          commands: Array.isArray(item.commands) ? item.commands.map(String) : [], error: typeof item.error === "string" ? item.error : undefined,
+        })) : []
+        setPlugins(available)
+        if (selector !== "plugins") setSelectionIndex(0)
+        setSelector("plugins")
+        if (event.type === "plugins_updated" && data.next_session_only) addEntry("system", "Plugin configuration saved · applies to new sessions. Use /new to start one.")
+        if (!available.length) addEntry("system", "No plugins are installed.")
+        break
+      }
+      case "skill_document": {
+        const name = String(data.skill?.name ?? "skill")
+        const instruction = `Use the ${name} skill for this task.`
+        const current = textarea.current?.plainText ?? draft
+        const inserted = current ? `${current}${current.endsWith("\n") ? "" : "\n"}${instruction}` : instruction
+        textarea.current?.setText(inserted)
+        textarea.current?.focus()
+        setDraft(inserted)
+        setSelector(null)
+        addEntry("system", `Inserted an instruction for the ${name} skill. Review it in the composer, then send when ready.`)
+        break
+      }
       case "task_created":
         addEntry("system", `Task started in the background · ${String(data.task_id ?? data.id ?? "task")}`)
         break
@@ -847,6 +892,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else addEntry("system", `Unsupported reasoning effort: ${args[0]}. Choose ${efforts.join(", ")}.`)
         break
       case "tasks": transport.send("task_list"); break
+      case "skills": transport.send("skills" as any); break
+      case "plugins": transport.send("plugins_list" as any); break
+      case "plugin": {
+        const operation = (args[0] ?? "").toLowerCase()
+        const target = args.slice(1).join(" ")
+        if (operation === "enable" && target) transport.send("plugins_enable" as any, { manifest_path: target })
+        else if (operation === "disable" && target) transport.send("plugins_disable" as any, { id: target })
+        else addEntry("system", 'Usage: /plugin enable "MANIFEST_PATH" · /plugin disable ID · changes apply to new sessions.')
+        break
+      }
       case "new":
         if (busy) { addEntry("system", "Wait for the active turn to finish before starting a new session."); break }
         transport.send("new")
@@ -911,7 +966,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /task attach ID · /task resume ID · /task cancel ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -939,6 +994,27 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       else if (task?.session_id) runSlashCommand(`/attach ${task.session_id}`)
       setSelector(null)
       textarea.current?.focus()
+    } else if (selector === "skills") {
+      const skill = skills[index]
+      if (skill) {
+        const current = textarea.current?.plainText ?? draft
+        const instruction = `Use the ${skill.name} skill for this task.`
+        const inserted = current ? `${current}${current.endsWith("\n") ? "" : "\n"}${instruction}` : instruction
+        textarea.current?.setText(inserted)
+        textarea.current?.focus()
+        setDraft(inserted)
+        addEntry("system", `Inserted an instruction for the ${skill.name} skill. Review it in the composer, then send when ready.`)
+      }
+      setSelector(null)
+      textarea.current?.focus()
+    } else if (selector === "plugins") {
+      const plugin = plugins[index]
+      if (plugin) {
+        if (plugin.enabled) transport.send("plugins_disable" as any, { id: plugin.id })
+        else if (plugin.error) addEntry("system", `Cannot enable ${plugin.id}: ${plugin.error}`)
+        else if (plugin.manifest_path) transport.send("plugins_enable" as any, { manifest_path: plugin.manifest_path })
+        else addEntry("system", `Cannot enable ${plugin.id}: its manifest path is unavailable.`)
+      }
     } else commitSelector(index)
   }
 
@@ -1018,7 +1094,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : tasks.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : plugins.length
       if (isEscape) { setSelector(null); textarea.current?.focus(); return }
       if (key.name === "up") { setSelectionIndex((index) => (index - 1 + count) % count); return }
       if (key.name === "down") { setSelectionIndex((index) => (index + 1) % count); return }
@@ -1088,7 +1164,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
   })
 
-  const selectedOptions = selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id })) : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "" })) : tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}` }))
+  const selectedOptions = selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
+    : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
+      : selector === "tasks" ? tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}`, state: "" }))
+        : selector === "skills" ? skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
+          : plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
+  const selectorPageSize = selector === "skills"
+    ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
+    : selector === "plugins" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
+  const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
   const filteredCommands = slashCommands.filter((item) => item.name.startsWith(draft.trim().split(/\s/)[0] || "/"))
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
   const cwd = message || workspace
@@ -1098,22 +1182,21 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     : busy
       ? streamProgress?.label ?? (tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model")
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
-  const phaseTime = phaseStartedAt === null ? "" : ` · ${shortTime(clock - phaseStartedAt)} phase`
+  const phaseTime = phaseStartedAt === null || !busy ? "" : ` · ${shortTime(clock - phaseStartedAt)}`
   const activityTime = activityStartedAt === null ? "" : ` · ${shortTime(clock - activityStartedAt)} total`
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
+  const cacheLabel = usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
-      <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
+      <box style={{ flexDirection: "row", height: 1 }}>
         <text fg={palette.text} content="pk  /  terminal agent" />
-        <text fg={busy ? palette.accent : palette.dim} content={`${busy ? spinner : ""} ${activityLabel}${phaseTime}${activityTime}`} />
       </box>
       {!sessionId && entries.length <= 1 && <box style={{ flexDirection: "column", marginTop: 1, marginBottom: 1, flexShrink: 0 }}>
         <ascii-font text="PK" font="block" color={palette.accent} />
       </box>}
-      <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1, flexShrink: 0 }}>
+      <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
         <text fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
-        <text fg={palette.dim} content={usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"} />
       </box>
       <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
         {groupTranscript(entries).map((item) => item.kind === "entry"
@@ -1135,9 +1218,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           })}
           {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
         </box>}
-        <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
-          <text fg={palette.accent} content="›" />
-          <text fg={palette.muted} content="Message" />
+        <box style={{ flexDirection: "row", height: 1 }}>
+          <text fg={palette.dim} content={`${busy ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
           <textarea id="composer" ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
@@ -1163,16 +1245,23 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && <box style={{ position: "absolute", left: "25%", right: "25%", top: "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : "Saved sessions"} />
+      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : "Installed plugins"} />
         <box style={{ height: 1 }} />
-        {selectedOptions.map((option, index) => <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "row", gap: 1, backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
-          <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
-          <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
-          {option.value === (selector === "model" ? model : effort) && <text fg={palette.dim} content="current" />}
-        </box>)}
+        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : "Nothing to show"} />}
+        {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
+          const index = selectorWindowStart + localIndex
+          return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
+            <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
+              <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
+              <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
+              <text fg={selector === "plugins" && option.state === "enabled" ? palette.accent : palette.dim} content={option.state} />
+            </box>
+            {option.description && <text fg={palette.dim} content={option.description} />}
+          </box>
+        })}
         <box style={{ height: 1 }} />
-        <text fg={palette.dim} content="↑↓ move  ·  Enter choose  ·  Esc close" />
+        <text fg={palette.dim} content={selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />

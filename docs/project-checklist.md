@@ -60,7 +60,7 @@ Updated 2026-09-23. This checklist consolidates the user's project requests from
 - [x] Keep background coding work durable, resumable, and isolated in a new workspace, with task status, follow/attach, cancel, and resume operations. Smoke evidence and recovery limits are in `docs/getting-started.md` and `docs/validation.md`.
 - [x] Let users start a task from the foreground `/task` or `/new` workflow and see its separate workspace; do not describe `/detach` as a way to keep a direct foreground process alive after exit.
 - [x] Preserve cache-friendly provider prefixes across turns and resumes where possible, and report provider usage rather than promise cache hits.
-- [~] Continue small, reviewable improvements through the requested overnight window. The handoff schedule is recorded in `docs/overnight-worklog.md`; root chose 30-minute improvement passes through 08:00 EDT as an operational assumption for “through morning,” not a user-specified exact wake time. At each pass, update evidence, blockers, and the next step.
+- [~] Continue small, reviewable improvements through the requested overnight window. The handoff schedule is recorded in `docs/overnight-worklog.md`; the user now explicitly requests completion ideally by 08:00 EDT on September 23; 30-minute improvement passes support that target. At each pass, update evidence, blockers, and the next step.
 - [ ] Reproduce and diagnose the UI freeze independently; `eba1d60` fixes reproducible input/focus defects, but the reported freeze is not yet confirmed resolved. Then revalidate mouse behavior, expandable tool cards/Markdown, and terminal stability.
 - [ ] Expand the matched benchmark beyond the one-repetition pilot; report its higher-token observation without claiming a gain.
 - [ ] Complete remaining validation for attachment formats and update user-facing docs with only verified behavior.
@@ -69,7 +69,17 @@ Updated 2026-09-23. This checklist consolidates the user's project requests from
 - [ ] Recheck wait/run elapsed status through provider-load and longer model/tool gaps; the connected dot is removed and “Waiting for model” → “Ready” was verified in Cmux.
 - [ ] Finish and inspect the final video and optional launch assets; leave them local for review unless the user separately requests publication.
 
+## Protocol and integration additions
+
+- [~] Support MCP (Model Context Protocol). Implement explicit server configuration, tool discovery/invocation, cancellation and lifecycle handling; validate against local protocol fixtures and document the supported transport/features. Luna agent `v2_review` owns the initial client adapter.
+- [~] Support ACP (Agent Client Protocol). Expose pk sessions to compatible clients with prompt/cancel and streaming updates; document the supported protocol subset and test it. Luna agent `cli_v2` owns the initial server adapter.
+- [~] Build and test an AgentMail plugin against official API/installed CLI documentation. Luna agent `v2_docs` owns the example and fixtures. Live testing is read-only; sending mail or creating/deleting inboxes is not authorized.
+- [~] Move Ready/activity/phase/time/cache from the top-right into a compact muted line immediately above the composer. UI implementation passes 45 tests/200 assertions; checkpoint and installation pending.
+
 ## Current handoff
+
+Update at 01:14 EDT: installed backend/UI are `eed3d6e`, including visible model streaming and the bundled pk skill. Live RPC verified text before final completion and subsequent tool execution; `/skills` and `/plugins` management, relocated status, updater and steering are in integration. The tool-description trial published at `a3f002d` passed all eight holdout checks but showed mixed token/latency results, not an overall improvement. The older detailed checkpoint below is historical, not the current installed version. New MCP/ACP and AgentMail work is delegated; no final launch recording yet.
+
 
 Latest installed checkpoints are backend `c0c9952` and UI `c589e26` (the backend includes `1ebe672`). The UI passed 36 tests (150 assertions), typecheck and build; real Cmux checks covered Shift+Enter/Ctrl+J, path plus prose, image path paste, selection/Ctrl+Y copy, connected-status removal, and Waiting→Ready. Native drag/drop remains unverified; Cmd+C is intercepted, and a full Finder-file Cmd+V check was interrupted. The reported freeze is not independently diagnosed. Backend race/vet and live ImageGen/extension smokes passed. ImageGen used the explicit Astra driver under Luna orchestration, not native Luna generation. The one-repetition harness pilot passed all six correctness checks, with pk generally using more tokens; the output-cap pilot was a no-op because no call omitted its cap. Model-aware identity is installed and documented at `docs/prompt-reference.md`; legacy session snapshots keep their old prompts, and `/new` adopts the new prompt. The video is at preflight/plan stage only.
 

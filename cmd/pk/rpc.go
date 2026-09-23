@@ -28,7 +28,6 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
-	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 const rpcVersion = 1
@@ -72,6 +71,7 @@ type rpcServer struct {
 	quit                bool
 	attachedTask        string
 	taskFollowCancel    context.CancelFunc
+	pluginPaths         []string
 	requestTypes        map[string]string
 	broker              *interaction.Broker
 	loadAttachments     func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
@@ -223,18 +223,27 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "workspace must be an existing directory", "recoverable": true})
 			return
 		}
+		if err := ensurePrivateDirectory(pkHome()); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		pluginPaths, pluginIssues, err := snapshotRPCPluginPaths(userPluginService())
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		for _, issue := range pluginIssues {
+			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
+		}
 		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
 		s.session = get("session_id")
 		s.opts.SessionID = s.session
+		s.pluginPaths = pluginPaths
 		if s.session != "" {
 			if err := s.emitSessionHistory(msg.ID, s.session); err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 				return
 			}
-		}
-		if err := ensurePrivateDirectory(pkHome()); err != nil {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
-			return
 		}
 		s.started = true
 		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "capabilities": []string{"attach", "cancel", "detach", "set_model"}})
@@ -266,6 +275,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		workspace, sessionID := s.opts.Workspace, s.session
+		pluginPaths := append([]string(nil), s.pluginPaths...)
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
 		s.active = true
@@ -359,7 +369,6 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			opts.Output = out
 			opts.JSONL = true
 			opts.Diagnostics = s.diagnostics
-			opts.DecorateRegistry = func(base tool.Registry) tool.Registry { return interaction.DecorateRegistry(base, broker) }
 			opts.Adapter = modelProgressAdapter{inner: client, observe: func(progress modelstream.Event) {
 				if ctx.Err() != nil {
 					return
@@ -391,7 +400,28 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				s.mu.Unlock()
 				_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
 			}
+			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics)
+			if err != nil {
+				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load session plugins: %w", err)}
+				return
+			}
+			finishPluginSchema, err := prepareRPCPluginSession(&opts, host)
+			if err != nil {
+				if host != nil {
+					_ = host.Close()
+				}
+				finished <- turnDone{id: msg.ID, err: err}
+				return
+			}
 			result, err := runner.Run(broker.Context(), opts)
+			if host != nil {
+				if closeErr := host.Close(); err == nil && closeErr != nil {
+					err = closeErr
+				}
+			}
+			if schemaErr := finishPluginSchema(); err == nil && schemaErr != nil {
+				err = schemaErr
+			}
 			finished <- turnDone{id: msg.ID, text: result.Text, err: err}
 		}()
 	case "clipboard_paste":
@@ -467,9 +497,18 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "session_id is required", "recoverable": true})
 			return
 		}
+		pluginPaths, pluginIssues, err := snapshotRPCPluginPaths(userPluginService())
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		for _, issue := range pluginIssues {
+			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
+		}
 		s.mu.Lock()
 		s.session = id
 		s.opts.SessionID = id
+		s.pluginPaths = pluginPaths
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
@@ -481,16 +520,69 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "new":
 		s.mu.Lock()
 		active, sessionID := s.active, s.session
-		if !active {
-			s.session = ""
-			s.opts.SessionID = ""
-		}
 		s.mu.Unlock()
 		if active {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cancel the active turn before starting a new session", "recoverable": true})
 			return
 		}
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": s.opts.Workspace, "session_id": "", "previous_session_id": sessionID, "model": s.opts.Model, "effort": s.opts.Effort})
+		pluginPaths, pluginIssues, err := snapshotRPCPluginPaths(userPluginService())
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		for _, issue := range pluginIssues {
+			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
+		}
+		s.mu.Lock()
+		s.session = ""
+		s.opts.SessionID = ""
+		s.pluginPaths = pluginPaths
+		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
+		s.mu.Unlock()
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort})
+	case "plugins_list":
+		payload, err := listRPCPlugins(userPluginService())
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "plugins", payload)
+	case "plugins_enable":
+		s.mu.Lock()
+		workspace := s.opts.Workspace
+		s.mu.Unlock()
+		manifestPath, err := normalizePluginManifestPath(get("manifest_path"), workspace)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		payload, err := enableRPCPlugin(userPluginService(), manifestPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "plugins_updated", payload)
+	case "plugins_disable":
+		payload, err := disableRPCPlugin(userPluginService(), get("id"))
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "plugins_updated", payload)
+	case "skills":
+		catalog, err := s.skillCatalog(s.ctx)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "skill_catalog", map[string]any{"skills": catalog.Skills, "warnings": catalog.Warnings, "saved": catalog.Saved})
+	case "skill_read":
+		document, err := s.readSkill(s.ctx, get("name"))
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "skill_document", map[string]any{"skill": document.Skill, "content": document.Content})
 	case "tasks":
 		store, err := localfile.New(s.sessionDir)
 		if err != nil {
