@@ -28,14 +28,15 @@ function fakeTransport() {
   const sent: Array<{ id: string; type: string; payload?: Record<string, unknown> }> = []
   const starts: Array<Record<string, unknown>> = []
   let sequence = 0
+  let closeCount = 0
   const transport = {
     setEventHandler(next: typeof handler) { handler = next },
     async start(config?: Record<string, unknown>) { if (config) starts.push(config) },
     send(type: string, payload?: Record<string, unknown>) { const id = `fake-${++sequence}`; sent.push({ id, type, payload }); return id },
     emit(event: ServerEvent) { handler(event) },
-    async close() {},
+    async close() { closeCount++ },
   }
-  return { transport: transport as unknown as PkTransport, sent, starts, emit: transport.emit }
+  return { transport: transport as unknown as PkTransport, sent, starts, emit: transport.emit, closeCount: () => closeCount }
 }
 
 function pasteIntoRenderer(setup: Awaited<ReturnType<typeof testRender>>, text: string) {
@@ -1163,7 +1164,7 @@ describe("OpenTUI application", () => {
     expect(setup.captureCharFrame()).toContain("second line")
   })
 
-  test("Ctrl-Y copy shortcut is explicit and leaves Ctrl-C behavior untouched", async () => {
+  test("Ctrl-Y copy shortcut remains explicit", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
     openRenderers.push(setup)
@@ -1172,6 +1173,101 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Select transcript text first")
     expect(fake.sent.some((item) => item.type === "shutdown")).toBe(false)
+    await act(async () => { await setup.mockInput.typeText("Keep this draft") })
+    await act(async () => setup.mockInput.pressKey("c", { super: true }))
+    await setup.flush()
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("Keep this draft")
+    expect(fake.closeCount()).toBe(0)
+    expect(fake.sent.some((item) => item.type === "cancel")).toBe(false)
+  })
+
+  test("Ctrl+C cancels an active foreground turn without closing pk", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("Run a long task") })
+    act(() => setup.mockInput.pressEnter())
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    await setup.flush()
+
+    await act(async () => setup.mockInput.pressKey("c", { ctrl: true }))
+    await setup.flush()
+    expect(fake.sent.filter((item) => item.type === "cancel")).toHaveLength(1)
+    expect(fake.closeCount()).toBe(0)
+    expect(setup.captureCharFrame()).toContain("Stopping the current turn…")
+    expect(setup.captureCharFrame()).toContain("Waiting for model")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+  })
+
+  test("idle Ctrl+C preserves a nonempty draft", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const composer = (setup.renderer.root as any).findDescendantById("composer")
+    await act(async () => { await setup.mockInput.typeText("Keep this unfinished draft") })
+    await act(async () => setup.mockInput.pressKey("c", { ctrl: true }))
+    await setup.flush()
+    expect(composer.plainText).toBe("Keep this unfinished draft")
+    expect(fake.closeCount()).toBe(0)
+    expect(setup.captureCharFrame()).toContain("Draft kept.")
+
+  })
+
+  test("idle Ctrl+C exits when the composer is empty", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => setup.mockInput.pressKey("c", { ctrl: true }))
+    await setup.flush()
+    expect(fake.closeCount()).toBe(1)
+  })
+
+  test("idle Ctrl+C preserves an attachment-only composer draft", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => setup.mockInput.pressKey("v", { ctrl: true }))
+    const paste = fake.sent.find((item) => item.type === "clipboard_paste")!
+    act(() => fake.emit({ version: 1, id: paste.id, type: "clipboard_files", payload: { files: [{ path: "/tmp/pending.pdf", kind: "file" }] } }))
+    await setup.waitForFrame((frame) => frame.includes("Files 1/8"))
+
+    await act(async () => setup.mockInput.pressKey("c", { ctrl: true }))
+    await setup.flush()
+    expect(fake.closeCount()).toBe(0)
+    expect(setup.captureCharFrame()).toContain("Queued files kept.")
+    expect(setup.captureCharFrame()).toContain("Files 1/8")
+  })
+
+  test("Ctrl+C keeps question cancellation and selector modal semantics", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("Start work") })
+    act(() => setup.mockInput.pressEnter())
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: "question-ctrlc", type: "question", payload: { id: "question-ctrlc", text: "Choose one", choices: ["Yes", "No"] } }))
+    await setup.waitForFrame((frame) => frame.includes("Choose one"))
+    await act(async () => setup.mockInput.pressKey("c", { ctrl: true }))
+    expect(fake.sent.some((item) => item.type === "cancel_question" && item.payload?.id === "question-ctrlc")).toBe(true)
+    expect(fake.closeCount()).toBe(0)
+
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+    await act(async () => { await setup.mockInput.typeText("/model") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes("Select model"))
+    await act(async () => setup.mockInput.pressKey("c", { ctrl: true }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Select model")
+    expect(fake.closeCount()).toBe(0)
   })
 
   test("rejects a ninth queued file to match the attachment service limit", async () => {

@@ -1,41 +1,42 @@
 # Getting started
 
-`pk` needs Go 1.27 or newer to build, Bun to build and run its OpenTUI interface, and network access
-for login and model requests.
+`pk` needs Bun to run its OpenTUI interface. Network access is used for login and model requests.
 
-## Build and install
+## Install
 
-Clone the repository and run the installer:
+Install the latest paired release with the shell installer:
 
 ```sh
-git clone https://github.com/pkyanam/pk.git
-cd pk
-./scripts/install
+curl -fsSL https://raw.githubusercontent.com/pkyanam/pk/main/install.sh | sh
 ```
 
-The installer uses the frozen `ui/bun.lock`, builds the OpenTUI frontend and Go executable, then
-installs them under `~/.local/bin/pk` and `~/.local/lib/pk/ui`. Add `~/.local/bin` to your `PATH` if
-needed. Set `PK_BIN_DIR` or `PK_LIB_DIR` to install elsewhere. For a repo-local build, run
-`./scripts/build`; it writes `bin/pk` and `ui/dist/main.js`.
+The published binary-first installer currently has paired releases for macOS arm64 and Linux amd64.
+It verifies the archive's SHA-256 checksum before installing the Go executable and matching UI
+assets. Bun is required even with a prebuilt release because it runs the UI. The launcher defaults
+to `~/.local/bin/pk` and managed releases to `~/.local/lib/pk`; set `PK_BIN_DIR` or `PK_LIB_DIR` to
+use other locations.
 
-## Update an installed release
+If no compatible published release or platform asset exists, the installer clearly announces a
+source-build fallback. That path needs Git and Go 1.27 or newer (or Go 1.21 or newer with automatic
+toolchain selection enabled), in addition to Bun. Download, archive, or checksum verification
+errors stop installation rather than silently starting a source build. For the development source
+build, see [`docs/updates.md`](updates.md).
 
-From an installed `pk`, select a pk source checkout and run:
+## Update
+
+By default, update from the latest compatible paired release:
 
 ```sh
-pk update --source /path/to/pk
+pk update
 pk version
 ```
 
-The updater validates the checkout, runs Go and OpenTUI checks/builds in a staged copy, then activates
-a paired release containing both the Go binary and UI assets. `pk rollback` restores the previous
-release. Without `--source`, `pk update` fetches the official [pk GitHub repository](https://github.com/pkyanam/pk)
-on `main`; use `--source /path/to/pk` to update from a local checkout. The TUI also supports
-`/update [--source PATH]`, `/rollback`, and `/reload`; bare `/update` uses the same GitHub default. Update and
-rollback require an idle foreground session. After the update succeeds, `/reload` restarts the
-supervised process and restores the current session. It preserves that session's saved prompt, tools,
-and skills; use `/new` to start with the current instructions and tool configuration, or `/attach ID`
-to continue an older saved session. If the terminal does not relaunch cleanly, exit and run `pk` again.
+`pk update` verifies the paired release before activation; `pk rollback` restores the previous
+release. If no compatible release exists, it announces a source-build fallback. Network, archive, or
+checksum failures abort the update and keep the active release. Bun is required for either update
+path. For development, stage a local checkout with `pk update --source /path/to/pk`. The TUI also
+provides `/update [--source PATH]`, `/rollback`, and `/reload`. See
+[`docs/updates.md`](updates.md) for fallback and reload behavior.
 
 New sessions load the current prompt and skill files. Existing sessions retain their saved prompt,
 tools, and skill contents; attaching does not refresh them. Use `/new` to pick up an updated bundled

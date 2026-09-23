@@ -2578,11 +2578,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (key.name === "escape" || key.name === "esc") {
         setPluginSourceModalOpen(false)
         textarea.current?.focus()
+      } else if (key.ctrl && key.name.toLowerCase() === "c") {
+        key.preventDefault()
       }
       return
     }
     const liveDraft = textarea.current?.plainText ?? draft
     const isEscape = key.name === "escape" || key.name === "esc"
+    const isCtrlC = key.ctrl === true && key.name.toLowerCase() === "c"
+    const isCancel = isEscape || isCtrlC
     const commandModifier = key.super === true || key.meta === true
     if ((commandModifier || key.ctrl) && key.name.toLowerCase() === "v") {
       key.preventDefault()
@@ -2606,7 +2610,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if (question) {
       if (question.answering) return
-      if (isEscape) {
+      if (isCancel) {
+        if (isCtrlC) key.preventDefault()
         transport.send("cancel_question" as any, { id: question.id })
         setQuestion(null)
         addEntry("system", "Question canceled; stopping this turn…")
@@ -2626,7 +2631,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         return
       }
     }
-    if (isEscape && pluginCommandRun) {
+    if (isCancel && pluginCommandRun) {
+      if (isCtrlC) key.preventDefault()
       transport.send("plugin_command_cancel" as any)
       setPluginCommandRun({ ...pluginCommandRun, cancelRequested: true })
       addEntry("system", "Stopping plugin command…")
@@ -2634,7 +2640,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if (selector) {
       const count = selector === "usage" ? 0 : selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "image" ? 1 : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
-      if (selector === "plugin_candidates" && pluginSourceOperation && isEscape) {
+      if (selector === "plugin_candidates" && pluginSourceOperation && isCancel) {
+        if (isCtrlC) key.preventDefault()
         transport.send("plugin_source_cancel" as any)
         pluginSourceRequest.current = ""
         setPluginSourceOperation("")
@@ -2642,7 +2649,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         textarea.current?.focus()
         return
       }
-      if (selector === "plugin_candidates" && pluginCandidateReview && isEscape) {
+      if (selector === "plugin_candidates" && pluginCandidateReview && isCancel) {
+        if (isCtrlC) key.preventDefault()
         setPluginCandidateReview(null)
         return
       }
@@ -2651,7 +2659,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         installReviewedPlugin()
         return
       }
-      if (selector === "skills" && skillOperation && isEscape) {
+      if (selector === "skills" && skillOperation && isCancel) {
+        if (isCtrlC) key.preventDefault()
         transport.send("skill_cancel")
         skillOperationRequest.current = ""
         setSkillOperation("")
@@ -2659,11 +2668,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         textarea.current?.focus()
         return
       }
-      if (selector === "skills" && skillsView === "candidates" && isEscape) {
+      if (selector === "skills" && skillsView === "candidates" && isCancel) {
+        if (isCtrlC) key.preventDefault()
         setSkillsView("results")
         return
       }
-      if (selector === "skills" && skillsView === "review" && isEscape) {
+      if (selector === "skills" && skillsView === "review" && isCancel) {
+        if (isCtrlC) key.preventDefault()
         setSkillReview(null)
         setSkillsView("candidates")
         return
@@ -2678,7 +2689,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         removeInstalledSkill(selectionIndex)
         return
       }
-      if (isEscape) {
+      if (isCancel) {
+        if (isCtrlC) key.preventDefault()
         if (selector === "usage") {
           cancelSessionUsageRequest()
         }
@@ -2747,7 +2759,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         return
       }
     }
-    if (isEscape && selector) {
+    if (isCancel && selector) {
+      if (isCtrlC) key.preventDefault()
       setSelector(null)
       textarea.current?.focus()
       return
@@ -2758,21 +2771,25 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       setDraft("")
       return
     }
-    if (isEscape && maintenance?.kind === "update") {
+    if (isCancel && maintenance?.kind === "update") {
+      if (isCtrlC) key.preventDefault()
       transport.send("update_cancel" as any)
       setMaintenance({ ...maintenance, progress: "Stopping update" })
       addEntry("system", "Stopping the update before activation…")
       return
     }
-    if (isEscape && maintenance?.kind === "rollback") {
+    if (isCancel && maintenance?.kind === "rollback") {
+      if (isCtrlC) key.preventDefault()
       addEntry("system", "Rollback is finishing safely; wait for it to complete.")
       return
     }
-    if (isEscape && reloadPending) {
+    if (isCancel && reloadPending) {
+      if (isCtrlC) key.preventDefault()
       addEntry("system", "Session handoff is in progress; pk will restart when it is safe.")
       return
     }
-    if (isEscape && busyRef.current) {
+    if (isCancel && (busyRef.current || waiting.current || turnActive.current)) {
+      if (isCtrlC) key.preventDefault()
       if (activeTaskId) transport.send("task_cancel", { task_id: activeTaskId })
       else transport.send("cancel")
       addEntry("system", "Stopping the current turn…")
@@ -2786,7 +2803,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       else void transport.close().finally(() => renderer.destroy())
       return
     }
-    if (key.ctrl && key.name === "c" && !busy && !maintenance && !reloadPending) {
+    if (isCtrlC && !busyRef.current && !waiting.current && !turnActive.current && !maintenance && !reloadPending) {
+      key.preventDefault()
+      if (liveDraft.trim() || queuedFilesRef.current.length > 0) {
+        const message = liveDraft.trim()
+          ? "Draft kept. Send it or clear it before closing pk."
+          : "Queued files kept. Send them or clear the queue before closing pk."
+        addEntry("system", message)
+        textarea.current?.focus()
+        return
+      }
       void transport.close().finally(() => renderer.destroy())
     }
   })
