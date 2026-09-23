@@ -90,7 +90,7 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
 		}
-		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: options.ProviderID, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}, ToolEvents: true, Executable: executable})
+		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: options.ProviderID, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
 		if err != nil {
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1

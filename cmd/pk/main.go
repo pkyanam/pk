@@ -500,7 +500,7 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 
 func defaultSkillDirs() []string {
 	home := userHome()
-	dirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
+	dirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills"), filepath.Join(pkHome(), "skills")}
 	if bundled, err := pkbuiltins.Materialize(pkHome()); err == nil {
 		dirs = append(dirs, bundled)
 	} else {

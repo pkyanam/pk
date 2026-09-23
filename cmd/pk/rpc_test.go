@@ -200,8 +200,8 @@ func TestRPCLoadsDefaultSkillDirsAndResumeKeepsSavedSkillCatalog(t *testing.T) {
 			t.Fatal("RPC start failed without an event")
 		}
 	}
-	wantDirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
-	if len(server.opts.SkillsDirs) != 3 || fmt.Sprint(server.opts.SkillsDirs[:2]) != fmt.Sprint(wantDirs) {
+	wantDirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills"), filepath.Join(pkHomeDir, "skills")}
+	if len(server.opts.SkillsDirs) != 4 || fmt.Sprint(server.opts.SkillsDirs[:3]) != fmt.Sprint(wantDirs) {
 		t.Fatalf("RPC skill dirs=%q, want %q", server.opts.SkillsDirs, wantDirs)
 	}
 	runPrompt := func(id, text string) turnDone {

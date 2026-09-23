@@ -1,6 +1,7 @@
 package mcpclient
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +72,70 @@ func TestConfigStoreSerializesConcurrentAdds(t *testing.T) {
 	servers, err := store.List()
 	if err != nil || len(servers) != count {
 		t.Fatalf("concurrent configured servers = %d, err=%v", len(servers), err)
+	}
+}
+
+func TestConfigStoreKeepsHTTPCredentialSeparateAndPrivate(t *testing.T) {
+	home := t.TempDir()
+	store := ConfigStore{Home: home}
+	if err := store.AddWithSecret(ServerConfig{ID: "remote", URL: "https://example.test/mcp"}, "bearer", "never-print-this"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(home, "mcp-secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("secret store mode = %o", info.Mode().Perm())
+	}
+	configBytes, err := os.ReadFile(filepath.Join(home, "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretBytes, err := os.ReadFile(filepath.Join(home, "mcp-secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configBytes), "never-print-this") || !strings.Contains(string(secretBytes), "never-print-this") {
+		t.Fatal("credential was not isolated in the private store")
+	}
+	servers, err := store.List()
+	if err != nil || len(servers) != 1 || servers[0].Auth.SecretValue != "never-print-this" {
+		t.Fatalf("loaded server=%#v err=%v", servers, err)
+	}
+	summaries, err := store.Summaries()
+	if err != nil || len(summaries) != 1 || summaries[0].AuthMode != "bearer_secret" || strings.Contains(fmt.Sprint(summaries), "never-print-this") {
+		t.Fatalf("summary=%#v err=%v", summaries, err)
+	}
+	if err := store.Remove("remote"); err != nil {
+		t.Fatal(err)
+	}
+	secretBytes, err = os.ReadFile(filepath.Join(home, "mcp-secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(secretBytes), "never-print-this") {
+		t.Fatal("removed server credential was retained")
+	}
+}
+
+func TestConfigStoreStatusShowsMissingEnvironmentCredential(t *testing.T) {
+	t.Setenv("PK_TEST_MCP_MISSING_TOKEN", "")
+	store := ConfigStore{Home: t.TempDir()}
+	if err := store.Add(ServerConfig{ID: "remote", URL: "https://example.test/mcp", Auth: HTTPAuthConfig{Mode: "bearer_env", BearerEnv: "PK_TEST_MCP_MISSING_TOKEN"}}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := store.Summaries()
+	if err != nil || len(summary) != 1 || summary[0].AuthStatus != "needs_credential" {
+		t.Fatalf("summary=%#v err=%v", summary, err)
+	}
+	t.Setenv("PK_TEST_MCP_MISSING_TOKEN", "present-but-never-print")
+	summary, err = store.Summaries()
+	if err != nil || summary[0].AuthStatus != "configured" {
+		t.Fatalf("configured summary=%#v err=%v", summary, err)
+	}
+	if strings.Contains(fmt.Sprint(summary), "present-but-never-print") {
+		t.Fatal("summary leaked credential value")
 	}
 }
 

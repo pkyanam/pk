@@ -59,43 +59,46 @@ func rpcMain(ctx context.Context, input io.Reader, output, diagnostics io.Writer
 }
 
 type rpcServer struct {
-	ctx                 context.Context
-	input               io.Reader
-	output, diagnostics io.Writer
-	cfgPath, sessionDir string
-	mu                  sync.Mutex
-	opts                runner.Options
-	adapter             *codexAdapter
-	useCodex            bool
-	codexPath           string
-	started             bool
-	steeringEnabled     bool
-	session             string
-	providerID          string
-	activeCancel        context.CancelFunc
-	releaseCancel       context.CancelFunc
-	releaseDone         chan struct{}
-	releaseActive       bool
-	pluginCommandCancel context.CancelFunc
-	pluginCommandDone   chan struct{}
-	pluginCommandActive bool
-	reloadPrepared      bool
-	activeInputs        chan runner.Input
-	pendingSteers       map[string]func(error)
-	active              bool
-	quit                bool
-	attachedTask        string
-	taskFollowRequest   string
-	taskFollowCancel    context.CancelFunc
-	pluginPaths         []string
-	pluginIssues        []string
-	requestTypes        map[string]string
-	broker              *interaction.Broker
-	loadAttachments     func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
-	prepareAdapter      func(context.Context, bool, string) (*codexAdapter, error)
-	clipboardProvider   clipboard.Provider
-	clipboardWriter     clipboard.TextWriter
-	runReleaseCommand   func(context.Context, []string, io.Writer, io.Writer) int
+	ctx                  context.Context
+	input                io.Reader
+	output, diagnostics  io.Writer
+	cfgPath, sessionDir  string
+	mu                   sync.Mutex
+	opts                 runner.Options
+	adapter              *codexAdapter
+	useCodex             bool
+	codexPath            string
+	started              bool
+	steeringEnabled      bool
+	session              string
+	providerID           string
+	activeCancel         context.CancelFunc
+	releaseCancel        context.CancelFunc
+	releaseDone          chan struct{}
+	releaseActive        bool
+	pluginCommandCancel  context.CancelFunc
+	pluginCommandDone    chan struct{}
+	pluginCommandActive  bool
+	skillOperationCancel context.CancelFunc
+	skillOperationDone   chan struct{}
+	skillOperationActive bool
+	reloadPrepared       bool
+	activeInputs         chan runner.Input
+	pendingSteers        map[string]func(error)
+	active               bool
+	quit                 bool
+	attachedTask         string
+	taskFollowRequest    string
+	taskFollowCancel     context.CancelFunc
+	pluginPaths          []string
+	pluginIssues         []string
+	requestTypes         map[string]string
+	broker               *interaction.Broker
+	loadAttachments      func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
+	prepareAdapter       func(context.Context, bool, string) (*codexAdapter, error)
+	clipboardProvider    clipboard.Provider
+	clipboardWriter      clipboard.TextWriter
+	runReleaseCommand    func(context.Context, []string, io.Writer, io.Writer) int
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -141,7 +144,7 @@ func (s *rpcServer) startReleaseOperation(requestID, operation, sourcePath strin
 		_ = s.emit(requestID, "error", map[string]any{"message": "send start before updating", "recoverable": true})
 		return
 	}
-	if s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
+	if s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
 		s.mu.Unlock()
 		_ = s.emit(requestID, "error", map[string]any{"message": "update and rollback require an idle session with no attached task", "recoverable": true})
 		return
@@ -317,6 +320,15 @@ func (s *rpcServer) serve() error {
 	}
 	if pluginCommandDone != nil {
 		<-pluginCommandDone
+	}
+	s.mu.Lock()
+	skillOperationCancel, skillOperationDone := s.skillOperationCancel, s.skillOperationDone
+	s.mu.Unlock()
+	if skillOperationCancel != nil {
+		skillOperationCancel()
+	}
+	if skillOperationDone != nil {
+		<-skillOperationDone
 	}
 	if s.taskFollowCancel != nil {
 		s.taskFollowCancel()
@@ -499,7 +511,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		s.started = true
 		capabilities := rpcCapabilities(steeringEnabled)
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "capabilities": capabilities})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
@@ -522,7 +534,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before prompt", "recoverable": true})
 			return
 		}
-		if s.active || s.pluginCommandActive {
+		if s.active || s.pluginCommandActive || s.skillOperationActive {
 			s.mu.Unlock()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "a foreground operation is already running", "recoverable": true})
 			return
@@ -862,7 +874,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "update_cancel_requested", map[string]any{"operation": "release"})
 	case "reload":
 		s.mu.Lock()
-		busy := s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared
+		busy := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared
 		handoff := reloadHandoff{Workspace: s.opts.Workspace, SessionID: s.session, Model: s.opts.Model, Effort: s.opts.Effort}
 		started := s.started
 		if started && !busy {
@@ -997,7 +1009,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "question_cancelled", map[string]any{"id": questionID})
 	case "attach":
 		s.mu.Lock()
-		active := s.active || s.releaseActive || s.pluginCommandActive
+		active := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive
 		s.mu.Unlock()
 		if active {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot attach while a turn is running", "recoverable": true})
@@ -1029,10 +1041,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "attached": true, "capabilities": rpcCapabilities(steeringEnabled)})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "attached": true, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "new":
 		s.mu.Lock()
-		active, sessionID := s.active || s.releaseActive || s.pluginCommandActive, s.session
+		active, sessionID := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive, s.session
 		s.mu.Unlock()
 		if active {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cancel the active turn before starting a new session", "recoverable": true})
@@ -1054,7 +1066,37 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		steeringEnabled, providerID := s.steeringEnabled, s.providerID
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "capabilities": rpcCapabilities(steeringEnabled)})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+	case "history_before":
+		var request struct {
+			SessionID      string `json:"session_id"`
+			BeforeSequence uint64 `json:"before_sequence"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil || request.SessionID == "" || request.BeforeSequence == 0 {
+			if err == nil {
+				err = errors.New("session_id and positive before_sequence are required")
+			}
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid history cursor: " + err.Error(), "recoverable": true})
+			return
+		}
+		s.mu.Lock()
+		currentSession, sessionDir := s.session, s.sessionDir
+		s.mu.Unlock()
+		if currentSession == "" || request.SessionID != currentSession {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "history cursor belongs to a different or no-longer-active session", "recoverable": true})
+			return
+		}
+		store, err := localfile.New(sessionDir)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, request.SessionID, request.BeforeSequence)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "history_page", map[string]any{"session_id": request.SessionID, "entries": entries, "has_earlier": hasEarlier, "before_sequence": beforeSequence, "truncated": truncated})
 	case "plugins_list":
 		payload, err := listRPCPlugins(userPluginService())
 		if err != nil {
@@ -1100,7 +1142,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before running a plugin command", "recoverable": true})
 			return
 		}
-		if s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
+		if s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
 			s.mu.Unlock()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "plugin commands require an idle session with no attached task", "recoverable": true})
 			return
@@ -1155,6 +1197,8 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "providers", map[string]any{"providers": items})
+	case "release_status":
+		_ = s.emit(msg.ID, "release_status", rpcCurrentReleaseStatus())
 	case "provider_models":
 		providerID := get("provider_id")
 		if providerID == "" {
@@ -1304,18 +1348,27 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "mcp_catalog", payload)
 	case "mcp_add":
 		var request struct {
-			Server mcpclient.ServerConfig `json:"server"`
+			Server         mcpclient.ServerConfig `json:"server"`
+			CredentialKind string                 `json:"credential_kind,omitempty"`
+			Secret         string                 `json:"secret,omitempty"`
 		}
 		if err := json.Unmarshal(msg.Payload, &request); err != nil || request.Server.ID == "" {
-			if err == nil {
-				err = errors.New("server.id is required")
-			}
-			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid MCP server configuration: " + err.Error(), "recoverable": true})
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid MCP server configuration", "recoverable": true})
 			return
 		}
-		payload, err := s.mcpAdd(s.ctx, request.Server)
+		var payload mcpCatalogPayload
+		var err error
+		if request.CredentialKind != "" || request.Secret != "" {
+			payload, err = s.mcpAddSecret(s.ctx, request.Server, request.CredentialKind, request.Secret)
+		} else {
+			payload, err = s.mcpAdd(s.ctx, request.Server)
+		}
 		if err != nil {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			message := err.Error()
+			if request.Secret != "" || request.CredentialKind != "" {
+				message = "could not configure MCP server credential; check endpoint and credential fields"
+			}
+			_ = s.emit(msg.ID, "error", map[string]any{"message": message, "recoverable": true})
 			return
 		}
 		_ = s.emit(msg.ID, "mcp_updated", payload)
@@ -1345,6 +1398,64 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "skill_catalog", map[string]any{"skills": catalog.Skills, "warnings": catalog.Warnings, "saved": catalog.Saved})
+	case "skill_search":
+		query := get("query")
+		manager := skillInstallManager()
+		s.startSkillOperation(msg.ID, "skill_search_started", "skill_search_results", map[string]any{"query": query}, func(ctx context.Context) (any, error) {
+			results, err := manager.Search(ctx, query)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"query": query, "results": results}, nil
+		})
+	case "skill_source_list":
+		source := get("source")
+		manager := skillInstallManager()
+		s.startSkillOperation(msg.ID, "skill_source_list_started", "skill_source_candidates", map[string]any{"source": source}, func(ctx context.Context) (any, error) {
+			candidates, err := manager.Discover(ctx, source)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"source": source, "candidates": candidates}, nil
+		})
+	case "skill_install":
+		source, skillPath := get("source"), get("path")
+		manager := skillInstallManager()
+		s.startSkillOperation(msg.ID, "skill_install_started", "skill_installed", map[string]any{"source": source, "path": skillPath}, func(ctx context.Context) (any, error) {
+			installed, err := manager.Install(ctx, source, skillPath)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"skill": installed, "next_session_only": true}, nil
+		})
+	case "skill_installed_list":
+		installed, err := skillInstallManager().List()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "skill_installations", map[string]any{"skills": installed})
+	case "skill_remove":
+		if err := s.skillMutationAllowed(); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		name := get("name")
+		if err := skillInstallManager().Remove(name); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "skill_removed", map[string]any{"name": name, "next_session_only": true})
+	case "skill_cancel":
+		s.mu.Lock()
+		cancel, active := s.skillOperationCancel, s.skillOperationActive
+		s.mu.Unlock()
+		if !active || cancel == nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "no skill network operation is running", "recoverable": true})
+			return
+		}
+		cancel()
+		_ = s.emit(msg.ID, "skill_cancel_requested", map[string]any{})
 	case "skill_read":
 		document, err := s.readSkill(s.ctx, get("name"))
 		if err != nil {
@@ -1366,7 +1477,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "tasks", map[string]any{"sessions": items})
 	case "task_create":
 		s.mu.Lock()
-		started, busy := s.started, s.active || s.releaseActive || s.pluginCommandActive || s.attachedTask != ""
+		started, busy := s.started, s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.attachedTask != ""
 		s.mu.Unlock()
 		if !started {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before creating a task", "recoverable": true})
@@ -1409,7 +1520,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			workspace = filepath.Join(s.opts.Workspace, "pk-work", fmt.Sprintf("task-%d", time.Now().UnixNano()))
 		}
 		executable, _ := os.Executable()
-		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}, ToolEvents: true, Executable: executable})
+		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
@@ -1433,7 +1544,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		s.mu.Lock()
-		blocked := s.active || s.releaseActive || s.pluginCommandActive || s.reloadPrepared
+		blocked := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.reloadPrepared
 		previousCancel := s.taskFollowCancel
 		s.mu.Unlock()
 		if blocked {
@@ -1448,7 +1559,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		followCtx, cancel := context.WithCancel(s.ctx)
 		s.mu.Lock()
-		if s.active || s.releaseActive || s.pluginCommandActive || s.reloadPrepared {
+		if s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.reloadPrepared {
 			s.mu.Unlock()
 			cancel()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot attach a task while another foreground operation is active", "recoverable": true})
@@ -1603,7 +1714,6 @@ type historyEntry struct {
 }
 
 const (
-	historyPageSize      = 100
 	maxHistoryEntries    = 100
 	maxHistoryBytes      = 64 << 10
 	maxHistoryEntryBytes = 8 << 10
@@ -1614,82 +1724,98 @@ func (s *rpcServer) emitSessionHistory(requestID, id string) error {
 	if err != nil {
 		return err
 	}
-	entries, truncated, err := recentSessionHistory(s.ctx, store, id)
+	entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, id, 0)
 	if err != nil {
 		return err
 	}
-	return s.emit(requestID, "history", map[string]any{"session_id": id, "entries": entries, "truncated": truncated})
+	return s.emit(requestID, "history", map[string]any{"session_id": id, "entries": entries, "truncated": truncated, "has_earlier": hasEarlier, "before_sequence": beforeSequence})
 }
 
 func recentSessionHistory(ctx context.Context, store *localfile.Store, id string) ([]historyEntry, bool, error) {
-	entries := make([]historyEntry, 0, maxHistoryEntries)
-	var after sessionstore.Sequence
-	truncated := false
-	readBytes := 0
-	for {
-		page, err := store.Items(ctx, session.ID(id), after, historyPageSize)
-		if err != nil {
-			return nil, false, err
+	entries, hasEarlier, truncated, _, err := sessionHistoryPage(ctx, store, id, 0)
+	return entries, truncated || hasEarlier, err
+}
+
+// sessionHistoryPage returns the bounded page immediately before beforeSequence.
+// A zero cursor means the newest page. Items() loads the backing event log, so
+// each request performs one store read and returns only the small transcript
+// projection; UI paging never accumulates the full transcript in memory.
+func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, beforeSequence uint64) ([]historyEntry, bool, bool, uint64, error) {
+	maxInt := uint64(^uint(0) >> 1)
+	limit := int(maxInt)
+	if beforeSequence > 0 {
+		if beforeSequence > maxInt {
+			return nil, false, false, 0, fmt.Errorf("history cursor is out of range")
 		}
-		for _, item := range page.Items {
-			var role, text string
-			switch item.Kind {
-			case sessionstore.ItemInput:
-				if input, ok := item.Data.(inbox.Input); ok && input.Kind == inbox.InputExternal {
-					var value string
-					if json.Unmarshal([]byte(input.Payload), &value) == nil {
-						role, text = "user", value
-					}
+		if beforeSequence == 1 {
+			return []historyEntry{}, false, false, 0, nil
+		}
+		limit = int(beforeSequence - 1)
+	}
+	page, err := store.Items(ctx, session.ID(id), 0, limit)
+	if err != nil {
+		return nil, false, false, 0, err
+	}
+	entries, hasEarlier, truncated := projectHistory(page.Items)
+	var cursor uint64
+	if len(entries) > 0 {
+		cursor = entries[0].Sequence
+	}
+	return entries, hasEarlier, truncated, cursor, nil
+}
+
+func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
+	entries := make([]historyEntry, 0, maxHistoryEntries)
+	hasEarlier, truncated := false, false
+	readBytes := 0
+	for _, item := range items {
+		var role, text string
+		switch item.Kind {
+		case sessionstore.ItemInput:
+			if input, ok := item.Data.(inbox.Input); ok && input.Kind == inbox.InputExternal {
+				var value string
+				if json.Unmarshal([]byte(input.Payload), &value) == nil {
+					role, text = "user", value
 				}
-			case sessionstore.ItemModelResponse:
-				if response, ok := item.Data.(sessionstore.ModelResponse); ok {
-					var parts []string
-					for _, output := range response.Response.Output {
-						if output.Type == llm.ItemMessage {
-							if message, ok := output.Data.(llm.Message); ok && message.Role == llm.RoleAssistant && message.Phase != "analysis" && strings.TrimSpace(message.Text) != "" {
-								parts = append(parts, message.Text)
-							}
+			}
+		case sessionstore.ItemModelResponse:
+			if response, ok := item.Data.(sessionstore.ModelResponse); ok {
+				var parts []string
+				for _, output := range response.Response.Output {
+					if output.Type == llm.ItemMessage {
+						if message, ok := output.Data.(llm.Message); ok && message.Role == llm.RoleAssistant && message.Phase != "analysis" && strings.TrimSpace(message.Text) != "" {
+							parts = append(parts, message.Text)
 						}
 					}
-					if len(parts) > 0 {
-						role, text = "assistant", strings.Join(parts, "\n")
-					}
+				}
+				if len(parts) > 0 {
+					role, text = "assistant", strings.Join(parts, "\n")
 				}
 			}
-			if text == "" {
-				continue
-			}
-			if len(text) > maxHistoryEntryBytes {
-				text = tailUTF8(text, maxHistoryEntryBytes)
-				truncated = true
-			}
-			for len(entries) > 0 && (len(entries) >= maxHistoryEntries || readBytes+len(text) > maxHistoryBytes) {
-				readBytes -= len(entries[0].Text)
-				entries = entries[1:]
-				truncated = true
-			}
-			if len(text) > maxHistoryBytes {
-				text = tailUTF8(text, maxHistoryBytes)
-				truncated = true
-			}
-			if text != "" {
-				entries = append(entries, historyEntry{Role: role, Text: text, Sequence: uint64(item.Sequence)})
-				readBytes += len(text)
-			}
-			if readBytes >= maxHistoryBytes {
-				break
-			}
 		}
-		previousAfter := after
-		after = page.NextAfter
-		if !page.More {
-			break
+		if text == "" {
+			continue
 		}
-		if page.NextAfter <= previousAfter {
-			return nil, false, fmt.Errorf("session history cursor did not advance")
+		if len(text) > maxHistoryEntryBytes {
+			text = tailUTF8(text, maxHistoryEntryBytes)
+			truncated = true
+		}
+		for len(entries) > 0 && (len(entries) >= maxHistoryEntries || readBytes+len(text) > maxHistoryBytes) {
+			readBytes -= len(entries[0].Text)
+			entries = entries[1:]
+			hasEarlier = true
+			truncated = true
+		}
+		if len(text) > maxHistoryBytes {
+			text = tailUTF8(text, maxHistoryBytes)
+			truncated = true
+		}
+		if text != "" {
+			entries = append(entries, historyEntry{Role: role, Text: text, Sequence: uint64(item.Sequence)})
+			readBytes += len(text)
 		}
 	}
-	return entries, truncated, nil
+	return entries, hasEarlier, truncated
 }
 
 func tailUTF8(value string, maxBytes int) string {

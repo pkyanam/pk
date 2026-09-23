@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"sort"
 )
 
@@ -22,6 +23,10 @@ func (h *Host) SchemaFingerprint() string {
 	}
 	type fingerprintServer struct {
 		ID               string            `json:"id"`
+		URL              string            `json:"url,omitempty"`
+		AuthMode         string            `json:"auth_mode,omitempty"`
+		AuthHeader       string            `json:"auth_header,omitempty"`
+		CredentialHash   string            `json:"credential_hash,omitempty"`
 		Command          string            `json:"command"`
 		Args             []string          `json:"args,omitempty"`
 		EnvironmentHash  string            `json:"environment_hash"`
@@ -34,7 +39,18 @@ func (h *Host) SchemaFingerprint() string {
 	for _, server := range h.servers {
 		env, _ := json.Marshal(server.config.Env)
 		envHash := sha256.Sum256(env)
-		item := fingerprintServer{ID: server.config.ID, Command: server.config.Command, Args: append([]string(nil), server.config.Args...), EnvironmentHash: hex.EncodeToString(envHash[:]), WorkingDirectory: server.config.WorkingDirectory, Tools: []fingerprintTool{}}
+		credential := ""
+		if server.config.Auth.SecretValue != "" {
+			credential = server.config.Auth.SecretValue
+		}
+		if server.config.Auth.BearerEnv != "" {
+			credential, _ = os.LookupEnv(server.config.Auth.BearerEnv)
+		}
+		if server.config.Auth.HeaderValueEnv != "" {
+			credential, _ = os.LookupEnv(server.config.Auth.HeaderValueEnv)
+		}
+		credentialHash := sha256.Sum256([]byte(credential))
+		item := fingerprintServer{ID: server.config.ID, URL: server.config.URL, AuthMode: server.config.Auth.Mode, AuthHeader: server.config.Auth.HeaderName, CredentialHash: hex.EncodeToString(credentialHash[:]), Command: server.config.Command, Args: append([]string(nil), server.config.Args...), EnvironmentHash: hex.EncodeToString(envHash[:]), WorkingDirectory: server.config.WorkingDirectory, Tools: []fingerprintTool{}}
 		for _, discovered := range h.ordered {
 			if discovered.ServerID == server.config.ID {
 				item.Tools = append(item.Tools, fingerprintTool{Name: discovered.Name, ServerName: discovered.ServerToolName, Description: discovered.Description, InputSchema: discovered.InputSchema})

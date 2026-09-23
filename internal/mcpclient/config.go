@@ -4,6 +4,8 @@ package mcpclient
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,25 +29,55 @@ var serverIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,31}$`)
 // never from the pk workspace by default.
 type ServerConfig struct {
 	ID               string            `json:"id"`
+	URL              string            `json:"url,omitempty"`
+	Auth             HTTPAuthConfig    `json:"auth,omitempty"`
 	Command          string            `json:"command"`
 	Args             []string          `json:"args,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
 	WorkingDirectory string            `json:"working_directory,omitempty"`
+	OAuthLogin       bool              `json:"-"`
+	SecretStoreHome  string            `json:"-"`
+}
+
+// HTTPAuthConfig names environment variables containing credentials. Secret
+// values are never persisted in the MCP config file.
+type HTTPAuthConfig struct {
+	Mode           string `json:"mode,omitempty"` // "bearer_env" or "header_env"
+	BearerEnv      string `json:"bearer_env,omitempty"`
+	HeaderName     string `json:"header_name,omitempty"`
+	HeaderValueEnv string `json:"header_value_env,omitempty"`
+	SecretRef      string `json:"secret_ref,omitempty"`
+	SecretValue    string `json:"-"`
 }
 
 func (c ServerConfig) validate() error {
 	if !serverIDPattern.MatchString(c.ID) {
 		return fmt.Errorf("invalid MCP server id %q", c.ID)
 	}
-	if !filepath.IsAbs(c.Command) {
-		return fmt.Errorf("MCP server %q command must be an absolute path", c.ID)
-	}
-	info, err := os.Stat(c.Command)
-	if err != nil {
-		return fmt.Errorf("inspect MCP server %q command: %w", c.ID, err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("MCP server %q command must be a regular file", c.ID)
+	if c.URL != "" {
+		if c.Command != "" || len(c.Args) > 0 || len(c.Env) > 0 || c.WorkingDirectory != "" {
+			return fmt.Errorf("MCP server %q must configure either a URL or a stdio command", c.ID)
+		}
+		if err := validateMCPURL(c.URL); err != nil {
+			return fmt.Errorf("MCP server %q: %w", c.ID, err)
+		}
+		if err := c.Auth.validate(); err != nil {
+			return fmt.Errorf("MCP server %q: %w", c.ID, err)
+		}
+	} else {
+		if c.Auth != (HTTPAuthConfig{}) {
+			return fmt.Errorf("MCP server %q HTTP auth requires a URL", c.ID)
+		}
+		if !filepath.IsAbs(c.Command) {
+			return fmt.Errorf("MCP server %q command must be an absolute path", c.ID)
+		}
+		info, err := os.Stat(c.Command)
+		if err != nil {
+			return fmt.Errorf("inspect MCP server %q command: %w", c.ID, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("MCP server %q command must be a regular file", c.ID)
+		}
 	}
 	if c.WorkingDirectory != "" {
 		if !filepath.IsAbs(c.WorkingDirectory) {
@@ -70,6 +102,68 @@ func (c ServerConfig) validate() error {
 		}
 	}
 	return nil
+}
+
+func validateMCPURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" {
+		return fmt.Errorf("URL must be an absolute HTTP(S) endpoint without credentials, query, or fragment")
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("URL must use HTTPS (HTTP is allowed only for loopback fixtures)")
+	}
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		if !(strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())) {
+			return fmt.Errorf("unencrypted HTTP is allowed only for loopback addresses")
+		}
+	}
+	return nil
+}
+
+func (a HTTPAuthConfig) validate() error {
+	switch a.Mode {
+	case "", "none":
+		if a.BearerEnv != "" || a.HeaderName != "" || a.HeaderValueEnv != "" || a.SecretRef != "" {
+			return fmt.Errorf("auth fields require a matching auth mode")
+		}
+	case "bearer_env":
+		if !environmentKeyPattern.MatchString(a.BearerEnv) || a.HeaderName != "" || a.HeaderValueEnv != "" || a.SecretRef != "" {
+			return fmt.Errorf("bearer_env mode requires a valid bearer_env variable name")
+		}
+	case "header_env":
+		if !environmentKeyPattern.MatchString(a.HeaderValueEnv) || !validHeaderName(a.HeaderName) || strings.EqualFold(a.HeaderName, "Host") || strings.EqualFold(a.HeaderName, "Cookie") || a.SecretRef != "" {
+			return fmt.Errorf("header_env mode requires a valid header name and header_value_env variable")
+		}
+	case "bearer_secret":
+		if a.SecretRef == "" || a.BearerEnv != "" || a.HeaderName != "" || a.HeaderValueEnv != "" {
+			return fmt.Errorf("bearer_secret mode requires a stored secret reference")
+		}
+	case "header_secret":
+		if a.SecretRef == "" || !validHeaderName(a.HeaderName) || strings.EqualFold(a.HeaderName, "Host") || strings.EqualFold(a.HeaderName, "Cookie") {
+			return fmt.Errorf("header_secret mode requires a stored secret reference and valid header name")
+		}
+	case "oauth":
+		if a.SecretRef == "" || a.BearerEnv != "" || a.HeaderName != "" || a.HeaderValueEnv != "" {
+			return fmt.Errorf("oauth mode requires an OAuth session reference")
+		}
+	default:
+		return fmt.Errorf("unsupported HTTP auth mode %q", a.Mode)
+	}
+	return nil
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func processEnvironment(overrides map[string]string) []string {

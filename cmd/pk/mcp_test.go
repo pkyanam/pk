@@ -63,6 +63,40 @@ func TestMCPCommandsAreReachableThroughMainCLI(t *testing.T) {
 	}
 }
 
+func TestMCPCLIConfiguresRemoteHTTPWithoutPrintingCredential(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PK_HOME", home)
+	var out, errOut bytes.Buffer
+	args := []string{"mcp", "add", "--id", "docs", "--url", "https://docs.mcp.cloudflare.com/mcp"}
+	if code := runMain(args, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("remote add exit=%d stderr=%q", code, errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := runMain([]string{"mcp", "list"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "https://docs.mcp.cloudflare.com/mcp") {
+		t.Fatalf("remote list exit=%d output=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestMCPCLIConfiguresAndClearsOAuthWithoutLogin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PK_HOME", home)
+	var out, errOut bytes.Buffer
+	if code := runMain([]string{"mcp", "add", "--id", "account", "--url", "https://mcp.example.test/mcp", "--auth", "oauth"}, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("add exit=%d err=%q", code, errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := runMain([]string{"mcp", "status", "account"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "needs_login") {
+		t.Fatalf("status exit=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := runMain([]string{"mcp", "logout", "account"}, strings.NewReader(""), &out, &errOut); code != 0 || !strings.Contains(out.String(), "Cleared OAuth") {
+		t.Fatalf("logout exit=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
 func TestMCPRPCMutationsAreSanitizedAndNextSessionOnly(t *testing.T) {
 	root := t.TempDir()
 	pkHome := filepath.Join(root, "pk")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,8 +45,10 @@ type Host struct {
 }
 
 type server struct {
-	config  ServerConfig
-	session *mcp.ClientSession
+	config      ServerConfig
+	session     *mcp.ClientSession
+	httpClient  *http.Client
+	oauthClient *http.Client
 }
 
 // NewHost starts only the supplied stdio servers. A failing server is isolated
@@ -98,6 +101,9 @@ func NewHost(ctx context.Context, configs []ServerConfig) (*Host, Report, error)
 }
 
 func connectServer(ctx context.Context, config ServerConfig) (*server, []Tool, error) {
+	if config.URL != "" {
+		return connectHTTPServer(ctx, config)
+	}
 	cmd := exec.Command(config.Command, config.Args...)
 	if config.WorkingDirectory != "" {
 		cmd.Dir = filepath.Clean(config.WorkingDirectory)
@@ -136,6 +142,103 @@ func connectServer(ctx context.Context, config ServerConfig) (*server, []Tool, e
 	closeOnError = false
 	return &server{config: config, session: session}, tools, nil
 }
+
+func connectHTTPServer(ctx context.Context, config ServerConfig) (*server, []Tool, error) {
+	if err := config.validate(); err != nil {
+		return nil, nil, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	client := &http.Client{Transport: authRoundTripper{base: transport, config: config},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	mcpTransport := &mcp.StreamableClientTransport{Endpoint: config.URL, HTTPClient: client, DisableStandaloneSSE: true}
+	clientMCP := mcp.NewClient(&mcp.Implementation{Name: clientName, Version: clientVersion}, nil)
+	var oauthHTTPClient *http.Client
+	connectTimeout := 20 * time.Second
+	if config.OAuthLogin {
+		connectTimeout = 5 * time.Minute
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	if config.Auth.Mode == "oauth" {
+		oauthHandler, listener, authClient, err := newOAuthHandler(config)
+		if err != nil {
+			client.CloseIdleConnections()
+			return nil, nil, err
+		}
+		if listener != nil {
+			defer listener.Close()
+		}
+		oauthHTTPClient = authClient
+		mcpTransport.OAuthHandler = oauthHandler
+	}
+	session, err := clientMCP.Connect(connectCtx, mcpTransport, nil)
+	if err != nil {
+		client.CloseIdleConnections()
+		if oauthHTTPClient != nil {
+			oauthHTTPClient.CloseIdleConnections()
+		}
+		return nil, nil, err
+	}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = session.Close()
+			client.CloseIdleConnections()
+			if oauthHTTPClient != nil {
+				oauthHTTPClient.CloseIdleConnections()
+			}
+		}
+	}()
+	tools := make([]Tool, 0)
+	for remoteTool, err := range session.Tools(connectCtx, nil) {
+		if err != nil {
+			return nil, nil, fmt.Errorf("list tools: %w", err)
+		}
+		if len(tools) >= maxToolsPerServer {
+			return nil, nil, fmt.Errorf("tool count exceeds %d", maxToolsPerServer)
+		}
+		converted, err := convertTool(config.ID, remoteTool)
+		if err != nil {
+			return nil, nil, err
+		}
+		tools = append(tools, converted)
+	}
+	closeOnError = false
+	return &server{config: config, session: session, httpClient: client, oauthClient: oauthHTTPClient}, tools, nil
+}
+
+type authRoundTripper struct {
+	base   *http.Transport
+	config ServerConfig
+}
+
+func (t authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.config.Auth.Mode == "bearer_env" {
+		token := strings.TrimSpace(os.Getenv(t.config.Auth.BearerEnv))
+		if token == "" {
+			return nil, fmt.Errorf("MCP bearer credential environment variable %s is empty", t.config.Auth.BearerEnv)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if t.config.Auth.Mode == "bearer_secret" {
+		if t.config.Auth.SecretValue == "" {
+			return nil, errors.New("MCP bearer credential is unavailable")
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(t.config.Auth.SecretValue))
+	} else if t.config.Auth.Mode == "header_env" {
+		value := os.Getenv(t.config.Auth.HeaderValueEnv)
+		if value == "" {
+			return nil, fmt.Errorf("MCP header credential environment variable %s is empty", t.config.Auth.HeaderValueEnv)
+		}
+		req.Header.Set(t.config.Auth.HeaderName, value)
+	} else if t.config.Auth.Mode == "header_secret" {
+		if t.config.Auth.SecretValue == "" {
+			return nil, errors.New("MCP header credential is unavailable")
+		}
+		req.Header.Set(t.config.Auth.HeaderName, t.config.Auth.SecretValue)
+	}
+	return t.base.RoundTrip(req)
+}
+func (t authRoundTripper) CloseIdleConnections() { t.base.CloseIdleConnections() }
 
 func convertTool(serverID string, remote *mcp.Tool) (Tool, error) {
 	if remote == nil || strings.TrimSpace(remote.Name) == "" {
@@ -210,6 +313,12 @@ func (h *Host) Close() error {
 	for _, srv := range servers {
 		if err := srv.session.Close(); err != nil && first == nil {
 			first = fmt.Errorf("close MCP server %q: %w", srv.config.ID, err)
+		}
+		if srv.httpClient != nil {
+			srv.httpClient.CloseIdleConnections()
+		}
+		if srv.oauthClient != nil {
+			srv.oauthClient.CloseIdleConnections()
 		}
 	}
 	return first

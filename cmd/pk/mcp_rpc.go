@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -98,8 +99,27 @@ func (s *rpcServer) mcpAdd(ctx context.Context, config mcpclient.ServerConfig) (
 	if err := ctx.Err(); err != nil {
 		return mcpCatalogPayload{}, err
 	}
-	if err := (mcpclient.ConfigStore{Home: pkHome()}).Add(config); err != nil {
+	store := mcpclient.ConfigStore{Home: pkHome()}
+	var addErr error
+	if config.Auth.Mode == "oauth" {
+		addErr = store.AddOAuth(config)
+	} else {
+		addErr = store.Add(config)
+	}
+	if addErr != nil {
+		return mcpCatalogPayload{}, addErr
+	}
+	return s.mcpCatalog(ctx)
+}
+
+// mcpAddSecret accepts a one-shot credential from a masked UI field. It never
+// includes the credential in returned RPC data or error text.
+func (s *rpcServer) mcpAddSecret(ctx context.Context, config mcpclient.ServerConfig, credentialKind, secret string) (mcpCatalogPayload, error) {
+	if err := ctx.Err(); err != nil {
 		return mcpCatalogPayload{}, err
+	}
+	if err := (mcpclient.ConfigStore{Home: pkHome()}).AddWithSecret(config, credentialKind, secret); err != nil {
+		return mcpCatalogPayload{}, errors.New("could not store MCP server credential; check endpoint and credential fields")
 	}
 	return s.mcpCatalog(ctx)
 }
