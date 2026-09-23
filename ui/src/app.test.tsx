@@ -2071,7 +2071,7 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Earlier request with full context")
     await act(async () => { await setup.mockInput.pressEscape(); await new Promise((resolve) => setTimeout(resolve, 50)) })
-    frame = await setup.waitForFrame((value) => !value.includes("Saved conversation · earlier page"))
+    frame = await setup.waitForFrame((value) => !value.includes("Saved conversation ·") && value.includes("Live transcript remains here."))
     expect(frame).toContain("Live transcript remains here.")
     expect(frame).toContain("Latest answer")
 
