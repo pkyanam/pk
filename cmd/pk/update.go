@@ -145,7 +145,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io.Writer, progress func(string)) int {
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	source := flags.String("source", "", "pk source checkout (defaults to current directory if it is pk)")
+	source := flags.String("source", "", "explicit pk source directory (default: clone official GitHub main branch)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -156,12 +156,11 @@ func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io
 		fmt.Fprintf(stderr, "pk update: unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
 	}
-	selected := strings.TrimSpace(*source)
-	if selected == "" {
-		selected, _ = os.Getwd()
-	}
 	manager := updateManagerWithProgress(progress)
-	release, err := manager.Stage(ctx, selected)
+	var release pkupdate.Release
+	var err error
+	selected := strings.TrimSpace(*source)
+	release, err = stageUpdateSource(ctx, manager, selected)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk update: stage failed: %v\n", err)
 		return 1
@@ -173,7 +172,7 @@ func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io
 		return 1
 	}
 	if status.Current == nil {
-		legacy, err := manager.ImportArtifacts(currentExecutable(), filepath.Join(updateLibraryDir(), "ui"))
+		legacy, err := manager.ImportArtifacts(legacyInstalledBinary(), filepath.Join(updateLibraryDir(), "ui"))
 		if err != nil {
 			fmt.Fprintf(stderr, "pk update: cannot preserve existing installation for rollback: %v\n", err)
 			return 1
@@ -199,12 +198,54 @@ func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io
 	return 0
 }
 
+func stageUpdateSource(ctx context.Context, manager pkupdate.Manager, selected string) (pkupdate.Release, error) {
+	selected = strings.TrimSpace(selected)
+	if selected != "" {
+		return manager.Stage(ctx, selected)
+	}
+	checkout, err := manager.CheckoutGit(ctx, pkupdate.DefaultGitRepository, pkupdate.DefaultGitRef)
+	if err != nil {
+		return pkupdate.Release{}, fmt.Errorf("fetch official source: %w", err)
+	}
+	defer checkout.Close()
+	return manager.StageGit(ctx, checkout)
+}
+
 func currentExecutable() string {
 	path, err := os.Executable()
 	if err == nil {
 		return path
 	}
 	return filepath.Join(updateBinaryDir(), "pk")
+}
+
+func legacyInstalledBinary() string {
+	installed := filepath.Join(updateBinaryDir(), "pk")
+	return chooseLegacyBinary(installed, currentExecutable())
+}
+
+func chooseLegacyBinary(installed, running string) string {
+	for _, candidate := range []string{installed, running} {
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		file, err := os.Open(candidate)
+		if err != nil {
+			continue
+		}
+		var prefix [2]byte
+		_, readErr := file.Read(prefix[:])
+		_ = file.Close()
+		if readErr == nil && string(prefix[:]) == "#!" {
+			continue // Never preserve the stable shell launcher as the old binary.
+		}
+		return candidate
+	}
+	return installed
 }
 
 func installStableLauncher(binaryDir, libDir string) error {

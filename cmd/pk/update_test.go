@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	pkupdate "github.com/pkyanam/pk/internal/update"
 )
 
 func TestInstallArtifactsMigratesLegacyPairAndWritesLauncher(t *testing.T) {
@@ -86,6 +89,86 @@ func TestInstallArtifactsMigratesLegacyPairAndWritesLauncher(t *testing.T) {
 	}
 }
 
+type githubUpdateRunner struct{ checkout string }
+
+func (runner *githubUpdateRunner) Run(ctx context.Context, dir, name string, stdout, stderr io.Writer, args ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if name == "git" && len(args) > 0 {
+		switch args[0] {
+		case "clone":
+			destination := args[len(args)-1]
+			runner.checkout = destination
+			files := map[string]string{
+				"go.mod":          "module github.com/pkyanam/pk\n\ngo 1.27.0\n",
+				"cmd/pk/main.go":  "package main\nfunc main() {}\n",
+				"scripts/build":   "#!/bin/sh\nexit 0\n",
+				"ui/package.json": "{}\n",
+				"ui/bun.lock":     "fixture\n",
+			}
+			for rel, body := range files {
+				path := filepath.Join(destination, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					return err
+				}
+			}
+		case "rev-parse":
+			_, _ = io.WriteString(stdout, "abcdef0123456789abcdef0123456789abcdef01\n")
+		}
+		return nil
+	}
+	if name == "sh" && len(args) == 1 && args[0] == "scripts/build" {
+		for _, dir := range []string{filepath.Join(dir, "bin"), filepath.Join(dir, "ui", "dist"), filepath.Join(dir, "ui", "node_modules")} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, "bin", "pk"), []byte("fixture"), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "ui", "dist", "main.js"), []byte("// fixture"), 0o644)
+	}
+	return nil
+}
+
+func TestDefaultUpdateSourceStagesOfficialGitHubMainAndRecordsCommit(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "lib", "pk")
+	runner := &githubUpdateRunner{}
+	manager := pkupdate.Manager{Root: root, Runner: runner}
+	t.Cleanup(func() { makeUpdateTreeWritable(root) })
+	release, err := stageUpdateSource(context.Background(), manager, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release.GitRepository != pkupdate.DefaultGitRepository || release.GitRef != pkupdate.DefaultGitRef || release.Revision != "abcdef0123456789abcdef0123456789abcdef01" || release.Dirty {
+		t.Fatalf("release provenance=%+v", release)
+	}
+	if runner.checkout == "" {
+		t.Fatal("default update did not clone a checkout")
+	}
+	if _, err := os.Stat(runner.checkout); !os.IsNotExist(err) {
+		t.Fatalf("temporary checkout still exists after stage: %v", err)
+	}
+}
+
+func makeUpdateTreeWritable(root string) {
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		} else {
+			_ = os.Chmod(path, 0o600)
+		}
+		return nil
+	})
+}
+
 func TestShellQuote(t *testing.T) {
 	if got := shellQuote("/tmp/a'b"); got != "'/tmp/a'\\''b'" {
 		t.Fatalf("shellQuote = %q", got)
@@ -123,5 +206,46 @@ func TestLauncherPinsUIToExecutingReleaseDuringActivation(t *testing.T) {
 	want := filepath.Join(realLib, "releases", "first", "ui", "dist", "main.js")
 	if string(out) != want {
 		t.Fatalf("running release UI changed during activation: %s want %s", out, want)
+	}
+}
+
+func TestChooseLegacyBinarySkipsStableShellLauncher(t *testing.T) {
+	root := t.TempDir()
+	launcher := filepath.Join(root, "launcher")
+	actual := filepath.Join(root, "actual-pk")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexec pk-current\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(actual, []byte("MZ\x00pk-binary-fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := chooseLegacyBinary(launcher, actual); got != actual {
+		t.Fatalf("legacy binary=%q want %q", got, actual)
+	}
+}
+
+func TestChooseLegacyBinaryPrefersInstalledBinary(t *testing.T) {
+	root := t.TempDir()
+	installed := filepath.Join(root, "installed")
+	running := filepath.Join(root, "running")
+	for _, path := range []string{installed, running} {
+		if err := os.WriteFile(path, []byte("MZ fixture"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := chooseLegacyBinary(installed, running); got != installed {
+		t.Fatalf("legacy binary=%q want installed %q", got, installed)
+	}
+}
+
+func TestUpdateAliasesReachUpdateCommand(t *testing.T) {
+	for _, alias := range []string{"--update", "-update"} {
+		var stdout, stderr strings.Builder
+		if code := runMain([]string{alias, "--help"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+			t.Fatalf("%s --help returned %d: %s", alias, code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "Usage of update") {
+			t.Fatalf("%s did not dispatch to update flags: stdout=%q stderr=%q", alias, stdout.String(), stderr.String())
+		}
 	}
 }

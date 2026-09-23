@@ -26,6 +26,9 @@ import (
 func main() { os.Exit(runMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 
 func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--update" || args[0] == "-update") {
+		args = append([]string{"update"}, args[1:]...)
+	}
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		usage(stdout)
 		return 0
@@ -472,7 +475,8 @@ func usage(out io.Writer) {
   pk login
   pk logout
   pk status
-  pk update [--source DIR]
+  pk update [--source DIR]    update from official GitHub main, or local DIR
+  pk --update                 alias for pk update
   pk rollback
   pk version
   pk run -p PROMPT [OPTIONS]

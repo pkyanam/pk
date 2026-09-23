@@ -52,16 +52,18 @@ func (manager Manager) report(stage string) {
 }
 
 type Release struct {
-	ID         string    `json:"id"`
-	Path       string    `json:"path"`
-	BinaryPath string    `json:"binary_path"`
-	UIPath     string    `json:"ui_path"`
-	Source     string    `json:"source"`
-	Revision   string    `json:"revision,omitempty"`
-	Dirty      bool      `json:"dirty"`
-	DirtyKnown bool      `json:"dirty_known"`
-	SourceHash string    `json:"source_sha256"`
-	StagedAt   time.Time `json:"staged_at"`
+	ID            string    `json:"id"`
+	Path          string    `json:"path"`
+	BinaryPath    string    `json:"binary_path"`
+	UIPath        string    `json:"ui_path"`
+	Source        string    `json:"source"`
+	GitRepository string    `json:"git_repository,omitempty"`
+	GitRef        string    `json:"git_ref,omitempty"`
+	Revision      string    `json:"revision,omitempty"`
+	Dirty         bool      `json:"dirty"`
+	DirtyKnown    bool      `json:"dirty_known"`
+	SourceHash    string    `json:"source_sha256"`
+	StagedAt      time.Time `json:"staged_at"`
 }
 
 type Status struct {
@@ -132,6 +134,19 @@ func (manager Manager) ImportArtifacts(binaryPath, uiDirectory string) (Release,
 // repository Go tests and build script in that copy, then publishes a paired,
 // immutable binary/UI release under Root/releases/<id>.
 func (manager Manager) Stage(ctx context.Context, source string) (Release, error) {
+	return manager.stage(ctx, source, "", "", "")
+}
+
+// StageGit builds an isolated checkout and records its immutable source
+// provenance in the release metadata.
+func (manager Manager) StageGit(ctx context.Context, checkout GitCheckout) (Release, error) {
+	if checkout.Directory == "" || checkout.Repository == "" || checkout.Ref == "" || !validCommit(checkout.Commit) {
+		return Release{}, errors.New("complete Git checkout metadata is required")
+	}
+	return manager.stage(ctx, checkout.Directory, checkout.Repository, checkout.Ref, checkout.Commit)
+}
+
+func (manager Manager) stage(ctx context.Context, source, gitRepository, gitRef, gitCommit string) (Release, error) {
 	manager.report("source_validate")
 	root, err := manager.root()
 	if err != nil {
@@ -149,6 +164,9 @@ func (manager Manager) Stage(ctx context.Context, source string) (Release, error
 		return Release{}, err
 	}
 	revision, dirty, dirtyKnown := manager.sourceState(ctx, source)
+	if gitCommit != "" {
+		revision, dirty, dirtyKnown = gitCommit, false, true
+	}
 	buildRoot, err := os.MkdirTemp("", "pk-update-build-")
 	if err != nil {
 		return Release{}, fmt.Errorf("create isolated build source: %w", err)
@@ -229,9 +247,14 @@ func (manager Manager) Stage(ctx context.Context, source string) (Release, error
 			return Release{}, fmt.Errorf("stage UI %s: %w", name, err)
 		}
 	}
+	releaseSource := source
+	if gitRepository != "" {
+		releaseSource = gitRepository
+	}
 	release := Release{
 		ID: id, Path: finalPath, BinaryPath: filepath.Join(finalPath, "pk"), UIPath: filepath.Join(finalPath, "ui", "dist", "main.js"),
-		Source: source, Revision: revision, Dirty: dirty, DirtyKnown: dirtyKnown, SourceHash: hash, StagedAt: stagedAt,
+		Source: releaseSource, GitRepository: gitRepository, GitRef: gitRef,
+		Revision: revision, Dirty: dirty, DirtyKnown: dirtyKnown, SourceHash: hash, StagedAt: stagedAt,
 	}
 	if err := writeManifest(stagePath, release); err != nil {
 		return Release{}, err
