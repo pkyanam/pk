@@ -613,3 +613,8 @@ gates or imply that every backlog item is complete.
 - Fresh sessions now receive a concise not-inside-work-tree fact only after a bounded Git probe confirms it. Missing Git, malformed metadata and timeout remain unknown; inherited Git discovery variables are excluded. Bare repositories are described as not inside a work tree.
 - Runner race suite passes. Independent regression failed before the change and now verifies a resumed prefix remains byte-identical after git init while a fresh session updates. Five local probe iterations averaged 12.74ms on M3 (small shared-machine sample); timeout is 500ms plus bounded process drain.
 - This candidate has not yet established lower token usage and is not installed in the production release.
+
+### Post-handoff — Git-awareness live diagnostic
+
+- Candidate b7a93a2 passed both holdouts and avoided failed Git commands. One-repetition sequential comparison: input 29,717→21,736; uncached 15,893→14,056; output 774→755; responses 11→12. Total wall time worsened; cache hits differed. These preliminary results do not prove general savings.
+- Saved candidate captures and tradeoff analysis under benchmarks/results/git-awareness-luna-low-20260923.
