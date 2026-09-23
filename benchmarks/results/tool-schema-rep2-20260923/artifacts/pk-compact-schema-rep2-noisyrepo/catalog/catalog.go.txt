@@ -1,0 +1,43 @@
+package catalog
+
+// Source maps a request path to one enabled handler.
+type Source struct {
+	Name     string
+	Prefix   string
+	Priority int
+	Enabled  bool
+}
+
+// Select chooses the best enabled source for path by prefix specificity, then priority.
+// Sources with equal specificity and priority are resolved by their slice order.
+func Select(sources []Source, path string) (Source, bool) {
+	var best Source
+	bestLen := -1
+
+	for _, source := range sources {
+		if !source.Enabled || source.Prefix == "" {
+			continue
+		}
+
+		matches := path == source.Prefix
+		if source.Prefix == "/" {
+			matches = len(path) > 0 && path[0] == '/'
+		} else if !matches && len(path) > len(source.Prefix) {
+			matches = path[:len(source.Prefix)] == source.Prefix && path[len(source.Prefix)] == '/'
+		}
+		if !matches {
+			continue
+		}
+
+		prefixLen := len(source.Prefix)
+		if prefixLen > bestLen || (prefixLen == bestLen && source.Priority > best.Priority) {
+			best = source
+			bestLen = prefixLen
+		}
+	}
+
+	if bestLen < 0 {
+		return Source{}, false
+	}
+	return best, true
+}

@@ -58,7 +58,7 @@ func TestToolSchemaSummaryReportsProviderUsageAndDoesNotAssertSavings(t *testing
 		t.Fatal(err)
 	}
 	text := string(content)
-	for _, expected := range []string{"Description bytes (before / after)", "573 / 452", "provider-reported", "This paired experiment measures"} {
+	for _, expected := range []string{"Description bytes (before / after)", "573 / 452", "provider-reported", "This single-repetition paired experiment"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("summary missing %q:\n%s", expected, text)
 		}

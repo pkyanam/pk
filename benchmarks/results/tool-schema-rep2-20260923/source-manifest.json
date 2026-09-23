@@ -1,0 +1,391 @@
+{
+  "pk_revision": "6813acb",
+  "source_tree_sha256": "b9147fc3b22264ad455d6913497c1d0fbaedd86de5a087680000460d4c0b4763",
+  "git_diff_sha256": "e61d01f4f46d24ea1de9b0d8177f55fc7bb3370c32eb69c946f4ae488400527f",
+  "files": [
+    {
+      "path": "benchmarks/experiments/output-cap.md",
+      "sha256": "44136f4ffcc814a3930d94308a14993b1f0762516d795644422302a5f7d1bdfa"
+    },
+    {
+      "path": "benchmarks/experiments/session-continuation.md",
+      "sha256": "19da2078349fbcfbc51f805bdfd67268bbb566c69abd74c91945d39f7378afc5"
+    },
+    {
+      "path": "benchmarks/experiments/tool-schema.md",
+      "sha256": "3289914e80429d398420cc4477d827a6f829e231b87d0ce72a23e8b7c745f015"
+    },
+    {
+      "path": "benchmarks/tasks/clamp/clamp.go",
+      "sha256": "0f782e88d43951f7a10ebf38e6f326fb0f9a7d1f39a11241eeecdaa4c9630446"
+    },
+    {
+      "path": "benchmarks/tasks/clamp/clamp_test.go",
+      "sha256": "abd86728ead1ed4b8d383e60ca7d220e137738998ae53500c3f3871ac1217191"
+    },
+    {
+      "path": "benchmarks/tasks/clamp/go.mod",
+      "sha256": "6b90d6402c2b38a39a831c2cee0d91550c97a3dd93444c2607a02d2c7f1adfe2"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/catalog/catalog.go",
+      "sha256": "8365784432bedd08a9ac0a50351885294c0d652e5f1d52a229f114ba024bb400"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/catalog/catalog_test.go",
+      "sha256": "c751e409f6705d60b24c17dbd3516c21e17d146c65aeb41a021edb856e06500b"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-01.md",
+      "sha256": "9dfaf2e9a97ca61ca9751979ecd05a1b537a37bec4f114c3e1fe41f01ea55fa1"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-02.md",
+      "sha256": "4ce12e85b1b7b5b7cd544739198bde0ca0e4e810457b137ce9ebae3ea025e9e0"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-03.md",
+      "sha256": "8d15a34e167ef7f3c7424cd5fc44a0fd9941c8a50d14f2a520b392fc59185fb8"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-04.md",
+      "sha256": "019dcdeab8c8e4b7df6eb41b60efa92648d83dcc4a70f7d7b46eae111dbfb1fd"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-05.md",
+      "sha256": "a242171e88a6fc5dd7c9fc3ad381aa0da5c9f0224233660118311f3df7e4aad8"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-06.md",
+      "sha256": "3ea270659e5426a63934fc3c40b7a5a33cd55e6b4b31b2904b9bfe978580096b"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-07.md",
+      "sha256": "6d1d4bf5f50434b354f233b94e6262ec95dedfb8463ebb3ff4660d826eaf303e"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-08.md",
+      "sha256": "b73aa364395c1cc1af7620767eda91b1bfdf98243ac56376a6cc3b3e20f24c5e"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-09.md",
+      "sha256": "32fb3032b5dab6166cb358d640e341c2f08961327919d889b7eb36cd4528aa63"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-10.md",
+      "sha256": "e2622980337b8b4debd464144a7e3405ae8ed9a8f61d0b4e21f431cecd5003c3"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-11.md",
+      "sha256": "6dbe079603888a9fa1f8479c8cfff964e209defaee92599784addb1424b9aa11"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-12.md",
+      "sha256": "3cc43f215a744fa140e59e165c00712bcb9b75d876a4896053015952625b17a4"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-13.md",
+      "sha256": "547996bed8aa4ad736f85cc2bc6ad05b7dd5c452bbc94244c4a67d3c177ea7bf"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-14.md",
+      "sha256": "e251045ad2ebdafaeba1323f4be521518d1ab647599c97872c5ea35c9ac6e550"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-15.md",
+      "sha256": "dc485edc6d3658b7e0de2639411fae0fff07176312b50ce27750f49673c3eaae"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-16.md",
+      "sha256": "8b55afa42c9e3b52f83afc5943b07d5c67e906b8f472dd18734a5ed899fc0c45"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-17.md",
+      "sha256": "0e7a505ff05459574c8997aec1cd2874ba939484828b8b516eebab78877e2213"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-18.md",
+      "sha256": "12751c5c8fd08e4111551ceb0cd9922931145cc5f6f33d4a2031eb3c4dbe1b10"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-19.md",
+      "sha256": "1651fb8c90512dddd13bc3080a7adf337efe3d80a9e988c902f156f2b2f48eb6"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-20.md",
+      "sha256": "f43ede8079e1cc5571cc9174c94aa49cddfeb7ee5be4e27577be1747bc8fd1e3"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-21.md",
+      "sha256": "b6087bbe8a982aff2d7e94ae0f6467eec475256a2f01ac47a7fa515232537903"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-22.md",
+      "sha256": "0aa35c1d3dfd52c115e2c45098f84af41b42f9771f335c1512c3c6b3646160ef"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-23.md",
+      "sha256": "574a4ae305695feae0bdb0cd7e5c825e3a9a66a9a5fdda668c0210dfa120b6ba"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-24.md",
+      "sha256": "a69a9effd21058714273a706063deddbfce046999afbb2ffa9d15fb023bb3068"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-25.md",
+      "sha256": "91cface0c2516876ebbff4fc273d25345b69596b8163d2e05d24114abb38e478"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-26.md",
+      "sha256": "b9880bc5cd76c5b35730f6a09dbaafb521f59ce73a1f274c3e1eb34ee0736c90"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-27.md",
+      "sha256": "8ede70e46b2034802637620875d7b68d82c89a425aa07cde7126f8869902c551"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-28.md",
+      "sha256": "03903446ab62df41447eace822414bf05766e117b29d1f7d1fff5a6a8ae40df1"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-29.md",
+      "sha256": "1c0ae4b6963770e75286b30921bc38c8e336f9ee49af38365d07b22531930b08"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-30.md",
+      "sha256": "c0fe7d1ad385ef1f1a1c2af2ee29131ab9f0df22555ca0c63563456098c3ef9b"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-31.md",
+      "sha256": "87a9be7acd4353c767f4ebb20ceac367098524611edcbf43b9338369b836c10b"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-32.md",
+      "sha256": "b4b292d5187b08bce7199829b90f6b768544ec00de9ab6c63a113fb45f3d79e3"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-33.md",
+      "sha256": "cef1ff7304415a6b5450632dab7287cb5cbf3b7821a054d30b754ce286395ffb"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-34.md",
+      "sha256": "60e14777eb35b1bdb3b9a530177a95114c7e14f343a3e88a39604ba63221c3d2"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-35.md",
+      "sha256": "d807222bf98ca01a15d297c82041db6154e999cfe4df079f34da7baf057bc25f"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-36.md",
+      "sha256": "06f4e1f2c2b1a5ea70d6b7ec989f907a89a5f006f09cf34e5aa2bcd99d1cf2a3"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-37.md",
+      "sha256": "f71a3ddb56a2927348f63262a42cbe28894eaf3a8d896d1e11966092793bf64c"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-38.md",
+      "sha256": "632f35e365d54c2ab0ac62492c08994194fb0f2b2dcee67f8379b17993e5c3c8"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-39.md",
+      "sha256": "c9186a86fb945b4536b5555ffe7417067a5635953b95189afb6f1d2a9af1c932"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-40.md",
+      "sha256": "4a95d4f7193fd6c712698e9296a7c8bd4450e184c33303c7845efb3dbaea59dd"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-41.md",
+      "sha256": "309ffafed8dbe984360727b4e6c73248981f9e06678fe4ff5a985c545f1912f2"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-42.md",
+      "sha256": "fcf5e479101f8c9274a501e4e7163d9b014a2cdb81d2eb3344f3b1015250d755"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-43.md",
+      "sha256": "55f0d2e05c09f4766f6f49dde084e76c63699ad6821bfbcf7202db722da124e2"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-44.md",
+      "sha256": "4edc61171e8d0a74f1a938a83d6a7b422d79ed9b6f72bb424efe9ef89a43df79"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-45.md",
+      "sha256": "b0928f497888aaceceddf8b835cb289916f40d6ecf969e65df7e409d0734557e"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-46.md",
+      "sha256": "7ee86240625b1fc2aa1a411cc0f1aff2e55164b5832311b43781840143b5cc8f"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-47.md",
+      "sha256": "1a342b87739986645a5d8f343ae30af828920a587aac47f66cd9bfe04d8f0676"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/docs/operations-48.md",
+      "sha256": "9cf3a8bb64ed634ccd8575efe863814f22f5b2ab8d1f2f42cf3e7d6500ad5e62"
+    },
+    {
+      "path": "benchmarks/tasks/noisyrepo/go.mod",
+      "sha256": "b8be890f64e029576b903cd5a6a68b3ab17893e5401c6dec7fec1aa118cfebe6"
+    },
+    {
+      "path": "cmd/pk/adapter_test.go",
+      "sha256": "247482aca6caf5b4f2193a2c6b1fbc48b0adcad661a3045871f3a43fdbda7953"
+    },
+    {
+      "path": "cmd/pk/attachment_input.go",
+      "sha256": "49e59a337bc7e0ddf1bbabc756420b4a561f6dc0abdba3770e04d85dc0c3704f"
+    },
+    {
+      "path": "cmd/pk/benchmark_hook_disabled.go",
+      "sha256": "672d9415ecb4f078888360479b0c4391710c2f46b990e94c392b1afbd730a9b1"
+    },
+    {
+      "path": "cmd/pk/benchmark_hook_enabled.go",
+      "sha256": "43ffb08956a22e1426e83baa02bf2f8d7b1d792a5edb38410beecdc63bae8cf0"
+    },
+    {
+      "path": "cmd/pk/config_cmd.go",
+      "sha256": "4cc77c06a9686d715648a60c042ea0e7935353643b78d286a3f2eb7dded443bc"
+    },
+    {
+      "path": "cmd/pk/extensions_cli.go",
+      "sha256": "9a39b32220569a0f0683ed95ab1bc67783728ee84679bf66a6fe2b6798d14abd"
+    },
+    {
+      "path": "cmd/pk/extensions_cli_test.go",
+      "sha256": "37667bae9c026ed1ac4addeccf23b0a784af57c3e8010144f9a325d506e6fdd1"
+    },
+    {
+      "path": "cmd/pk/interactive_test.go",
+      "sha256": "21f24b3bb7392b06105513a0568fbfd631477f2b729b0a9482ecda9f6bbe6586"
+    },
+    {
+      "path": "cmd/pk/main.go",
+      "sha256": "f3b79d6305cdd518814c886d384b6fcd83997decc808dfd2927380442b8af40b"
+    },
+    {
+      "path": "cmd/pk/main_test.go",
+      "sha256": "51cf629879d9325f4661b812f9e85a87bb9609ad5f8664421e78c938a90e2bb5"
+    },
+    {
+      "path": "cmd/pk/rpc.go",
+      "sha256": "9a225023e46ab57e657c57122fd86e880e1ae54c112768667bd12ec99983a454"
+    },
+    {
+      "path": "cmd/pk/rpc_test.go",
+      "sha256": "4e3bcdd51d613ce741dd3d80faa4b30f8acea88f6143a3c0cbeb1e7fe06cbf2e"
+    },
+    {
+      "path": "cmd/pk/tasks_cmd.go",
+      "sha256": "62e4cce1fb29f37704be042765663dd6fd12f6829e38de705509bf78feeef71a"
+    },
+    {
+      "path": "cmd/pk/ui.go",
+      "sha256": "a72b87939b9d4589431d2e10c1642a70770fb5833fff5f60a82c81fcc031d98b"
+    },
+    {
+      "path": "cmd/pkbench/experiment/compact_schema.go",
+      "sha256": "75f984498926bcb3570ffc7a3625de849d26a07d1882693ade8ed414fc385220"
+    },
+    {
+      "path": "cmd/pkbench/experiment/compact_schema_test.go",
+      "sha256": "859f3f198ca976af79da4b8d4689af6cfc3c22451dac32acb10db9560419f3a1"
+    },
+    {
+      "path": "cmd/pkbench/experiment/output_limit.go",
+      "sha256": "8258d9bfe85af5e25f7e9010ed3e456eef3b715302ca33d2acb4b64681f55bbc"
+    },
+    {
+      "path": "cmd/pkbench/experiment/output_limit_test.go",
+      "sha256": "14e6682b1256b61f5115bd106fa95aadbdcecbba3e32efc738f521b9c36ff6b0"
+    },
+    {
+      "path": "cmd/pkbench/main.go",
+      "sha256": "ececf92177fcc6784e3db06ea44c876900f348466a7b2b310914c8ba8fb15cac"
+    },
+    {
+      "path": "cmd/pkbench/main_test.go",
+      "sha256": "8d5eaa5d52aa78b81f59781b9a0c6bb3a7fdbec043720410de85b9a01e148b85"
+    },
+    {
+      "path": "cmd/pkbench/output_cap.go",
+      "sha256": "f56df586944984b3a67fd19d715e76e42e71ffa8d74aba8aefa137ec4c36f7bb"
+    },
+    {
+      "path": "cmd/pkbench/process_other.go",
+      "sha256": "22cfaa1ad186c8104cc8e2c45e58bc9b759e4286eb64c4b18775e1ab9efc51b6"
+    },
+    {
+      "path": "cmd/pkbench/process_unix.go",
+      "sha256": "07ce05f86bdaf61e5861ccc0bd2eedc715f949c8ac1071f9f229f0c510be375f"
+    },
+    {
+      "path": "cmd/pkbench/process_unix_test.go",
+      "sha256": "0a15447fea331d80638733250cec463ae0b625adb901f005eced14a1036364ae"
+    },
+    {
+      "path": "cmd/pkbench/source_manifest.go",
+      "sha256": "3969ae18e291eb8d730372d197db0c875c69f9f43c2086ca7a64f49eaccd2031"
+    },
+    {
+      "path": "cmd/pkbench/source_manifest_test.go",
+      "sha256": "7c31be7806162259a3bb33ad8f6e5d155cb700a75ce471017ba1a2a9e0200d0b"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "d2f70abdfa9ca8c4b0cf5510d663958522cf46817ff28a177c28c0cb87196323"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "9506260dba3843604b55f14f4bcb73602cfc4a959b60cc76166de3e0b1f4fe96"
+    },
+    {
+      "path": "internal/auth/auth.go",
+      "sha256": "3a640ebe1f36b5d1fa41e59d5252800d9e6b3bf0c478a5006fae158d1addd031"
+    },
+    {
+      "path": "internal/auth/auth_test.go",
+      "sha256": "21d3b026f37374cae6dac81be46493d6413de8bb9fae625ae0744cff5396c96f"
+    },
+    {
+      "path": "internal/auth/refresh_lock_file.go",
+      "sha256": "435668022b6cfba7c97bf252a67aae31b03a295be8dd45cde8b0744139dc0995"
+    },
+    {
+      "path": "internal/auth/refresh_lock_other.go",
+      "sha256": "e532b786f4caf00ad7e390a567a5665dbd7bf7b0d8e97ba585b8cb1d125aea0f"
+    },
+    {
+      "path": "internal/auth/refresh_lock_unix.go",
+      "sha256": "8097abfb33d53f861c0a2c06949340d5b2075c61be30b62e351d6b7a6e14871d"
+    },
+    {
+      "path": "internal/auth/refresh_lock_windows.go",
+      "sha256": "c9cefda22a9b3ebe3f8edc797125765b38f7b5f2b9cca677a7cb5f199bd6825b"
+    },
+    {
+      "path": "internal/auth/review_test.go",
+      "sha256": "1ffedaab5621190b90a7b1c2faa96f93ae8d82ccd905794d32b75d0ffa21eba3"
+    },
+    {
+      "path": "internal/runner/context_snapshot.go",
+      "sha256": "b7aa4786a857b4e33ff62f1d475918383a64cf02c46bf7fe5bf2325f6ed8a102"
+    },
+    {
+      "path": "internal/runner/runner.go",
+      "sha256": "921c201ca353ffa673e85519ea865510119ca8384e4d431dc8ea8e8487892cd0"
+    },
+    {
+      "path": "internal/runner/skills.go",
+      "sha256": "8dcb1fdbf8c054be947265974fa8b91d5de2853ec0b8ce2969c7d44cd6fe3a35"
+    },
+    {
+      "path": "internal/runner/skills_test.go",
+      "sha256": "fbdc8b3a63bb361dfc41b153e6c1296b5cf235fba86dc189981e734bba3d9df3"
+    }
+  ]
+}

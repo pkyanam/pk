@@ -24,7 +24,9 @@ whole pilot has a 20-minute cap. Increase to two repetitions only after
 reviewing a first pilot. The command prints per-phase progress and writes a
 summary plus sanitized JSONL events. It stores generated production Go source
 for audit and validates it against pristine tests in a separate holdout copy;
-model-edited tests never affect the correctness result.
+model-edited tests never affect the correctness result. Every run also writes
+the manifest-listed UTF-8 source under `source-snapshot/files/`, hash-checked
+against `source-manifest.json`; no binary or credential files are included.
 
 Run from the repository root:
 
@@ -41,6 +43,13 @@ through pk's auth loader, never prints or copies credential contents, and gives
 the upstream process a path to that same protected auth file. Unreal's pinned
 Codex adapter does not refresh expired credentials; an expired credential
 makes preflight fail before the pilot starts.
+
+For the output-default ablation, use `-output-cap-ablation`. For the
+benchmark-only compact tool-description ablation, use `-tool-schema-ablation`;
+its exact scope and token-measurement limits are documented in
+[`experiments/tool-schema.md`](experiments/tool-schema.md). These paired
+experiments use the same two fixtures and Luna-medium settings but are
+separate runs.
 
 Fixtures are separate Go modules under `benchmarks/tasks/`. Their TODO
 implementations intentionally fail tests, so repository `go test ./...` does
