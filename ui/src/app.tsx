@@ -278,9 +278,23 @@ function decodePastedPath(value: string): string {
   if (!unquoted.startsWith("file://")) return unquoted
   try {
     const parsed = new URL(unquoted)
-    if (parsed.protocol === "file:") return decodeURIComponent(parsed.pathname)
+    if (parsed.protocol === "file:") {
+      // A file URI with a remote authority is not a local filesystem path.
+      // Reject it during local-path validation instead of silently
+      // attaching a different file with the same path component.
+      if (parsed.hostname && parsed.hostname.toLowerCase() !== "localhost") return ""
+      return decodeURIComponent(parsed.pathname)
+    }
   } catch { /* leave invalid URI as entered for an actionable backend error */ }
   return unquoted
+}
+
+function decodeTokenizedPastedPath(value: string): string {
+  // parseSlashWords has already removed shell escapes. Only URI decoding is
+  // still needed here; running the shell unescape a second time corrupts a
+  // literal backslash immediately before a space or quote.
+  if (!value.startsWith("file://")) return value
+  return decodePastedPath(value)
 }
 
 function isPathShape(value: string): boolean {
@@ -346,8 +360,8 @@ export function parsePastedPaths(input: string, mimeType = ""): { paths: string[
   }
   if (lines.length === 1) {
     const tokens = parseSlashWords(lines[0]!)
-    if (tokens.length > 1 && tokens.every((path) => isPathShape(decodePastedPath(path)) && (fileExtension.test(path) || path.startsWith("file://")))) {
-      return { paths: tokens.map(decodePastedPath), prompt: "" }
+    if (tokens.length > 1 && tokens.every((path) => isPathShape(decodeTokenizedPastedPath(path)) && (fileExtension.test(path) || path.startsWith("file://")))) {
+      return { paths: tokens.map(decodeTokenizedPastedPath), prompt: "" }
     }
   }
   const parsedLines = lines.map((line) => leadingPathFromPrompt(line))

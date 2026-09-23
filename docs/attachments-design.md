@@ -26,7 +26,9 @@ for the existing `ViewImage` operation.
 ## Limits and path behavior
 
 `attachments.Load(ctx, workspace, paths, limits)` accepts at most 8 selected paths by default.
-Relative paths resolve against the workspace; absolute paths and `..` paths are allowed when named
+Relative paths resolve against the workspace; `~/` expands to the current user's home directory.
+Other shell expressions, including `~user` and environment variables, are not expanded.
+Absolute paths and `..` paths are allowed when named
 explicitly. Symlinks are followed to their resolved file. Only regular files are accepted. There is
 no glob expansion, directory recursion, or implicit file discovery. Each source is limited to 8 MiB,
 the aggregate to 16 MiB, each image to 5 MiB, each text file to 128 KiB, and all extracted text to
@@ -92,7 +94,8 @@ attached file.” A path followed by prose, such as `notes.txt describe this`, s
 request. Quote paths containing spaces; ambiguous unquoted paths stay in the draft. Bracketed terminal
 paste routes recognized file URI lists and quoted/escaped paths to the queue. Ctrl+V asks the native
 clipboard for content; `/paste` is the explicit fallback when a terminal intercepts the shortcut.
-Ctrl+Y copies selected transcript text using OSC 52; some terminals intercept Cmd+C. Shift+Enter and
+Releasing a transcript selection copies it through the native clipboard; Ctrl+Y also copies the
+selection. OSC 52 is a fallback when native copying is unavailable, and some terminals intercept Cmd+C. Shift+Enter and
 Ctrl+J insert a newline without submitting. Native drag-and-drop parsing has tests, but native GUI
 drop behavior has not been verified and is not promised.
 

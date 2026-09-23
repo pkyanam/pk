@@ -125,6 +125,13 @@ func Load(ctx context.Context, workspace string, paths []string, limits Limits) 
 			return nil, errors.New("attachment path must not be empty")
 		}
 		candidate := requested
+		if strings.HasPrefix(candidate, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil || strings.TrimSpace(home) == "" {
+				return nil, fmt.Errorf("expand attachment path %q: home directory is unavailable", requested)
+			}
+			candidate = filepath.Join(home, candidate[2:])
+		}
 		if !filepath.IsAbs(candidate) {
 			candidate = filepath.Join(root, candidate)
 		}

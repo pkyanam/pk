@@ -1004,6 +1004,11 @@ describe("OpenTUI application", () => {
     expect(parsePastedPaths("file:///tmp/meeting%20notes.pdf", "text/uri-list")).toEqual({ paths: ["/tmp/meeting notes.pdf"], prompt: "" })
     expect(parsePastedPaths('"/tmp/one file.png" "/tmp/two file.pdf"')).toEqual({ paths: ["/tmp/one file.png", "/tmp/two file.pdf"], prompt: "" })
     expect(parsePastedPaths("/tmp/one.png /tmp/two\\ file.pdf")).toEqual({ paths: ["/tmp/one.png", "/tmp/two file.pdf"], prompt: "" })
+    expect(parsePastedPaths("/tmp/back\\\\\\ slash.txt /tmp/東京.pdf")).toEqual({ paths: ["/tmp/back\\ slash.txt", "/tmp/東京.pdf"], prompt: "" })
+    expect(parsePastedPaths("/tmp/O\\'Brien\\ notes.pdf /tmp/Café.txt")).toEqual({ paths: ["/tmp/O'Brien notes.pdf", "/tmp/Café.txt"], prompt: "" })
+    expect(parsePastedPaths("file://localhost/tmp/meeting%20notes.pdf", "text/uri-list")).toEqual({ paths: ["/tmp/meeting notes.pdf"], prompt: "" })
+    expect(parsePastedPaths("file://nas/share/meeting%20notes.pdf", "text/uri-list")).toBeUndefined()
+    expect(leadingPathFromPrompt("file://nas/share/meeting%20notes.pdf")).toEqual({ ambiguous: true })
     expect(parsePastedPaths("a regular paragraph about files")).toBeUndefined()
 
     const fake = fakeTransport()

@@ -73,6 +73,58 @@ func TestLoadExplicitPathsOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestLoadExpandsOnlyCurrentUserHomePrefix(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	homeVariable := "HOME"
+	if runtime.GOOS == "windows" {
+		homeVariable = "USERPROFILE"
+	}
+	t.Setenv(homeVariable, home)
+
+	selected := filepath.Join(home, "Downloads", "picked.txt")
+	if err := os.MkdirAll(filepath.Dir(selected), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(selected, []byte("from home"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(context.Background(), workspace, []string{"~/Downloads/picked.txt"}, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Text != "from home" || got[0].Path != resolved {
+		t.Fatalf("tilde attachment = %#v, want resolved home file %q", got, resolved)
+	}
+
+	// Shell-like forms other than the exact ~/ prefix stay literal paths in
+	// the workspace; the loader never resolves user names or environment vars.
+	for _, literal := range []string{"~other.txt", "$ATTACHMENT.txt"} {
+		if err := os.WriteFile(filepath.Join(workspace, literal), []byte(literal), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(context.Background(), workspace, []string{literal}, Limits{})
+		if err != nil || len(got) != 1 || got[0].Text != literal {
+			t.Fatalf("literal path %q = %#v, err %v", literal, got, err)
+		}
+	}
+}
+
+func TestLoadTildePathRequiresConfiguredHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", "")
+	} else {
+		t.Setenv("HOME", "")
+	}
+	if _, err := Load(context.Background(), t.TempDir(), []string{"~/missing.txt"}, Limits{}); err == nil || !strings.Contains(err.Error(), "home directory is unavailable") {
+		t.Fatalf("missing home error = %v", err)
+	}
+}
+
 func TestLoadRejectsMissingUnsupportedAndOversized(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "blob.bin"), []byte{0, 1, 2}, 0o600); err != nil {
