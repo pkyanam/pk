@@ -52,7 +52,7 @@ func TestCloudflareWorkersAIModelDiscoveryMapsCallableNameAndCapabilities(t *tes
 		if request.Header.Get("Authorization") != "Bearer fixture-token" {
 			t.Errorf("auth header = %q", request.Header.Get("Authorization"))
 		}
-		return fakeResponse(http.StatusOK, `{"success":true,"result":[{"id":"uuid-1","name":"@cf/meta/tool-model","description":"model description","task":{"name":"Text Generation"},"properties":{"context_length":8192,"function_calling":true}},{"id":"uuid-2","name":"@cf/baai/embed","task":{"name":"Text Embeddings"}},{"id":"uuid-3","name":"@cf/meta/no-task"}]}`), nil
+		return fakeResponse(http.StatusOK, `{"success":true,"result":[{"id":"uuid-1","name":"@cf/meta/tool-model","description":"model description","task":{"name":"Text Generation"},"properties":{"context_length":8192,"function_calling":true}},{"id":"uuid-2","name":"@cf/baai/embed","task":{"name":"Text Embeddings"}},{"id":"uuid-3","name":"@cf/meta/no-task"},{"id":"uuid-4","name":"@cf/zai-org/glm-5.3-flash","task":{"name":"Text Generation"},"properties":[{"property_id":"context_window","value":1310720},{"property_id":"max_output_tokens","value":"65536"}]}]}`), nil
 	})}
 	models, err := listCloudflareWorkersAIModelsWithClient(context.Background(), baseURL, "fixture-token", client)
 	if err != nil {
@@ -62,7 +62,7 @@ func TestCloudflareWorkersAIModelDiscoveryMapsCallableNameAndCapabilities(t *tes
 	for _, model := range models {
 		byID[model.ID] = model
 	}
-	if len(byID) != 2 {
+	if len(byID) != 3 {
 		t.Fatalf("discovered models = %+v", models)
 	}
 	model, ok := byID["@cf/meta/tool-model"]
@@ -71,6 +71,10 @@ func TestCloudflareWorkersAIModelDiscoveryMapsCallableNameAndCapabilities(t *tes
 	}
 	if _, ok := byID["uuid-1"]; ok {
 		t.Fatal("exposed Cloudflare catalog UUID instead of callable model name")
+	}
+	glm, ok := byID["@cf/zai-org/glm-5.3-flash"]
+	if !ok || glm.ContextTokens == nil || *glm.ContextTokens != 1_310_720 || glm.OutputTokens == nil || *glm.OutputTokens != 65_536 || glm.LimitsSource != "provider_reported" {
+		t.Fatalf("Workers AI property_id/value token limits were not discovered: %+v", glm)
 	}
 }
 
@@ -259,5 +263,15 @@ func TestCloudflareWorkersAIProviderReasoningIsOptInTransientAndBounded(t *testi
 	}
 	if got.String() != reasoningOne+reasoningTwo[:12<<10] {
 		t.Fatal("provider reasoning cap did not preserve the stream prefix")
+	}
+}
+
+func TestCloudflareWorkersAIPropertyLimitParsingRejectsMalformedNumber(t *testing.T) {
+	model, ok := decodeCloudflareModel([]byte(`{"name":"@cf/test/model","properties":[{"property_id":"context_window","value":"1310720junk"}]}`))
+	if !ok {
+		t.Fatal("model entry did not decode")
+	}
+	if model.ContextTokens != nil || model.LimitsSource != "" {
+		t.Fatalf("malformed property value accepted as a limit: %+v", model)
 	}
 }

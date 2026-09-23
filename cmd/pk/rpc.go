@@ -951,6 +951,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 					"turn_id": msg.ID, "context_compaction": event,
 				})
 			}
+			opts.OnContextUsage = func(record runner.ContextUsageRecord) {
+				if ctx.Err() != nil {
+					return
+				}
+				_ = s.emit(msg.ID, "context_usage", map[string]any{
+					"turn_id": msg.ID, "context_usage": record,
+				})
+			}
 			opts.Adapter = modelProgressAdapter{inner: client, observe: func(progress modelstream.Event) {
 				if ctx.Err() != nil {
 					return

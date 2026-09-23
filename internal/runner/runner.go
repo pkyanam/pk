@@ -93,6 +93,9 @@ type Options struct {
 	// ContextUsageStore persists content-free request composition measurements
 	// for custom session stores. Local sessions use a private sidecar by default.
 	ContextUsageStore ContextUsageStore
+	// OnContextUsage receives content-free request estimates before and after
+	// main provider calls. Estimates are heuristic, never published capacities.
+	OnContextUsage func(ContextUsageRecord)
 	// ContextBudget keeps provider/model capacities distinct from the
 	// operational input allowance. History compaction never treats the
 	// operational fallback as a published model limit.
@@ -501,6 +504,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	usageAdapter := &contextUsageAdapter{
 		next: options.Adapter, store: contextUsageStore, id: id,
 		ordinal: contextUsageOrdinal, timings: responseTimings,
+		budget: options.ContextBudget, policy: options.HistoryCompaction, onUpdate: options.OnContextUsage,
 		onError: func(err error) { fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", err) },
 	}
 	options.Adapter = usageAdapter

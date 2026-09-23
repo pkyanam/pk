@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -149,13 +150,39 @@ func decodeCloudflareModel(data []byte) (Model, bool) {
 					continue
 				}
 				if model.ContextTokens == nil {
-					model.ContextTokens = firstPositiveInteger(values, "context_tokens", "context_window", "context_length")
+					model.ContextTokens = firstPositiveInteger(values, "context_tokens", "context_window", "context_length", "max_context_length", "max_model_len")
 				}
 				if model.InputTokens == nil {
-					model.InputTokens = firstPositiveInteger(values, "input_tokens", "max_input_tokens")
+					model.InputTokens = firstPositiveInteger(values, "input_tokens", "max_input_tokens", "max_prompt_tokens")
 				}
 				if model.OutputTokens == nil {
 					model.OutputTokens = firstPositiveInteger(values, "output_tokens", "max_output_tokens", "max_tokens")
+				}
+				propertyID := firstString(values, "property_id", "propertyId", "key", "name", "id")
+				propertyValue, ok := values["value"]
+				if !ok {
+					propertyValue, ok = values["values"]
+				}
+				if !ok {
+					continue
+				}
+				limit := positiveIntegerValue(propertyValue)
+				if limit == nil {
+					continue
+				}
+				switch normalizeCloudflarePropertyID(propertyID) {
+				case "context_tokens", "context_window", "context_length", "max_context_length", "max_model_len":
+					if model.ContextTokens == nil {
+						model.ContextTokens = limit
+					}
+				case "input_tokens", "max_input_tokens", "max_prompt_tokens":
+					if model.InputTokens == nil {
+						model.InputTokens = limit
+					}
+				case "output_tokens", "max_output_tokens", "max_tokens":
+					if model.OutputTokens == nil {
+						model.OutputTokens = limit
+					}
 				}
 			}
 		}
@@ -164,6 +191,37 @@ func decodeCloudflareModel(data []byte) (Model, bool) {
 		model.LimitsSource = "provider_reported"
 	}
 	return model, true
+}
+
+func firstString(fields map[string]json.RawMessage, names ...string) string {
+	for _, name := range names {
+		var value string
+		if json.Unmarshal(fields[name], &value) == nil && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func normalizeCloudflarePropertyID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("-", "_", " ", "_").Replace(value)
+	return value
+}
+
+func positiveIntegerValue(raw json.RawMessage) *int64 {
+	var number int64
+	if json.Unmarshal(raw, &number) == nil && number > 0 {
+		return &number
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		parsed, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+		if err == nil && parsed > 0 {
+			return &parsed
+		}
+	}
+	return nil
 }
 
 func cloudflareTaskName(raw json.RawMessage) string {

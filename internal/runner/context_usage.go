@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pkyanam/pk/internal/benchcontext"
+	"github.com/pkyanam/pk/internal/contextbudget"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 )
@@ -47,18 +48,32 @@ type ContextProviderUsage struct {
 }
 
 // ContextUsageRecord is a content-free measurement of the latest provider
-// request and its matching response. Provider counters remain separate from
-// byte composition; no tokenizer or context-window estimate is applied.
+// request and its matching response. Estimated tokens are explicitly
+// heuristic; provider counters remain separate from byte composition, and
+// published model limits remain separate from operational fallback budgets.
 type ContextUsageRecord struct {
-	Available           bool                   `json:"available"`
-	Pending             bool                   `json:"pending"`
-	ResponseFailed      bool                   `json:"response_failed,omitempty"`
-	RequestOrdinal      int                    `json:"request_ordinal,omitempty"`
-	Measurement         string                 `json:"measurement,omitempty"`
-	Categories          []ContextUsageCategory `json:"categories,omitempty"`
-	TotalBytes          int64                  `json:"total_bytes,omitempty"`
-	LatestProviderUsage ContextProviderUsage   `json:"latest_provider_usage"`
-	ContextLimitTokens  *int64                 `json:"context_limit_tokens"`
+	Available                    bool                   `json:"available"`
+	Pending                      bool                   `json:"pending"`
+	ResponseFailed               bool                   `json:"response_failed,omitempty"`
+	RequestOrdinal               int                    `json:"request_ordinal,omitempty"`
+	SessionID                    string                 `json:"session_id,omitempty"`
+	ProviderID                   string                 `json:"provider_id,omitempty"`
+	ModelID                      string                 `json:"model_id,omitempty"`
+	Measurement                  string                 `json:"measurement,omitempty"`
+	Categories                   []ContextUsageCategory `json:"categories,omitempty"`
+	TotalBytes                   int64                  `json:"total_bytes,omitempty"`
+	EstimatedInputTokens         *int64                 `json:"estimated_input_tokens,omitempty"`
+	EstimateMethod               string                 `json:"estimate_method,omitempty"`
+	EstimateConfidence           string                 `json:"estimate_confidence,omitempty"`
+	EstimateReason               string                 `json:"estimate_reason,omitempty"`
+	LatestProviderUsage          ContextProviderUsage   `json:"latest_provider_usage"`
+	ContextLimitTokens           *int64                 `json:"context_limit_tokens"`
+	ContextSource                contextbudget.Source   `json:"context_source,omitempty"`
+	OperationalInputBudgetTokens int64                  `json:"operational_input_budget_tokens,omitempty"`
+	OperationalInputSource       contextbudget.Source   `json:"operational_input_source,omitempty"`
+	CompactionEnabled            bool                   `json:"compaction_enabled,omitempty"`
+	CompactionTriggerTokens      *int64                 `json:"compaction_trigger_tokens,omitempty"`
+	CompactionTriggerRatio       float64                `json:"compaction_trigger_ratio,omitempty"`
 }
 
 type contextUsageEnvelope struct {
@@ -171,13 +186,16 @@ func LoadContextUsage(ctx context.Context, sessionDir, workspace, sessionID stri
 }
 
 type contextUsageAdapter struct {
-	next    llm.Adapter
-	store   ContextUsageStore
-	id      session.ID
-	timings *responseTimingStore
-	mu      sync.Mutex
-	ordinal int
-	onError func(error)
+	next     llm.Adapter
+	store    ContextUsageStore
+	id       session.ID
+	budget   contextbudget.Budget
+	policy   HistoryCompactionOptions
+	onUpdate func(ContextUsageRecord)
+	timings  *responseTimingStore
+	mu       sync.Mutex
+	ordinal  int
+	onError  func(error)
 }
 
 type responseTiming struct {
@@ -234,20 +252,27 @@ func (adapter *contextUsageAdapter) Respond(ctx context.Context, request llm.Req
 	adapter.ordinal++
 	ordinal := adapter.ordinal
 	adapter.mu.Unlock()
-	pending := contextUsageRecord(record, ordinal, benchcontext.Usage{}, true)
+	estimate := contextbudget.EstimateRequest(request)
+	pending := contextUsageRecord(record, ordinal, benchcontext.Usage{}, true, estimate, adapter.id, adapter.budget, adapter.policy, request)
 	adapter.persist(ctx, pending)
+	if adapter.onUpdate != nil {
+		adapter.onUpdate(pending)
+	}
 	started := time.Now()
 	response, responseErr := adapter.next.Respond(ctx, request, options)
 	duration := time.Since(started)
 	if adapter.timings != nil && ctx.Err() == nil {
 		adapter.timings.Record(response.ID, duration)
 	}
-	completed := contextUsageRecord(record, ordinal, benchcontext.MeasureUsage(response.Usage), false, duration)
+	completed := contextUsageRecord(record, ordinal, benchcontext.MeasureUsage(response.Usage), false, estimate, adapter.id, adapter.budget, adapter.policy, request, duration)
 	completed.ResponseFailed = responseErr != nil
 	// The coordinator may stop without joining an in-flight adapter request. Do
 	// not let a late canceled response overwrite usage from a later turn.
 	if ctx.Err() == nil {
 		adapter.persist(ctx, completed)
+		if adapter.onUpdate != nil {
+			adapter.onUpdate(completed)
+		}
 	}
 	return response, responseErr
 }
@@ -261,7 +286,7 @@ func (adapter *contextUsageAdapter) persist(ctx context.Context, record ContextU
 	}
 }
 
-func contextUsageRecord(measured benchcontext.Record, ordinal int, usage benchcontext.Usage, pending bool, durations ...time.Duration) ContextUsageRecord {
+func contextUsageRecord(measured benchcontext.Record, ordinal int, usage benchcontext.Usage, pending bool, estimate contextbudget.Estimate, id session.ID, budget contextbudget.Budget, policy HistoryCompactionOptions, request llm.Request, durations ...time.Duration) ContextUsageRecord {
 	categories := make([]ContextUsageCategory, 0, 6)
 	appendSize := func(id string, size benchcontext.Size) {
 		categories = append(categories, ContextUsageCategory{ID: id, Items: size.Items, Bytes: size.Bytes})
@@ -280,13 +305,33 @@ func contextUsageRecord(measured benchcontext.Record, ordinal int, usage benchco
 	appendSize("tool_calls", measured.ToolCalls)
 	appendSize("tool_results", measured.ToolResults)
 	appendSize("other_input", measured.OtherInput)
-	return ContextUsageRecord{
+	record := ContextUsageRecord{
 		Available: true, Pending: pending, RequestOrdinal: ordinal,
+		SessionID: string(id), ProviderID: budget.ProviderID, ModelID: request.Model.ID,
 		Measurement: "json_value_bytes", Categories: categories,
 		TotalBytes:          measured.InputValueBytes + measured.ToolSchemas.Bytes,
 		LatestProviderUsage: contextProviderUsage(usage, durations...),
-		ContextLimitTokens:  nil,
+		ContextLimitTokens:  budget.ContextTokens, ContextSource: budget.ContextSource,
+		OperationalInputBudgetTokens: budget.OperationalInputBudgetTokens,
+		OperationalInputSource:       budget.OperationalInputSource,
+		EstimateMethod:               estimate.Method, EstimateConfidence: estimate.Confidence,
+		EstimateReason: estimate.Reason,
 	}
+	if estimate.Tokens != nil {
+		value := *estimate.Tokens
+		record.EstimatedInputTokens = &value
+	}
+	policy = normalizeHistoryCompactionOptions(policy)
+	if policy.Enabled {
+		record.CompactionEnabled = true
+		usable := budget.OperationalInputBudgetTokens - policy.SummaryReserveTokens
+		if usable > 0 {
+			trigger := int64(float64(usable) * policy.TriggerRatio)
+			record.CompactionTriggerTokens = &trigger
+			record.CompactionTriggerRatio = policy.TriggerRatio
+		}
+	}
+	return record
 }
 
 func contextProviderUsage(usage benchcontext.Usage, durations ...time.Duration) ContextProviderUsage {

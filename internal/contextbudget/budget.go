@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -237,18 +239,38 @@ type resolvedLimits struct {
 func curatedLimits(key ModelKey, baseURL string) resolvedLimits {
 	// These values are from OpenAI's direct API model documentation only.
 	// Do not reuse them for the native Codex/ChatGPT backend or other providers.
-	if key.ProviderID != "openai" || baseURL != "https://api.openai.com/v1" {
-		return resolvedLimits{}
-	}
-	switch key.ModelID {
-	case "gpt-6-luna", "gpt-6-sol", "gpt-6-astra":
-		return resolvedLimits{
-			ContextTokens: int64ptr(1_050_000), OutputTokens: int64ptr(128_000),
-			ContextSource: SourceOfficialCatalog, OutputSource: SourceOfficialCatalog,
+	if key.ProviderID == "openai" && baseURL == "https://api.openai.com/v1" {
+		switch key.ModelID {
+		case "gpt-6-luna", "gpt-6-sol", "gpt-6-astra":
+			return resolvedLimits{
+				ContextTokens: int64ptr(1_050_000), OutputTokens: int64ptr(128_000),
+				ContextSource: SourceOfficialCatalog, OutputSource: SourceOfficialCatalog,
+			}
 		}
-	default:
-		return resolvedLimits{}
 	}
+
+	// Cloudflare's GLM-5.3-Flash model page publishes a 1,310,720-token
+	// context window (verified 2026-09-23):
+	// https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/
+	// Some model-search catalog responses omit limit properties. Restrict this
+	// fallback to the exact model on the official account-scoped Workers AI
+	// endpoint. Fresh API metadata and user overrides are merged later and
+	// therefore take precedence field-by-field.
+	if key.ModelID == "@cf/zai-org/glm-5.3-flash" && isOfficialWorkersAIEndpoint(baseURL) {
+		return resolvedLimits{ContextTokens: int64ptr(1_310_720), ContextSource: SourceOfficialCatalog}
+	}
+	return resolvedLimits{}
+}
+
+var workersAIAccountID = regexp.MustCompile(`^[a-fA-F0-9]{32}$`)
+
+func isOfficialWorkersAIEndpoint(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "api.cloudflare.com" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	return len(parts) == 6 && parts[0] == "client" && parts[1] == "v4" && parts[2] == "accounts" && workersAIAccountID.MatchString(parts[3]) && parts[4] == "ai" && parts[5] == "v1"
 }
 
 func sameModelKey(key ModelKey, providerID, modelID string) bool {
