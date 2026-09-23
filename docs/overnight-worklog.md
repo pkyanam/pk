@@ -385,3 +385,12 @@ gates or imply that every backlog item is complete.
 - User privately configured Monid. Official CLI metadata verified TinyFish search/fetch as zero-priced; one search and four pricing-page fetches both reported zero billing. A bounded Monid-backed pk adapter is now in development; the successful CLI test is not yet a pk integration claim.
 - Matched jobqueue pilot completed all eight phases and four holdouts. Compact replay increased total input by 33.8%, with nearly unchanged uncached input and variable wall time. Default full replay remains unchanged. Results and exact source are published in `benchmarks/results/jobqueue-replay-e697977-20260923/`.
 - Next: plugin source UI/ASCII welcome, Monid adapter, MCP echoed-secret/refresh-timeout hardening, ACP interoperability audit, native attachment checks, real Cap recording/edit, and morning delivery.
+
+## 04:16 EDT — free search, protocol checks, and native UI findings
+
+- `f27dba2` integrates Monid-backed TinyFish Search/Fetch, using the existing active CLI key without copying credentials. Fixed endpoint selection, explicit zero-price/billing fields, bounded output/waits, cancellation, and direct-key precedence have fixture coverage. A bounded live Go-adapter Search+Fetch returned results with zero billing.
+- `ec3e984` and `cef44a1` redact echoed MCP credentials, including rotated OAuth tokens, before model/history output and make OAuth refresh respect cancellation. Local Streamable HTTP echo and stalled-refresh fixtures pass.
+- `3dbc0f5` hardens ACP protocol negotiation, active-session replay leases, analysis filtering, and split JSONL delivery. `bae0a0d` preserves an official SDK 1.5.0 interoperability smoke with a fake runner; no real editor/model interaction is claimed.
+- An isolated full Go race suite and vet passed at `cef44a1`.
+- Native Cmux validation opened the installed MCP manager successfully in a separate workspace. Rapid `/mcp` typing plus immediate Enter initially selected the model menu; a live-text command fix is committed with the welcome/plugin checkpoint. Desktop actions stopped when external user interaction closed the test workspace and returned to the user workspace; no capture started.
+- User requested the ASCII welcome and removal of top-header command links; `4b64e7e` restores a compact wordmark and plain pk header. Their MCP screenshot exposed contradictory Enter hints. Form keyboard/mouse improvements are being validated before the next install. Fresh `/new` welcome restoration and list arrow-key behavior also need explicit regressions.
