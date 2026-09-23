@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,42 @@ import (
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
+
+// requestDrivenQuestionAdapter makes recovery output depend on the actual
+// prompt contents, so the test is stable whether resume recovers an interrupted
+// tool before or together with the newly submitted prompt.
+type requestDrivenQuestionAdapter struct {
+	mu       sync.Mutex
+	calls    int
+	requests []llm.Request
+}
+
+func (adapter *requestDrivenQuestionAdapter) Respond(_ context.Context, request llm.Request, _ llm.RequestOptions) (llm.Response, error) {
+	adapter.mu.Lock()
+	adapter.calls++
+	call := adapter.calls
+	adapter.requests = append(adapter.requests, request)
+	adapter.mu.Unlock()
+	if requestHasUserText(request, "start the next task") {
+		return llm.Response{ID: "second-final", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "second request settled"}}}}, nil
+	}
+	if call == 1 {
+		arguments, _ := json.Marshal(map[string]any{"question": "Continue?", "kind": "confirmation"})
+		return llm.Response{ID: "ask", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "question-1", Name: "AskUser", Arguments: string(arguments)}}}}, nil
+	}
+	return llm.Response{ID: "recovery", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "ready for the next task"}}}}, nil
+}
+
+func (adapter *requestDrivenQuestionAdapter) Close() error { return nil }
+
+func requestHasUserText(request llm.Request, wanted string) bool {
+	for _, item := range request.Input {
+		if message, ok := item.Data.(llm.Message); ok && message.Role == llm.RoleUser && message.Text == wanted {
+			return true
+		}
+	}
+	return false
+}
 
 func TestRPCQueueInputsTurnFinishesWithOpenSteeringStream(t *testing.T) {
 	t.Setenv("PK_HOME", t.TempDir())
@@ -47,12 +84,7 @@ func TestRPCQueueInputsTurnFinishesWithOpenSteeringStream(t *testing.T) {
 func TestRPCCancelledQuestionReleasesTurnForSecondPrompt(t *testing.T) {
 	t.Setenv("PK_HOME", t.TempDir())
 	workspace, sessions := t.TempDir(), t.TempDir()
-	args, _ := json.Marshal(map[string]any{"question": "Continue?", "kind": "confirmation"})
-	model := &mockModelAdapter{replies: []adapterReply{
-		{response: llm.Response{ID: "ask", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "question-1", Name: "AskUser", Arguments: string(args)}}}}},
-		{response: llm.Response{ID: "second", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "ready for the next task"}}}}},
-		{response: llm.Response{ID: "second-final", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "second request settled"}}}}},
-	}}
+	model := &requestDrivenQuestionAdapter{}
 	sink := &rpcEventSink{events: make(chan []byte, 64)}
 	server := &rpcServer{
 		ctx: context.Background(), output: sink, diagnostics: io.Discard,
@@ -108,16 +140,16 @@ func TestRPCCancelledQuestionReleasesTurnForSecondPrompt(t *testing.T) {
 	model.mu.Lock()
 	calls := model.calls
 	var sawSecondPrompt bool
-	if len(model.requests) >= 3 {
-		for _, item := range model.requests[2].Input {
-			if message, ok := item.Data.(llm.Message); ok && strings.Contains(message.Text, "start the next task") {
+	for _, request := range model.requests[1:] {
+		for _, item := range request.Input {
+			if message, ok := item.Data.(llm.Message); ok && message.Role == llm.RoleUser && message.Text == "start the next task" {
 				sawSecondPrompt = true
 			}
 		}
 	}
 	model.mu.Unlock()
-	if calls != 3 {
-		t.Fatalf("model calls=%d, want AskUser, recovery, and second prompt", calls)
+	if calls < 2 || calls > 3 {
+		t.Fatalf("model calls=%d, want cancellation recovery and the second prompt", calls)
 	}
 	if !sawSecondPrompt {
 		t.Fatal("the model request after cancellation did not contain the second prompt")
