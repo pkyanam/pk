@@ -35,8 +35,8 @@ afterEach(() => {
   reopenPanel = () => {}
 })
 
-async function setupPanel() {
-  const setup = await testRender(<Harness />, { width: 120, height: 36 })
+async function setupPanel(width = 120, height = 36) {
+  const setup = await testRender(<Harness />, { width, height })
   renderers.push(setup)
   await setup.waitForFrame((frame) => frame.includes("Saved sessions"))
   return setup
@@ -71,6 +71,57 @@ describe("SessionManager", () => {
     await setup.flush()
     await act(async () => setup.mockInput.pressEnter())
     expect(loaded).toEqual([second])
+  })
+
+  test("mouse Open action resumes the focused session without toggling its bulk selection", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    const second = { ...sampleSession, id: "session-b", title: "Build notes" }
+    emit(list.id, "sessions", { sessions: [sampleSession, second] })
+    const frame = await setup.waitForFrame((value) => value.includes("Build notes"))
+    const row = frame.split("\n").findIndex((line) => line.includes("Build notes"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Build notes"), row))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("[x] Build notes")
+    const openFrame = setup.captureCharFrame()
+    const openRow = openFrame.split("\n").findIndex((line) => line.includes("Open session · click"))
+    expect(openRow).toBeGreaterThanOrEqual(0)
+    await act(async () => setup.mockMouse.click(openFrame.split("\n")[openRow]!.indexOf("Open session"), openRow))
+    expect(loaded).toEqual([second])
+  })
+
+  test("Open action remains visible in a compact 80 by 24 terminal", async () => {
+    const setup = await setupPanel(80, 24)
+    const list = sent.find((item) => item.type === "sessions_list")!
+    emit(list.id, "sessions", { sessions: [sampleSession] })
+    const frame = await setup.waitForFrame((value) => value.includes("Release planning"))
+    expect(frame).toContain("Open session")
+  })
+
+  test("mouse Open stays disabled for the active session", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    emit(list.id, "sessions", { sessions: [{ ...sampleSession, active: true }] })
+    const frame = await setup.waitForFrame((value) => value.includes("Already open"))
+    const row = frame.split("\n").findIndex((line) => line.includes("Already open"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Already open"), row))
+    expect(loaded).toEqual([])
+  })
+
+  test("mouse Open stays disabled while archive is in progress", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    emit(list.id, "sessions", { sessions: [sampleSession] })
+    let frame = await setup.waitForFrame((value) => value.includes("Release planning"))
+    let row = frame.split("\n").findIndex((line) => line.includes("Release planning"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Release planning"), row))
+    await setup.flush()
+    await act(async () => setup.mockInput.pressKey("a"))
+    expect(sent.some((item) => item.type === "sessions_archive")).toBe(true)
+    frame = await setup.waitForFrame((value) => value.includes("Open session · wait for operation"))
+    row = frame.split("\n").findIndex((line) => line.includes("Open session · wait for operation"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Open session"), row))
+    expect(loaded).toEqual([])
   })
 
   test("reopening clears the previous search query before listing again", async () => {
@@ -125,6 +176,24 @@ describe("SessionManager", () => {
     act(() => setup.mockInput.pressKey("y"))
     const purge = sent.find((item) => item.type === "sessions_purge")!
     expect(purge.payload?.trash_ids).toEqual(["trash-a"])
+  })
+
+  test("right mouse button cannot confirm permanent purge", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    emit(list.id, "sessions", { sessions: [] })
+    await act(async () => setup.mockInput.pressKey("2"))
+    const trashList = sent.filter((item) => item.type === "sessions_trash_list").at(-1)!
+    emit(trashList.id, "sessions_trash", { sessions: [{ trash_id: "trash-a", session_id: "session-a", archived_at: "2026-09-23T12:00:00Z", title: "Old session", state: "archived" }] })
+    let frame = await setup.waitForFrame((value) => value.includes("Old session"))
+    let row = frame.split("\n").findIndex((line) => line.includes("Old session"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Old session"), row))
+    await act(async () => setup.mockInput.pressKey("p"))
+    frame = await setup.waitForFrame((value) => value.includes("Delete permanently · Y"))
+    row = frame.split("\n").findIndex((line) => line.includes("Delete permanently · Y"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Delete permanently"), row, 2))
+    expect(sent.some((item) => item.type === "sessions_purge")).toBe(false)
+    expect(setup.captureCharFrame()).toContain("This cannot be undone")
   })
 
   test("restores selected trashed sessions", async () => {

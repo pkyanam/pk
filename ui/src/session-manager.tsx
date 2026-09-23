@@ -243,6 +243,14 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
   const trashSession = tab === "trash" ? trash[selectedIndex] : undefined
   const detailTitle = tab === "sessions" ? activeSession?.title || "Untitled session" : trashSession?.title || "Archived session"
   const detailPreview = activeSession?.preview || (trashSession ? `Archived ${formatDate(trashSession.archived_at)} · ${trashSession.state}` : "Select a session to inspect its saved metadata.")
+  const openDisabled = busy || !activeSession || activeSession.active
+
+  const leftMouseDown = (event: { button: number; preventDefault: () => void; stopPropagation: () => void }, action: () => void) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    action()
+  }
 
   return <box style={{ position: "absolute", left: "6%", right: "6%", top: "7%", bottom: "7%", border: true, borderColor: colors.line, backgroundColor: colors.panel, padding: 2, flexDirection: "column", gap: 1 }}>
     <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
@@ -251,8 +259,8 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     </box>
     <text fg={colors.muted} content="Search, reopen, or clean up local conversation history. Archive is recoverable; purge permanently deletes archived data." />
     <box style={{ flexDirection: "row", gap: 2 }}>
-      <box onMouseDown={() => setTabAndRefresh("sessions")} style={{ backgroundColor: tab === "sessions" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "sessions" ? colors.accent : colors.muted} content={`Sessions · ${sessions.length}  [1]`} /></box>
-      <box onMouseDown={() => setTabAndRefresh("trash")} style={{ backgroundColor: tab === "trash" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "trash" ? colors.accent : colors.muted} content={`Trash · ${trash.length}  [2]`} /></box>
+      <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => setTabAndRefresh("sessions"))} style={{ backgroundColor: tab === "sessions" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "sessions" ? colors.accent : colors.muted} content={`Sessions · ${sessions.length}  [1]`} /></box>
+      <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => setTabAndRefresh("trash"))} style={{ backgroundColor: tab === "trash" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "trash" ? colors.accent : colors.muted} content={`Trash · ${trash.length}  [2]`} /></box>
     </box>
     <box style={{ flexDirection: "row", gap: 1 }}>
       <text fg={searchMode ? colors.accent : colors.muted} content="/" />
@@ -273,7 +281,7 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
         const workspace = session?.workspace || archived?.workspace || "Workspace unavailable"
         const meta = session ? `${session.item_count} entries · updated ${formatDate(session.updated_at)}${session.active ? " · open now" : ""}` : `${archived?.state ?? "archived"} · ${formatDate(archived?.archived_at ?? "")}`
         const line = `${isSelected ? "[x]" : "[ ]"} ${title}  ·  ${meta}`
-        return <box key={id} onMouseDown={() => { setSelectedIndex(index); toggleSelected(index) }} style={{ flexDirection: "column", minHeight: 2, backgroundColor: isCursor ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}>
+        return <box key={id} onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => { setSelectedIndex(index); toggleSelected(index) })} style={{ flexDirection: "column", minHeight: 2, backgroundColor: isCursor ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}>
           <text fg={isCursor ? colors.accent : colors.text} content={line} />
           <text fg={colors.dim} content={`${compactPath(workspace, Math.max(20, renderer.width - 25))}  ·  ${session?.preview ?? ""}`} />
         </box>
@@ -283,20 +291,25 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
       <text fg={colors.text} content={detailTitle || "Session details"} />
       <text fg={colors.muted} content={`${compactPath(activeSession?.workspace || trashSession?.workspace || "", Math.max(24, renderer.width - 28))}${activeSession ? `  ·  Created ${formatDate(activeSession.created_at)}` : ""}`} />
       <text fg={colors.dim} content={detailPreview} />
+      {tab === "sessions" && <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => {
+        if (!openDisabled && activeSession) onLoad(activeSession)
+      })} style={{ alignSelf: "flex-start", backgroundColor: openDisabled ? colors.panel : colors.raised, paddingLeft: 1, paddingRight: 1 }}>
+        <text fg={openDisabled ? colors.dim : colors.accent} content={activeSession?.active ? "Already open" : busy ? "Open session · wait for operation" : "Open session · click"} />
+      </box>}
     </box>
     {confirmPurge && <box style={{ border: true, borderColor: colors.red, backgroundColor: colors.raised, padding: 1, gap: 1, minHeight: 4, flexDirection: "column" }}>
       <text fg={colors.red} content={`Permanently delete ${selected.length} archived session${selected.length === 1 ? "" : "s"}? This cannot be undone.`} />
       <box style={{ flexDirection: "row", gap: 2 }}>
-        <box onMouseDown={runPurge} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Delete permanently · Y" /></box>
-        <box onMouseDown={() => setConfirmPurge(false)} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Keep archived · Esc" /></box>
+        <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, runPurge)} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Delete permanently · Y" /></box>
+        <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => setConfirmPurge(false))} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Keep archived · Esc" /></box>
       </box>
     </box>}
     <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
       <text fg={colors.dim} content="↑↓ move · Space select · Enter reopen · A archive · R restore · P purge" />
       <box style={{ flexDirection: "row", gap: 1 }}>
-        {tab === "sessions" ? <box onMouseDown={runArchive} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Archive ${selected.length || "selected"}`} /></box> : <>
-          <box onMouseDown={runRestore} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Restore ${selected.length || "selected"}`} /></box>
-          <box onMouseDown={() => selected.length > 0 && setConfirmPurge(true)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content={`Purge ${selected.length || "selected"}`} /></box>
+        {tab === "sessions" ? <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, runArchive)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Archive ${selected.length || "selected"}`} /></box> : <>
+          <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, runRestore)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Restore ${selected.length || "selected"}`} /></box>
+          <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => selected.length > 0 && setConfirmPurge(true))} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content={`Purge ${selected.length || "selected"}`} /></box>
         </>}
       </box>
     </box>
