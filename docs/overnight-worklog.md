@@ -640,3 +640,8 @@ gates or imply that every backlog item is complete.
 - ACP now uses the configured provider or explicit `--provider ID|native`, with provider model/effort defaults and explicit flag overrides. Provider identity is persisted with the session.
 - Official SDK 1.5.0 smoke now drives the real CLI against a local Chat Completions fixture for two turns, checking model, tool declarations and retained history. It passed without a remote model request; actual editor integration remains unverified.
 - The neighboring RPC command dispatch audit found no further argument mismatches. MCP form checks pass (nine tests, 53 assertions).
+
+### 08:50 EDT — ACP provider installment installed
+
+- Managed updater activated clean c796f96 as 20260923T125009.244964000Z-90fefa436666-685f3407 after Go/UI validation and build. Existing running sessions were not interrupted.
+- A bounded renderer diagnostic with four 32 KiB Markdown responses and four plain responses preserved composer visibility through resize and wheel scrolling. The initial sample was slower for Markdown, but ordering, warm-up and accumulated content differ; this is not a comparative benchmark or reproduction of the original freeze.
