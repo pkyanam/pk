@@ -446,6 +446,68 @@ drained:
 	}
 }
 
+func TestConcurrentCloseWaitsForFirstCloseToDrain(t *testing.T) {
+	callbackEntered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
+	defer release()
+	m, err := New(Config{Workspace: t.TempDir(), Events: func(e Event) {
+		if e.Type == "assistant" {
+			select {
+			case <-callbackEntered:
+			default:
+				close(callbackEntered)
+			}
+			<-releaseCallback
+		}
+	}, Runner: func(ctx context.Context, opts runner.Options) (runner.RunResult, error) {
+		if _, err := fmt.Fprintln(opts.Output, `{"type":"assistant","phase":"commentary","text":"blocked callback"}`); err != nil {
+			return runner.RunResult{}, err
+		}
+		<-ctx.Done()
+		return runner.RunResult{}, ctx.Err()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Launch(context.Background(), LaunchRequest{Task: "long task", Files: []string{"owned.go"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-callbackEntered:
+	case <-time.After(time.Second):
+		t.Fatal("child callback did not block")
+	}
+	firstDone := make(chan struct{})
+	go func() { m.Close(); close(firstDone) }()
+	select {
+	case <-m.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("first Close did not begin cancellation")
+	}
+	select {
+	case <-firstDone:
+		t.Fatal("first Close returned before child output drained")
+	case <-time.After(20 * time.Millisecond):
+	}
+	secondDone := make(chan struct{})
+	go func() { m.Close(); close(secondDone) }()
+	select {
+	case <-secondDone:
+		t.Fatal("concurrent Close returned before the first Close finished draining")
+	case <-time.After(20 * time.Millisecond):
+	}
+	release()
+	for _, done := range []<-chan struct{}{firstDone, secondDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Close did not finish after child event delivery resumed")
+		}
+	}
+}
+
 func TestOwnershipClaimsResolveSymlinkAliasesAndMacCaseAliases(t *testing.T) {
 	workspace := t.TempDir()
 	actual := filepath.Join(workspace, "Actual.go")

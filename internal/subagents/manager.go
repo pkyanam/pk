@@ -96,6 +96,7 @@ type Manager struct {
 	events    []Event
 	emitting  bool
 	eventDone chan struct{}
+	closeDone chan struct{}
 	active    int
 	queue     []*child
 }
@@ -168,7 +169,7 @@ func New(cfg Config) (*Manager, error) {
 		return nil, errors.New("subagent depth cannot be negative")
 	}
 	managerCtx, managerCancel := context.WithCancel(context.Background())
-	return &Manager{cfg: cfg, ctx: managerCtx, cancel: managerCancel, children: make(map[string]*child)}, nil
+	return &Manager{cfg: cfg, ctx: managerCtx, cancel: managerCancel, children: make(map[string]*child), closeDone: make(chan struct{})}, nil
 }
 
 func (m *Manager) Launch(ctx context.Context, req LaunchRequest) (Child, error) {
@@ -642,7 +643,9 @@ func (m *Manager) Cancel(id string) error {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.closed {
+		done := m.closeDone
 		m.mu.Unlock()
+		<-done
 		return
 	}
 	m.closed = true
@@ -668,6 +671,7 @@ func (m *Manager) Close() {
 		<-c.done
 	}
 	m.waitEvents()
+	close(m.closeDone)
 }
 
 func buildChildPrompt(task string, files []string, taskOnly bool) string {
