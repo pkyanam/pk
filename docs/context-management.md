@@ -39,9 +39,11 @@ reserve 5,000 tokens for summary work, use a 12,000-token summary-input
 setting, and allow at most six summary calls. For larger operational windows,
 summary input may scale up to 40,000 estimated tokens; each source chunk is
 also capped at 96 KiB. The default summary-output target is 2,500 tokens.
-Response size is bounded and reported token usage is checked, but adapters may
-not support a hard provider-side output limit. These are configurable
-operational limits, not provider capacities.
+Visible summary text is bounded to four bytes per target token (10,000 bytes
+by default); this is a size guard, not exact tokenization. Provider output usage
+can include reasoning, so it is recorded separately and is not compared with
+the summary-text target. Adapters may not support a hard provider-side output
+limit. These are configurable operational limits, not provider capacities.
 
 Compaction summarizes only a safe prefix at completed exchange boundaries.
 System instructions, tool schemas, the current prompt and attachments, and

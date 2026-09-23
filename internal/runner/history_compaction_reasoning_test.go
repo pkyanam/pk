@@ -84,3 +84,86 @@ func TestDefaultSummaryChunkAccountsForPriorCheckpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderOutputUsageMayIncludeReasoningAboveSummaryTextCeiling(t *testing.T) {
+	request := reviewMultiToolRequest()
+	adapter := &reviewCompactionAdapter{reply: func(context.Context, llm.Request) (llm.Response, error) {
+		return llm.Response{
+			Stop:  llm.StopComplete,
+			Usage: llm.Usage{InputTokens: 4_474, OutputTokens: 3_113},
+			Output: []llm.Item{
+				{Type: llm.ItemReasoning, Data: llm.Reasoning{Summary: []string{"provider metering includes internal reasoning"}}},
+				{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "The requested work and completed tool outcomes are preserved."}},
+			},
+		}, nil
+	}}
+	store := &reviewCheckpointStore{}
+	_, result, err := CompactRequest(context.Background(), request, reviewCompactionOptions(), reviewCompactionBudget(20_000), "reasoning-output-usage", adapter, store, nil)
+	if err != nil {
+		t.Fatalf("provider usage including reasoning should not reject bounded summary text: %v", err)
+	}
+	if !result.Compacted || store.checkpoint == nil {
+		t.Fatalf("bounded checkpoint was not saved: result=%+v saved=%v", result, store.checkpoint != nil)
+	}
+	if !result.SummaryUsage.OutputAvailable || result.SummaryUsage.OutputTokens != 3_113 {
+		t.Fatalf("provider output usage was not retained: %+v", result.SummaryUsage)
+	}
+}
+
+func TestVisibleSummaryTextLimitPreservesPreviousCheckpoint(t *testing.T) {
+	request := reviewMultiToolRequest()
+	prior := HistoryCheckpoint{
+		Version: historyCheckpointVersion, CutCount: 1,
+		PrefixSHA256: fingerprintItems(request.Input[:1]), Summary: "previous saved checkpoint",
+	}
+	store := &reviewCheckpointStore{checkpoint: &prior}
+	policy := reviewCompactionOptions()
+	policy.MaxSummaryTokens = 100
+	adapter := reviewSummaryAdapter(strings.Repeat("oversized-visible-summary ", 30))
+	_, _, err := CompactRequest(context.Background(), request, policy, reviewCompactionBudget(20_000), "oversized-summary", adapter, store, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty or oversized content") || len(adapter.requests) == 0 {
+		t.Fatalf("oversized visible summary should be rejected after provider call: calls=%d err=%v", len(adapter.requests), err)
+	}
+	if store.checkpoint == nil || store.checkpoint.Summary != prior.Summary || store.checkpoint.CutCount != prior.CutCount {
+		t.Fatalf("oversized summary replaced the prior checkpoint: got=%+v want=%+v", store.checkpoint, prior)
+	}
+}
+
+func TestVisibleMergedSummaryTextLimitIsEnforced(t *testing.T) {
+	request := llm.Request{Model: llm.Model{ID: "merge-limit"}, Input: []llm.Item{
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: strings.Repeat("A", 20_000)}},
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: strings.Repeat("B", 20_000)}},
+	}}
+	var adapter *reviewCompactionAdapter
+	adapter = &reviewCompactionAdapter{reply: func(_ context.Context, _ llm.Request) (llm.Response, error) {
+		if len(adapter.requests) < 3 {
+			return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "bounded segment"}}}}, nil
+		}
+		return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: strings.Repeat("too long ", 1_000)}}}}, nil
+	}}
+	engine := historyCompactionAdapter{summarizer: adapter}
+	policy := HistoryCompactionOptions{SummaryInputTokens: 12_000, MaxSummaryTokens: 100, MaxSummaryCalls: 4}
+	_, _, _, err := engine.summarizeRange(context.Background(), request, 0, len(request.Input), "", policy)
+	if err == nil || len(adapter.requests) != 3 {
+		t.Fatalf("oversized merge result should be rejected after two segments: calls=%d err=%v", len(adapter.requests), err)
+	}
+
+	var metered *reviewCompactionAdapter
+	metered = &reviewCompactionAdapter{reply: func(_ context.Context, _ llm.Request) (llm.Response, error) {
+		usage := llm.Usage{}
+		text := "bounded segment"
+		if len(metered.requests) == 3 {
+			usage.OutputTokens = 3_113 // Provider metering includes reasoning tokens.
+			text = "merged visible checkpoint"
+		}
+		return llm.Response{Stop: llm.StopComplete, Usage: usage, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: text}}}}, nil
+	}}
+	engine.summarizer = metered
+	_, usage, _, err := engine.summarizeRange(context.Background(), request, 0, len(request.Input), "", policy)
+	if err != nil {
+		t.Fatalf("high provider output usage from merge reasoning should not reject bounded visible text: %v", err)
+	}
+	if !usage.OutputAvailable || usage.OutputTokens != 3_113 {
+		t.Fatalf("merge provider usage was not retained: %+v", usage)
+	}
+}
