@@ -1,6 +1,6 @@
 # Long-history compaction quality fixture
 
-This deterministic fixture is for comparing full-history replay with a future
+This deterministic fixture is for comparing full-history replay with the
 context-history compactor. It contains multiple user turns, early constraints,
 verified tool evidence, a later untrusted instruction embedded in tool output,
 an unfinished recent task, and 640 deterministic low-signal CI rows for context
@@ -44,5 +44,7 @@ fake-provider tests for projection boundaries, fingerprint invalidation, resume,
 and cancellation before paying for live trials. Live results are required to
 claim provider token or latency effects.
 
-This fixture does not establish that compaction is implemented or beneficial.
-It is test data and a preregistered evaluation design.
+This fixture does not establish summary quality or efficiency improvements.
+It is test data and a preregistered evaluation design; the engine and its
+deterministic lifecycle checks are documented in `docs/context-management.md`
+at the repository root.

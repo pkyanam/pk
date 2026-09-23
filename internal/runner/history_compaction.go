@@ -263,6 +263,9 @@ func (adapter *historyCompactionAdapter) Respond(ctx context.Context, request ll
 	if streamed() || len(response.Output) != 0 || !isContextOverflow(response, responseErr) {
 		return response, responseErr
 	}
+	if !normalizeHistoryCompactionOptions(adapter.policy).Enabled {
+		return response, responseErr
+	}
 	// One retry is allowed only before any output reached a stream observer.
 	// Force a deeper checkpoint but keep the failed provider response ephemeral.
 	projected, retryResult, compactErr := adapter.compact(ctx, originalRequest, true)
