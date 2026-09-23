@@ -695,3 +695,11 @@ gates or imply that every backlog item is complete.
 - Ran two repetitions, reversed arm order, Luna/low, 120-second phase bounds. All eight children have verified Luna/low model events; all four arms completed both children with complete usage and passed both holdouts.
 - Dispatcher elapsed was lower in both samples (23.992 vs 36.651 seconds; 33.483 vs 39.766). Uncached input was worse in rep one (19,520 vs 17,024), better in rep two (20,172 vs 23,351). No general savings claim or production policy promotion.
 - Raw evidence: benchmarks/results/subagent-schema-counterbalanced-20260923/. Existing installed release remains b263a48; accounting-only source changes will ride the next product installment.
+
+### 10:22 EDT — attachment path reliability installed
+
+- Installed clean af75c3a as 20260923T141955.975433000Z-8545ecbc9436-e8fcb63b after managed Go/UI/type/build gates; existing user sessions remain running.
+- Shared attachment intake now expands exactly `~/` against the current user's home. Other shell expressions stay literal. Tests cover selection outside the workspace, missing home, and literal expressions.
+- TUI multi-file paste preserves escaped backslashes, apostrophes, and Unicode filenames. Remote file URI authorities are rejected instead of being rewritten into unrelated local paths; localhost URI decoding remains supported.
+- Focused parser tests and attachment tests pass; attachment race tests passed before the additional portable missing-home case, which passed normal validation. Clipboard documentation now describes native selection-release copying with OSC 52 fallback.
+- Native Finder cross-window drag/drop remains unverified. This installment fixes concrete path handling defects, not the unresolved original freeze or all native terminal transports.
