@@ -222,7 +222,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "workspace must be an existing directory", "recoverable": true})
 			return
 		}
-		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, SessionDir: s.sessionDir, ToolEvents: true}
+		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
 		s.session = get("session_id")
 		s.opts.SessionID = s.session
 		if s.session != "" {

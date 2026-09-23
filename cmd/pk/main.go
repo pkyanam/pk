@@ -387,7 +387,7 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	options.Workspace = workspace
 	options.SessionDir = filepath.Join(pkHome(), "sessions")
 	if len(skills) == 0 {
-		options.SkillsDirs = []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}
+		options.SkillsDirs = defaultSkillDirs()
 	} else {
 		options.SkillsDirs = skills
 	}
@@ -399,6 +399,11 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 		codexAuth = filepath.Join(codexHome, "auth.json")
 	}
 	return options, useCodex, codexAuth, files, extensionPaths, imageDriver, nil
+}
+
+func defaultSkillDirs() []string {
+	home := userHome()
+	return []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
 }
 
 type stringList []string

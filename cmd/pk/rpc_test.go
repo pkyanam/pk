@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	jsontext "encoding/json/jsontext"
 	"errors"
@@ -150,6 +152,115 @@ func TestRPCReadySurvivesMissingCredentialsSoLoginCanRecover(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("RPC server did not stop")
 	}
+}
+
+func TestRPCLoadsDefaultSkillDirsAndResumeKeepsSavedSkillCatalog(t *testing.T) {
+	home, pkHomeDir := t.TempDir(), t.TempDir()
+	if err := os.Chmod(pkHomeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PK_HOME", pkHomeDir)
+	writeSkill := func(parent, name, description string) string {
+		t.Helper()
+		directory := filepath.Join(parent, name)
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, "SKILL.md")
+		body := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\nInstructions for %s.\n", name, description, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	codexRoot := filepath.Join(home, ".codex", "skills")
+	agentsRoot := filepath.Join(home, ".agents", "skills")
+	codexSkill := writeSkill(codexRoot, "codex-helper", "Codex helper instructions.")
+	agentsSkill := writeSkill(agentsRoot, "agent-helper", "Agent helper instructions.")
+	workspace := t.TempDir()
+	sessions := filepath.Join(pkHomeDir, "sessions")
+	model := &mockModelAdapter{replies: []adapterReply{
+		{response: llm.Response{ID: "skill-first", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "first"}}}}},
+		{response: llm.Response{ID: "skill-resume", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "resumed"}}}}},
+	}}
+	adapter := &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	var diagnostics bytes.Buffer
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: &diagnostics, cfgPath: filepath.Join(pkHomeDir, "config.json"), sessionDir: sessions, adapter: adapter, requestTypes: map[string]string{}}
+	server.handle(rpcMessage{Version: 1, ID: "start", Type: "start", Payload: json.RawMessage(fmt.Sprintf(`{"workspace":%q}`, workspace))}, make(chan turnDone, 1))
+	if !server.started {
+		select {
+		case event := <-sink.events:
+			t.Fatalf("RPC start failed; event=%s", event)
+		default:
+			t.Fatal("RPC start failed without an event")
+		}
+	}
+	wantDirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
+	if fmt.Sprint(server.opts.SkillsDirs) != fmt.Sprint(wantDirs) {
+		t.Fatalf("RPC skill dirs=%q, want %q", server.opts.SkillsDirs, wantDirs)
+	}
+	runPrompt := func(id, text string) turnDone {
+		t.Helper()
+		finished := make(chan turnDone, 1)
+		payload, _ := json.Marshal(map[string]string{"text": text})
+		server.handle(rpcMessage{Version: 1, ID: id, Type: "prompt", Payload: payload}, finished)
+		select {
+		case result := <-finished:
+			if result.err != nil {
+				t.Fatalf("prompt %s: %v", id, result.err)
+			}
+			return result
+		case <-time.After(8 * time.Second):
+			model.mu.Lock()
+			calls := model.calls
+			model.mu.Unlock()
+			t.Fatalf("prompt %s did not finish; active=%v session=%q calls=%d diagnostics=%q", id, server.active, server.session, calls, diagnostics.String())
+			return turnDone{}
+		}
+	}
+	first := runPrompt("first", "use the default skills")
+	if first.id == "" || strings.TrimSpace(first.text) != "first" || server.session == "" {
+		t.Fatalf("first result=%+v session=%q", first, server.session)
+	}
+	server.completeTurn(first)
+	digest := sha256.Sum256([]byte(server.session))
+	snapshotPath := filepath.Join(sessions, hex.EncodeToString(digest[:])+".context.json")
+	loadSnapshot := func() runner.ContextSnapshot {
+		t.Helper()
+		data, err := os.ReadFile(snapshotPath)
+		if err != nil {
+			t.Fatalf("read session context: %v", err)
+		}
+		var snapshot runner.ContextSnapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			t.Fatalf("decode session context: %v", err)
+		}
+		return snapshot
+	}
+	assertOriginalSkills := func(snapshot runner.ContextSnapshot) {
+		t.Helper()
+		if len(snapshot.Skills) != 2 {
+			t.Fatalf("saved skills=%+v", snapshot.Skills)
+		}
+		got := map[string]string{}
+		for _, skill := range snapshot.Skills {
+			got[skill.Name] = skill.Path
+		}
+		if got["codex-helper"] != codexSkill || got["agent-helper"] != agentsSkill {
+			t.Fatalf("saved skill catalog=%v", got)
+		}
+	}
+	assertOriginalSkills(loadSnapshot())
+	writeSkill(agentsRoot, "later-skill", "Added after this session began.")
+	second := runPrompt("resume", "continue with the saved context")
+	if strings.TrimSpace(second.text) != "resumed" {
+		t.Fatalf("resume result=%+v", second)
+	}
+	server.completeTurn(second)
+	assertOriginalSkills(loadSnapshot())
+	_ = adapter.Close()
 }
 
 func TestLocateUIEntryHonorsConfiguredAsset(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -187,8 +188,17 @@ func TestResumeKeepsCachedPrefixStableAndReportsProviderUsage(t *testing.T) {
 	if firstAdapter.options[0].CacheKey != created.SessionID || secondAdapter.options[0].CacheKey != created.SessionID {
 		t.Errorf("cache keys = %q and %q, want stable session ID %q", firstAdapter.options[0].CacheKey, secondAdapter.options[0].CacheKey, created.SessionID)
 	}
-	if got, want := systemMessage(t, firstAdapter.requests[0]), systemMessage(t, secondAdapter.requests[0]); got != want {
-		t.Errorf("system prefix changed across resume\nfirst: %q\nresumed: %q", want, got)
+	firstSystem := systemMessage(t, firstAdapter.requests[0])
+	resumedSystem := systemMessage(t, secondAdapter.requests[0])
+	lunaIdentity := fmt.Sprintf(pkIdentityTemplate, "gpt-6-luna")
+	solIdentity := fmt.Sprintf(pkIdentityTemplate, "gpt-6-sol")
+	if !strings.HasPrefix(firstSystem, lunaIdentity) || !strings.HasPrefix(resumedSystem, solIdentity) {
+		t.Errorf("system identity does not follow selected models: first %q, resumed %q", firstSystem[:min(len(firstSystem), 140)], resumedSystem[:min(len(resumedSystem), 140)])
+	}
+	firstRemainder, firstFound := strings.CutPrefix(firstSystem, lunaIdentity)
+	resumedRemainder, resumedFound := strings.CutPrefix(resumedSystem, solIdentity)
+	if !firstFound || !resumedFound || firstRemainder != resumedRemainder {
+		t.Errorf("system context changed beyond the selected-model identity")
 	}
 	if !strings.Contains(systemMessage(t, secondAdapter.requests[0]), "Keep the original project convention.") || strings.Contains(systemMessage(t, secondAdapter.requests[0]), "Changed after") {
 		t.Error("resumed system prompt did not preserve the original AGENTS.md")

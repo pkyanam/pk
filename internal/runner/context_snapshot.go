@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
@@ -25,10 +26,16 @@ type ContextSnapshot struct {
 	Version              int
 	Workspace            string
 	SystemPrompt         string
+	IdentityTemplate     string `json:",omitempty"`
 	ExplicitSystemPrompt string
 	Skills               []ContextSkill
 	Tools                []llm.Tool
 }
+
+const (
+	inheritedHarnessIdentity = "You run on Unreal Agent Harness built by Unreal Labs."
+	defaultIdentityTemplate  = "You are pk, a local coding agent running in the pk harness. You run on %s. Identify yourself as pk; distinguish the harness from its model and provider."
+)
 
 // ContextSkill stores the skill definition and the exact skill document used
 // by this session, so later edits to a source SKILL.md cannot silently rewrite
@@ -126,6 +133,41 @@ func snapshotSkills(snapshot ContextSnapshot) []tool.Skill {
 	}
 	return skills
 }
+
+// identityBuilder decorates only the first system message emitted by the
+// upstream builder. All conversation, tool, and operation semantics remain
+// owned by the upstream implementation.
+type identityBuilder struct {
+	contextbuilder.Builder
+	template string
+}
+
+func (builder identityBuilder) Build() (contextbuilder.Result, error) {
+	result, err := builder.Builder.Build()
+	if err != nil {
+		return result, err
+	}
+	for i := range result.Request.Input {
+		item := &result.Request.Input[i]
+		if item.Type != llm.ItemMessage {
+			continue
+		}
+		message, ok := item.Data.(llm.Message)
+		if !ok || message.Role != llm.RoleSystem {
+			continue
+		}
+		replaced, found := strings.CutPrefix(message.Text, inheritedHarnessIdentity)
+		if !found {
+			return contextbuilder.Result{}, fmt.Errorf("upstream system prompt no longer starts with expected harness identity %q", inheritedHarnessIdentity)
+		}
+		message.Text = fmt.Sprintf(builder.template, result.Request.Model.ID) + replaced
+		item.Data = message
+		return result, nil
+	}
+	return contextbuilder.Result{}, errors.New("upstream builder returned no leading system message")
+}
+
+var _ contextbuilder.Builder = identityBuilder{}
 
 func captureSkills(skills []tool.Skill) ([]ContextSkill, error) {
 	snapshot := make([]ContextSkill, 0, len(skills))

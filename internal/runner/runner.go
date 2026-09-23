@@ -295,6 +295,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		}
 	} else {
 		snapshot = newContextSnapshot(options, registry, skills)
+		snapshot.IdentityTemplate = defaultIdentityTemplate
 		captured, captureErr := captureSkills(skills)
 		if captureErr != nil {
 			return RunResult{SessionID: string(id)}, captureErr
@@ -313,6 +314,9 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	builder := builderFactory(skills)
 	if builder == nil {
 		return RunResult{SessionID: string(id)}, errors.New("builder factory returned nil")
+	}
+	if snapshot.IdentityTemplate != "" {
+		builder = identityBuilder{Builder: builder, template: snapshot.IdentityTemplate}
 	}
 	builder.SetModel(llm.Model{ID: options.Model, ReasoningEffort: effort})
 	builder.SetSystemPrompt(snapshot.SystemPrompt)
