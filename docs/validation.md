@@ -20,13 +20,22 @@ September 2026. It contains no credentials, account details, or private task IDs
 - An initial 80×24 terminal review found clipped layout. After the layout fix, an interactive PTY
   smoke on an 80×24 terminal showed the composer and footer, accepted a prompt, received `PK_TUI_LUNA_OK`
   from Luna, and exited cleanly on Ctrl-C with status 0.
+- A later installed PTY smoke at 120×36 showed a Bash `pwd`/`ls` call with its command, output, and
+  exit result; then a Luna progress message; then a second Bash `printf` producing `PK_RICH_OK`; and
+  finally the assistant response. Tool details updated in place without object-string artifacts.
 
 ## Automated checks
 
-- The root Go package's `go test -race -count=1 -timeout 120s ./...` passed after the detached-task
-  changes.
-- The OpenTUI build, TypeScript check, and four Bun renderer tests passed locally after the 80×24
-  layout fix.
+- The root Go package's `go test -race -count=1 -timeout 120s ./...` passed on the rich-progress
+  checkpoint.
+- `go test ./internal/runner ./internal/integration -count=1` passed after the progress-event changes.
+  `TestMultiStepRunPreservesProgressAndStructuredToolUpdates` checks ordered commentary and final
+  messages, tool updates keyed by call ID, shell excerpts/exit status, and redaction of a test API key.
+  `TestToolEventsReportRunningThenCompleted` checks the operation state transition. Context snapshot
+  tests cover restoring saved prompt context and refusing changed skill contents.
+- The OpenTUI build, TypeScript check, and seven renderer tests passed after tool-preview rendering.
+  Renderer coverage verifies completed tool rows retain their result excerpts. The transcript tail is
+  capped in code; no large-scale long-loop stress test has been run.
 - The GitHub Actions workflow runs Go build, vet, and race tests for pk and the public composition
   module on Linux and macOS. It retains the pinned Unreal Agent v0.1.1 race-test suite in UTC on
   Linux. A separate Linux/macOS OpenTUI job installs dependencies with `bun install

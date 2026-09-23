@@ -67,7 +67,11 @@ type Options struct {
 	// without changing the coordinator or the pinned upstream harness.
 	BuilderFactory  func([]tool.Skill) contextbuilder.Builder
 	RegistryFactory func(ToolRegistryOptions) (tool.Registry, []tool.Skill, []error)
-	CaptureLimit    int
+	// DecorateRegistry adds host-specific translators to the default (or injected)
+	// registry. On resume, saved tool definitions still determine the model-visible
+	// schema, so adding a decorator does not silently change an existing prefix.
+	DecorateRegistry func(tool.Registry) tool.Registry
+	CaptureLimit     int
 }
 
 // Input is a steer/follow-up prompt submitted to the active coordinator.
@@ -245,6 +249,12 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	registry, skills, warnings := registryFactory(registryOptions)
 	if registry == nil {
 		return RunResult{SessionID: string(id)}, errors.New("tool registry factory returned nil")
+	}
+	if options.DecorateRegistry != nil {
+		registry = options.DecorateRegistry(registry)
+		if registry == nil {
+			return RunResult{SessionID: string(id)}, errors.New("registry decorator returned nil")
+		}
 	}
 	for _, warning := range warnings {
 		fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", warning)

@@ -8,6 +8,7 @@ type Role = "user" | "assistant" | "system" | "tool"
 type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; detail?: string }
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type Model = { id: string; label: string }
+type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
 type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "help" | "exit" }
 
 const models: Model[] = [
@@ -89,6 +90,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [slashIndex, setSlashIndex] = useState(0)
   const [tasks, setTasks] = useState<Array<{ session_id: string; updated_at?: string; title?: string }>>([])
   const [activeTaskId, setActiveTaskId] = useState("")
+  const [question, setQuestion] = useState<PendingQuestion | null>(null)
+  const [questionIndex, setQuestionIndex] = useState(0)
   const entryId = useRef(1)
   const waiting = useRef(false)
   const turnActive = useRef(false)
@@ -112,7 +115,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       const error = preview(item?.error_excerpt)
       return [item?.type ?? "operation", item?.state, error || output, item?.exit_code === undefined ? "" : `exit ${item.exit_code}`].filter(Boolean).join(" · ")
     }).filter(Boolean).join("\n") : ""
-    const detail = [data.command_preview, data.arguments_preview, operation].map((item) => preview(item, 260)).filter(Boolean).join("\n")
+    const detail = [data.command_preview || data.arguments_preview, operation].map((item) => preview(item, 260)).filter(Boolean).join("\n")
     const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded"].includes(status.toLowerCase())
     const error = preview(data.status?.error ?? data.error)
     const displayState = error ? "failed" : terminal ? status : status === "awaiting" ? "working" : status
@@ -171,6 +174,25 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.session_id) setSessionId(String(data.session_id))
         break
       }
+      case "question": {
+        const kind = data.kind === "confirmation" ? "confirmation" : "question"
+        const supplied = Array.isArray(data.choices) ? data.choices.filter((item: unknown) => typeof item === "string" && item.trim()).map(String) : []
+        const choices = supplied.length ? supplied : kind === "confirmation" ? ["Yes", "No"] : []
+        setQuestion({ id: String(data.id ?? ""), text: String(data.text ?? "The agent needs an answer."), choices, kind })
+        setQuestionIndex(0)
+        break
+      }
+      case "question_answered":
+        if (question?.id === String(data.id ?? "")) {
+          if (question.submittedAnswer) addEntry("user", `Answer · ${question.submittedAnswer}`)
+          setQuestion(null)
+          if (textarea.current) textarea.current.initialValue = ""
+          setDraft("")
+        }
+        break
+      case "question_cancelled":
+        setQuestion((current) => current?.id === String(data.id ?? "") ? null : current)
+        break
       case "turn_started":
         setBusy(true)
         setTools([])
@@ -192,6 +214,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setTools([])
         waiting.current = false
         turnActive.current = false
+        setQuestion(null)
         promptCommandId.current = ""
         if (data.session_id) setSessionId(String(data.session_id))
         break
@@ -249,6 +272,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.session_id) setSessionId(String(data.session_id))
         setBusy(false)
         waiting.current = false
+        setQuestion(null)
         break
       case "detached":
         addEntry("system", `Detached from session ${sessionId || ""}`)
@@ -259,6 +283,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "error":
         addEntry("system", String(data.message ?? "The agent encountered an error."))
+        if (data.command_type === "answer_question" || data.request_type === "answer_question") {
+          setQuestion((current) => current ? { ...current, answering: false, submittedAnswer: undefined } : current)
+        }
         if (event.id && preferenceErrors.current.has(event.id)) {
           preferenceErrors.current.get(event.id)?.()
           preferenceErrors.current.delete(event.id)
@@ -296,6 +323,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const sendPrompt = () => {
     const value = textarea.current?.plainText ?? draft
     const text = value.trim()
+    if (question) {
+      if (question.answering) return
+      const answer = text || question.choices[questionIndex] || ""
+      if (!answer) return
+      transport.send("answer_question" as any, { id: question.id, answer })
+      setQuestion({ ...question, answering: true, submittedAnswer: answer })
+      textarea.current!.initialValue = ""
+      setDraft("")
+      return
+    }
     if (!text || !connected || (waiting.current && !activeTaskId)) return
     if (text.startsWith("/")) {
       runSlashCommand(text)
@@ -406,6 +443,31 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   useKeyboard((key) => {
     const isEscape = key.name === "escape" || key.name === "esc"
+    if (question) {
+      if (question.answering) return
+      if (isEscape) {
+        transport.send("cancel_question" as any, { id: question.id })
+        setQuestion(null)
+        addEntry("system", "Question canceled; stopping this turn…")
+        return
+      }
+      if (key.name === "up" || key.name === "down") {
+        if (question.choices.length && !(textarea.current?.plainText ?? draft).trim()) {
+          key.preventDefault()
+          setQuestionIndex((index) => key.name === "up" ? (index - 1 + question.choices.length) % question.choices.length : (index + 1) % question.choices.length)
+          return
+        }
+      }
+      if (key.name === "return" && !(textarea.current?.plainText ?? draft).trim() && question.choices.length) {
+        key.preventDefault()
+        const answer = question.choices[questionIndex]
+        if (answer) {
+          transport.send("answer_question" as any, { id: question.id, answer })
+          setQuestion({ ...question, answering: true, submittedAnswer: answer })
+        }
+        return
+      }
+    }
     if (selector) {
       const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : tasks.length
       if (isEscape) { setSelector(null); textarea.current?.focus(); return }
@@ -498,7 +560,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <text fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
         <text fg={palette.dim} content={usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"} />
       </box>
-      <scrollbox style={{ flexGrow: 1, minHeight: 0, flexDirection: "column", paddingTop: 0, paddingBottom: 0 }} focused={!selector}>
+      <scrollbox stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }} focused={!selector}>
         {entries.map((entry) => <TranscriptEntry key={entry.id} entry={entry} clock={clock} />)}
         {busy && tools.length === 0 && <box style={{ flexDirection: "row", gap: 1, paddingLeft: 2, height: 1 }}><text fg={palette.accent} content="◌" /><text fg={palette.muted} content="Thinking…" /></box>}
       </scrollbox>
@@ -508,7 +570,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.muted} content="Message" />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea ref={textarea} focused={!selector} placeholder="Ask pk to inspect, explain, or change this workspace…" onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} style={{ flexDirection: "row", gap: 2, backgroundColor: slashWindowStart + localIndex === slashIndex % filteredCommands.length ? palette.panel : palette.raised, height: 1 }}>
@@ -517,7 +579,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-          <text fg={palette.dim} content={`${activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ^D detach`} />
+          <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ^D detach`} />
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
@@ -531,6 +593,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>)}
         <box style={{ height: 1 }} />
         <text fg={palette.dim} content="↑↓ move  ·  Enter choose  ·  Esc close" />
+      </box>}
+      {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
+        <text fg={palette.text} content={question.text} />
+        {question.choices.map((choice, index) => <box key={`${question.id}-${index}`} style={{ flexDirection: "row", gap: 1, backgroundColor: index === questionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
+          <text fg={index === questionIndex ? palette.accent : palette.muted} content={index === questionIndex ? "›" : " "} />
+          <text fg={index === questionIndex ? palette.text : palette.muted} content={choice} />
+        </box>)}
+        <text fg={palette.dim} content={question.answering ? "Sending answer…" : question.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
       </box>}
     </box>
   )

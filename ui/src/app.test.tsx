@@ -43,6 +43,24 @@ describe("OpenTUI application", () => {
     expect(frame.split("\n")).toHaveLength(height + 1)
   })
 
+  test.each([{ width: 80, height: 24, count: 28 }, { width: 140, height: 55, count: 60 }])("keeps a busy transcript viewport inside the composer at $width × $height", async ({ width, height, count }) => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => {
+      for (let index = 0; index < count; index++) {
+        fake.emit({ version: 1, id: `loop-${index}`, type: "task_output", payload: { role: "user", text: `Loop event ${index}` } })
+      }
+    })
+    await setup.flush()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`Loop event ${count - 1}`)
+    expect(frame).toContain("Message")
+    expect(frame.split("\n")).toHaveLength(height + 1)
+    expect(frame.indexOf(`Loop event ${count - 1}`)).toBeLessThan(frame.indexOf("Message"))
+  })
+
   test("executes a selected slash command from the multiline composer", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
@@ -145,4 +163,34 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("[object Object]")
     expect(frame.indexOf("Bash · completed")).toBeLessThan(frame.lastIndexOf("pk"))
   })
+
+  test("answers a foreground model question through its stable RPC id", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, id: "turn-request", type: "question", payload: { id: "ask-17", kind: "question", text: "Which package manager should I use?", choices: ["Bun", "npm"] } }))
+    const questionFrame = await setup.waitForFrame((frame) => frame.includes("Which package manager"))
+    expect(questionFrame).toContain("Bun")
+    await act(async () => { await setup.mockInput.typeText("npm") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.id === "ask-17" && item.payload?.answer === "npm")).toBe(true)
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+    const pending = await setup.waitForFrame((frame) => frame.includes("Sending answer…"))
+    expect(pending).toContain("Which package manager")
+    act(() => fake.emit({ version: 1, id: "answer-ack", type: "question_answered", payload: { id: "ask-17" } }))
+    const accepted = await setup.waitForFrame((frame) => frame.includes("Answer · npm"))
+    expect(accepted).not.toContain("Sending answer…")
+    expect(accepted).toContain("Ask pk to inspect")
+    act(() => fake.emit({ version: 1, id: "turn-request-2", type: "question", payload: { id: "confirm-18", kind: "confirmation", text: "Apply the change?" } }))
+    await setup.waitForFrame((frame) => frame.includes("Confirmation needed"))
+    act(() => setup.mockInput.pressKey("ARROW_DOWN"))
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.id === "confirm-18" && item.payload?.answer === "No")).toBe(true)
+  })
+
 })

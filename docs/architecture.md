@@ -25,6 +25,25 @@ detached copy of the pk executable as the worker. `pk task attach` follows that 
 be interrupted without stopping the worker. Cancellation is a separate command that signals the
 worker. The TUI's `/tasks` picker and `/task` commands use the same task store through RPC.
 
+## Progress and tool feedback
+
+The runner emits assistant messages in provider order, excluding analysis content. Longer tasks are
+prompted to send brief plans and factual milestone updates alongside tool work; these are ordinary
+assistant messages, not hidden reasoning or timer-driven filler. Tool-call events carry a stable
+`call_id`, name, running/completed/failed state, elapsed time, and bounded argument/command previews.
+Operation summaries can include bounded shell output/error excerpts and exit codes. The OpenTUI adds
+the first event as a chronological transcript row, then updates that row by `call_id` as work moves
+from running to terminal, keeping completed results visible. Common secret fields and credential
+assignments are redacted from previews; this is a defensive display filter, not a complete secret
+detector. The Go `pk run --jsonl` interface exposes these runner events for scripts.
+
+Detached tasks can receive explicit follow-up prompts through their task host. They do not have a
+persisted typed `awaiting_input` request/reply state for model-generated questions or tool approvals;
+model-generated questions are available only in foreground sessions through a request-ID-correlated
+`AskUser` broker. Answers are fed back into the same tool call; canceling the request cancels the
+turn. `AskUser` is for clarifying decisions, not permission to execute a tool. See
+[the harness interaction note](research/harness-interactions.md).
+
 `internal/runner` composes the pinned Unreal Agent session coordinator, durable session storage,
 operation manager, tool registry, and model adapter. The `llm.Adapter` boundary isolates model
 requests. The operation manager is responsible for executing durable Bash and image operations. The
@@ -38,7 +57,9 @@ Each session has a stable prefix snapshot containing its workspace, system instr
 tool schemas, and the skill documents captured at session start. Changing the model or reasoning
 effort does not rewrite that snapshot. On resume, pk restores the same prefix and continues the same
 durable session. This keeps repeated requests structurally consistent and avoids silently changing
-instructions when a skill file is edited later.
+instructions when a skill file is edited later. Starting a fresh session with `/new` captures the
+current system instructions and skill contents; an existing session continues using its saved
+snapshot.
 
 The OpenAI Responses API cache is implicit and provider-controlled. The adapter passes the stable
 session ID through the runtime's cache-key field, and keeping a long stable prefix can make reuse more

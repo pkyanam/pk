@@ -15,12 +15,15 @@ with an answer/reject lifecycle, while its [permission system](https://opencode.
 separately decides whether tools are allowed, denied, or require approval. A product decision should
 not be represented as a tool permission prompt.
 
-pk currently has no persisted `awaiting_input` state or typed question/approval reply path for
-detached tasks. A worker can accept explicit follow-up text from its task host, but a model-generated
-blocking question has no durable request ID and answer lifecycle. For that reason, detached prompts
-must remain self-contained; pk does not promise that an unattended task can pause for a human answer.
-Non-interactive question waits are a known source of stuck runs in other coding-agent CLIs; see
-[OpenCode issue #11899](https://github.com/anomalyco/opencode/issues/11899).
+pk's planned `AskUser` interaction is scoped to foreground sessions and is separate from tool
+permissions. Detached tasks can accept explicit follow-up text from their host, but do not have a
+persisted `awaiting_input` state or typed question/approval reply path. Keep detached task prompts
+self-contained; pk does not promise that an unattended worker can pause for a model-generated
+question. Non-interactive question waits are a known source of stuck runs in other coding-agent CLIs;
+see [OpenCode issue #11899](https://github.com/anomalyco/opencode/issues/11899).
+
+This interaction does not change pk's execution permissions. Bash still runs with the pk process's
+user permissions and is not confined to the selected workspace.
 
 ## Progress event reference
 

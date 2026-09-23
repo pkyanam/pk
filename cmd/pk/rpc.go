@@ -17,6 +17,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/tasks"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -24,6 +25,7 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 const rpcVersion = 1
@@ -68,6 +70,7 @@ type rpcServer struct {
 	attachedTask        string
 	taskFollowCancel    context.CancelFunc
 	requestTypes        map[string]string
+	broker              *interaction.Broker
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -106,8 +109,13 @@ func (s *rpcServer) serve() error {
 			s.mu.Lock()
 			s.active = false
 			s.activeCancel = nil
+			broker := s.broker
+			s.broker = nil
 			session := s.session
 			s.mu.Unlock()
+			if broker != nil {
+				broker.Close()
+			}
 			if result.err != nil {
 				_ = s.emit(result.id, "error", map[string]any{"message": result.err.Error(), "recoverable": true})
 			}
@@ -257,13 +265,29 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
 		s.active = true
+		broker := interaction.NewBroker(ctx, s.session)
+		s.broker = broker
 		s.mu.Unlock()
 		_ = s.emit(msg.ID, "turn_started", map[string]any{"session_id": s.session})
+		go func() {
+			for {
+				select {
+				case question := <-broker.Questions():
+					if broker.Context().Err() != nil {
+						return
+					}
+					_ = s.emit(msg.ID, "question", question)
+				case <-broker.Context().Done():
+					return
+				}
+			}
+		}()
 		go func() {
 			out := &rpcRunnerOutput{server: s, id: msg.ID}
 			opts.Output = out
 			opts.JSONL = true
 			opts.Diagnostics = s.diagnostics
+			opts.DecorateRegistry = func(base tool.Registry) tool.Registry { return interaction.DecorateRegistry(base, broker) }
 			opts.OnSession = func(id string) {
 				s.mu.Lock()
 				s.session = id
@@ -271,7 +295,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				s.mu.Unlock()
 				_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
 			}
-			result, err := runner.Run(ctx, opts)
+			result, err := runner.Run(broker.Context(), opts)
 			finished <- turnDone{id: msg.ID, text: result.Text, err: err}
 		}()
 	case "cancel":
@@ -282,6 +306,32 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			cancel()
 		}
 		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "cancel_requested": active})
+	case "answer_question":
+		var questionID, answer string
+		_ = json.Unmarshal(payload["id"], &questionID)
+		_ = json.Unmarshal(payload["answer"], &answer)
+		s.mu.Lock()
+		broker := s.broker
+		s.mu.Unlock()
+		if err := broker.Answer(questionID, answer); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "question_answered", map[string]any{"id": questionID})
+	case "cancel_question":
+		var questionID string
+		_ = json.Unmarshal(payload["id"], &questionID)
+		s.mu.Lock()
+		broker, cancel := s.broker, s.activeCancel
+		s.mu.Unlock()
+		if err := broker.Cancel(questionID); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		if cancel != nil {
+			cancel()
+		}
+		_ = s.emit(msg.ID, "question_cancelled", map[string]any{"id": questionID})
 	case "attach":
 		s.mu.Lock()
 		active := s.active

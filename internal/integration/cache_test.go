@@ -12,12 +12,76 @@ import (
 
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 type cacheProbeAdapter struct {
 	requests []llm.Request
 	options  []llm.RequestOptions
 	response llm.Response
+}
+
+type extraDefinitionRegistry struct {
+	tool.Registry
+	definition llm.Tool
+}
+
+func (registry extraDefinitionRegistry) StaticDefinitions() []tool.Definition {
+	definitions := registry.Registry.StaticDefinitions()
+	return append(definitions, tool.Definition{Tool: registry.definition})
+}
+
+func TestRegistryDecoratorExtendsFreshSchemaButDoesNotRewriteSavedSchema(t *testing.T) {
+	ctx := t.Context()
+	workspace, sessionDir := t.TempDir(), t.TempDir()
+	response := llm.Response{ID: "decorator-probe", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}}}
+	first := &cacheProbeAdapter{response: response}
+	firstTool := llm.Tool{Type: llm.ToolFunction, Name: "AskUser", Description: "Ask the user"}
+	created, err := runner.Run(ctx, runner.Options{
+		Prompt: "start", Workspace: workspace, SessionDir: sessionDir, Adapter: first,
+		DecorateRegistry: func(registry tool.Registry) tool.Registry {
+			return extraDefinitionRegistry{Registry: registry, definition: firstTool}
+		},
+	})
+	if err != nil {
+		t.Fatalf("initial Run() error = %v", err)
+	}
+	second := &cacheProbeAdapter{response: response}
+	_, err = runner.Run(ctx, runner.Options{
+		Prompt: "continue", SessionID: created.SessionID, Workspace: workspace, SessionDir: sessionDir, Adapter: second,
+		DecorateRegistry: func(registry tool.Registry) tool.Registry {
+			return extraDefinitionRegistry{Registry: registry, definition: llm.Tool{Type: llm.ToolFunction, Name: "NewInteractionTool"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("resumed Run() error = %v", err)
+	}
+	if len(first.requests) != 1 || len(second.requests) != 1 {
+		t.Fatalf("request counts = %d and %d, want one each", len(first.requests), len(second.requests))
+	}
+	toolNames := func(request llm.Request) []string {
+		names := make([]string, 0, len(request.Tools))
+		for _, definition := range request.Tools {
+			names = append(names, definition.Name)
+		}
+		return names
+	}
+	firstNames, resumedNames := toolNames(first.requests[0]), toolNames(second.requests[0])
+	if !reflect.DeepEqual(firstNames, resumedNames) {
+		t.Fatalf("saved tool schema changed on resume: initial %v, resumed %v", firstNames, resumedNames)
+	}
+	if !containsString(firstNames, "AskUser") || containsString(resumedNames, "NewInteractionTool") {
+		t.Fatalf("decorated schemas = initial %v, resumed %v; resume must retain saved AskUser schema", firstNames, resumedNames)
+	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (adapter *cacheProbeAdapter) Respond(_ context.Context, request llm.Request, options llm.RequestOptions) (llm.Response, error) {

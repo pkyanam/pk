@@ -5,19 +5,35 @@ import (
 	"context"
 	"encoding/json"
 	jsontext "encoding/json/jsontext"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/pkyanam/pk/internal/auth"
+	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
 )
+
+type rpcEventSink struct{ events chan []byte }
+
+func (sink *rpcEventSink) Write(data []byte) (int, error) {
+	copy := append([]byte(nil), data...)
+	select {
+	case sink.events <- copy:
+	default:
+		return 0, errors.New("test event buffer full")
+	}
+	return len(data), nil
+}
 
 func TestRPCRejectsUnsupportedVersionAsVersionedJSONL(t *testing.T) {
 	t.Setenv("PK_HOME", t.TempDir())
@@ -203,6 +219,124 @@ func TestTailUTF8TruncationKeepsValidText(t *testing.T) {
 	if !utf8.ValidString(got) || !strings.HasSuffix(got, "after") {
 		t.Fatalf("tail=%q valid=%v", got, utf8.ValidString(got))
 	}
+}
+
+func TestRPCQuestionUsesBrokerAndContinuesRunner(t *testing.T) {
+	workspace, sessions := t.TempDir(), t.TempDir()
+	args, err := json.Marshal(map[string]any{"question": "Choose a direction?", "choices": []string{"A", "B"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &mockModelAdapter{replies: []adapterReply{
+		{response: llm.Response{ID: "ask", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "question-1", Name: "AskUser", Arguments: string(args)}}}}},
+		{response: llm.Response{ID: "final", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "Thanks, proceeding with A."}}}}},
+	}}
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}, requestTypes: map[string]string{}}
+	finished := make(chan turnDone, 1)
+	server.handle(rpcMessage{Version: 1, ID: "turn-1", Type: "prompt", Payload: json.RawMessage(`{"text":"Ask me before choosing."}`)}, finished)
+	var seenQuestion, seenAnswer, seenAssistant bool
+	var eventTypes []string
+	deadline := time.After(10 * time.Second)
+	for !seenAssistant {
+		select {
+		case data := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(data, &event); err != nil {
+				t.Fatal(err)
+			}
+			eventTypes = append(eventTypes, event.Type)
+			switch event.Type {
+			case "question":
+				question := event.Payload.(map[string]any)
+				if question["id"] != "question-1" || question["text"] != "Choose a direction?" {
+					t.Fatalf("question=%v", question)
+				}
+				seenQuestion = true
+				server.handle(rpcMessage{Version: 1, ID: "answer-1", Type: "answer_question", Payload: json.RawMessage(`{"id":"question-1","answer":"A"}`)}, finished)
+			case "question_answered":
+				seenAnswer = true
+			case "assistant":
+				seenAssistant = true
+			}
+		case <-deadline:
+			select {
+			case result := <-finished:
+				t.Fatalf("timed out; runner returned text=%q error=%v; events=%v", result.text, result.err, eventTypes)
+			default:
+			}
+			t.Fatalf("timed out waiting for question and final assistant answer; events=%v", eventTypes)
+		}
+	}
+	select {
+	case result := <-finished:
+		if result.err != nil {
+			t.Fatalf("runner failed after answer: %v", result.err)
+		}
+		if !strings.Contains(result.text, "Thanks, proceeding with A.") {
+			t.Fatalf("final text=%q", result.text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner did not finish after answer")
+	}
+	if !seenQuestion || !seenAnswer || !seenAssistant {
+		t.Fatalf("events: question=%v answered=%v assistant=%v", seenQuestion, seenAnswer, seenAssistant)
+	}
+	if server.broker != nil {
+		server.broker.Close()
+	}
+	_ = server.adapter.Close()
+}
+
+func TestRPCCancelQuestionStopsTurnWithoutContinuing(t *testing.T) {
+	workspace, sessions := t.TempDir(), t.TempDir()
+	args, _ := json.Marshal(map[string]any{"question": "Confirm destructive change?", "kind": "confirmation"})
+	model := &mockModelAdapter{replies: []adapterReply{
+		{response: llm.Response{ID: "ask", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "question-cancel", Name: "AskUser", Arguments: string(args)}}}}},
+		{response: llm.Response{ID: "should-not-run", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "continued without consent"}}}}},
+	}}
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}, requestTypes: map[string]string{}}
+	finished := make(chan turnDone, 1)
+	server.handle(rpcMessage{Version: 1, ID: "turn-cancel", Type: "prompt", Payload: json.RawMessage(`{"text":"Do the potentially destructive work."}`)}, finished)
+	deadline := time.After(10 * time.Second)
+	var questionSeen, canceledEvent bool
+	for !canceledEvent {
+		select {
+		case data := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(data, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type == "question" {
+				questionSeen = true
+				server.handle(rpcMessage{Version: 1, ID: "cancel-1", Type: "cancel_question", Payload: json.RawMessage(`{"id":"question-cancel"}`)}, finished)
+			}
+			if event.Type == "question_cancelled" {
+				canceledEvent = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for cancellation event")
+		}
+	}
+	select {
+	case result := <-finished:
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("runner error=%v, want cancellation", result.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner stayed blocked after question cancellation")
+	}
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if !questionSeen || calls != 1 {
+		t.Fatalf("question=%v model calls=%d, want one call and no continuation", questionSeen, calls)
+	}
+	if server.broker != nil {
+		server.broker.Close()
+	}
+	_ = server.adapter.Close()
 }
 
 func TestConfigCommandPersistsSelectedDefaults(t *testing.T) {

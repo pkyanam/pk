@@ -56,6 +56,8 @@ Keep integrations outside the coordinator. A subprocess protocol or MCP adapter 
 
 The [evaluation plan](evaluation-plan.md) specifies task families, controls, metrics, and ablations. “Better than Pi” should become a reproducible claim about a stated workload, not a blanket launch slogan.
 
+The [overnight harness landscape](overnight-harness-landscape.md) verifies current interaction, TUI, context-management, long-loop, and evaluation patterns in OpenCode V2, Grok Build, Codex, Hermes Agent, DeepSeek Harness, and Claude Code. It separates open source implementation findings from documented proprietary behavior and turns the comparison into five Luna-focused experiments.
+
 ## Assumptions to revisit
 
 The initial target is a local coding harness with hosted model APIs, macOS/Linux execution, and eventual language-neutral extensions. Local inference, Windows support, remote workers, and compatibility with Pi extensions remain open design choices. These assumptions narrow the first experiment; they are not permanent product commitments.

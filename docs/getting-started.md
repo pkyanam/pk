@@ -72,6 +72,19 @@ contains `/model`, `/effort`, `/tasks`, `/task`, `/new`, `/attach SESSION_ID`, `
 `/status`, `/login`, `/help`, and `/exit`. `/tasks` opens the detached task picker. Use
 `/attach SESSION_ID` to return to a saved conversation.
 
+During longer work, pk can show assistant progress messages in order alongside tool activity. Tool
+rows update as operations run and finish, with bounded command/argument previews, elapsed time, and
+available shell result excerpts. The UI redacts common credential-shaped values in these previews;
+do not treat the preview filter as a complete secret detector. Use `/new` to start a fresh
+conversation with current system instructions and skills. Attaching an older session retains its
+saved instruction and tool/skill snapshot.
+
+When a foreground session needs a user decision, `AskUser` presents its choices above the composer;
+select with Up/Down and Enter, or type a freeform answer. Escape cancels the pending question and the
+current turn. This is a clarification flow, not a tool permission gate. Detached tasks do not expose
+model-generated questions, so include necessary choices in their initial prompt or steer them while
+attached.
+
 Esc closes an open picker or stops the active turn. Ctrl-D detaches from an idle session and closes
 the interface while preserving its durable conversation; with no session it closes pk. Ctrl-C
 closes pk when idle. Finish or cancel a turn before detaching. Use `/attach SESSION_ID` to return to
@@ -93,8 +106,9 @@ and exits. Use `pk run -p PROMPT --jsonl` for assistant and tool-call events as 
 From the TUI, `/task new PROMPT` creates a fresh `pk-work/task-*` workspace below the current project.
 To choose another destination, use `/task new --workspace "/path with spaces" PROMPT`. `/tasks`
 opens the task picker; select a task and press Enter to follow its output. While attached, enter a
-follow-up prompt to steer the task. Use `/task resume ID` for an interrupted task and `/task cancel
-ID` to stop its worker.
+follow-up prompt to steer the task. Keep detached task prompts self-contained: they have no durable
+request/reply flow for a model-generated blocking question.
+Use `/task resume ID` for an interrupted task and `/task cancel ID` to stop its worker.
 
 From a shell, `pk task create` starts a worker process and returns immediately. If the workspace path
 does not exist, pk creates it. This example creates a separate workspace directory for a longer
