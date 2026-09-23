@@ -16,6 +16,10 @@ import (
 
 func updateManager() pkupdate.Manager { return pkupdate.Manager{Root: updateLibraryDir()} }
 
+func updateManagerWithProgress(progress func(string)) pkupdate.Manager {
+	return pkupdate.Manager{Root: updateLibraryDir(), Progress: progress}
+}
+
 func updateLibraryDir() string {
 	if value := strings.TrimSpace(os.Getenv("PK_LIB_DIR")); value != "" {
 		return value
@@ -135,6 +139,10 @@ func runInstallArtifacts(ctx context.Context, args []string, stdout, stderr io.W
 }
 
 func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runUpdateWithProgress(ctx, args, stdout, stderr, nil)
+}
+
+func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io.Writer, progress func(string)) int {
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	source := flags.String("source", "", "pk source checkout (defaults to current directory if it is pk)")
@@ -152,7 +160,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if selected == "" {
 		selected, _ = os.Getwd()
 	}
-	manager := updateManager()
+	manager := updateManagerWithProgress(progress)
 	release, err := manager.Stage(ctx, selected)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk update: stage failed: %v\n", err)

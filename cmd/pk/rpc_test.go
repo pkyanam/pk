@@ -285,6 +285,7 @@ func TestLocateUIEntryHonorsConfiguredAsset(t *testing.T) {
 }
 
 func TestLocateUIEntryUsesInstalledExecutableFromAnotherWorkingDirectory(t *testing.T) {
+	t.Setenv("PK_UI_ENTRY", "")
 	root := t.TempDir()
 	binDir := filepath.Join(root, ".local", "bin")
 	uiDir := filepath.Join(root, ".local", "lib", "pk", "ui", "dist")

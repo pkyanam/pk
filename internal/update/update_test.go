@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -86,7 +87,8 @@ func makeSource(t *testing.T) string {
 func TestStageBuildsPairedReleaseFromReadOnlySourceCopy(t *testing.T) {
 	source := makeSource(t)
 	runner := &fakeCommandRunner{revision: "cafe123", dirtyStatus: " M cmd/pk/main.go\n?? new-file.go\n"}
-	manager := Manager{Root: filepath.Join(t.TempDir(), "install", "pk"), Runner: runner}
+	var progress []string
+	manager := Manager{Root: filepath.Join(t.TempDir(), "install", "pk"), Runner: runner, Progress: func(stage string) { progress = append(progress, stage) }}
 	t.Cleanup(func() { makeTreeWritable(t, manager.Root) })
 	release, err := manager.Stage(context.Background(), source)
 	if err != nil {
@@ -112,12 +114,25 @@ func TestStageBuildsPairedReleaseFromReadOnlySourceCopy(t *testing.T) {
 	if !containsCommand(runner.commands, "go test ./...") || !containsCommand(runner.commands, "sh scripts/build") || !containsCommand(runner.commands, "bun install --production --frozen-lockfile") {
 		t.Fatalf("build pipeline did not run all steps: %v", runner.commands)
 	}
+	wantProgress := []string{"source_validate", "copy", "test", "dependencies", "ui_validate", "build", "dependencies", "stage"}
+	if !reflect.DeepEqual(progress, wantProgress) {
+		t.Fatalf("progress=%v want %v", progress, wantProgress)
+	}
 	status, err := manager.Status()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.Current != nil || status.Previous != nil || len(status.Staged) != 1 || status.Staged[0].ID != release.ID {
 		t.Fatalf("status after staging=%+v", status)
+	}
+}
+
+func TestBuildEnvironmentDropsInstalledLauncherAndSessionOverrides(t *testing.T) {
+	input := []string{"PATH=/toolchain/bin", "HOME=/home/test", "GOPROXY=https://proxy.example", "PK_UI_ENTRY=/installed/ui/main.js", "PK_EXECUTABLE=/installed/pk", "PK_MODEL=gpt-6-luna", "PK_SESSION=session-1", "PK_RELOAD_TOKEN=private", "CODEX_HOME=/private/codex"}
+	got := buildEnvironment(input)
+	want := []string{"PATH=/toolchain/bin", "HOME=/home/test", "GOPROXY=https://proxy.example"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildEnvironment()=%v, want %v", got, want)
 	}
 }
 

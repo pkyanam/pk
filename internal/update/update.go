@@ -33,14 +33,22 @@ type osCommandRunner struct{}
 func (osCommandRunner) Run(ctx context.Context, directory, name string, stdout, stderr io.Writer, args ...string) error {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = directory
+	command.Env = buildEnvironment(os.Environ())
 	command.Stdout, command.Stderr = stdout, stderr
 	return runProcessTree(ctx, command)
 }
 
 type Manager struct {
 	// Root is the install library directory, such as ~/.local/lib/pk.
-	Root   string
-	Runner CommandRunner
+	Root     string
+	Runner   CommandRunner
+	Progress func(stage string)
+}
+
+func (manager Manager) report(stage string) {
+	if manager.Progress != nil {
+		manager.Progress(stage)
+	}
 }
 
 type Release struct {
@@ -124,6 +132,7 @@ func (manager Manager) ImportArtifacts(binaryPath, uiDirectory string) (Release,
 // repository Go tests and build script in that copy, then publishes a paired,
 // immutable binary/UI release under Root/releases/<id>.
 func (manager Manager) Stage(ctx context.Context, source string) (Release, error) {
+	manager.report("source_validate")
 	root, err := manager.root()
 	if err != nil {
 		return Release{}, err
@@ -146,6 +155,7 @@ func (manager Manager) Stage(ctx context.Context, source string) (Release, error
 	}
 	defer os.RemoveAll(buildRoot)
 	buildSource := filepath.Join(buildRoot, "source")
+	manager.report("copy")
 	hash, err := copyAndHashSource(source, buildSource)
 	if err != nil {
 		return Release{}, fmt.Errorf("copy update source: %w", err)
@@ -153,9 +163,23 @@ func (manager Manager) Stage(ctx context.Context, source string) (Release, error
 	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
 		return Release{}, fmt.Errorf("create release directory: %w", err)
 	}
+	manager.report("test")
 	if err := manager.runCommand(ctx, buildSource, "go", "test", "./..."); err != nil {
 		return Release{}, fmt.Errorf("go test ./... failed: %w", err)
 	}
+	uiSource := filepath.Join(buildSource, "ui")
+	manager.report("dependencies")
+	if err := manager.runCommand(ctx, uiSource, "bun", "install", "--frozen-lockfile"); err != nil {
+		return Release{}, fmt.Errorf("bun install --frozen-lockfile failed: %w", err)
+	}
+	manager.report("ui_validate")
+	if err := manager.runCommand(ctx, uiSource, "bun", "run", "check"); err != nil {
+		return Release{}, fmt.Errorf("UI validation (bun run check) failed: %w", err)
+	}
+	if err := manager.runCommand(ctx, uiSource, "bun", "test"); err != nil {
+		return Release{}, fmt.Errorf("UI validation (bun test) failed: %w", err)
+	}
+	manager.report("build")
 	if err := manager.runCommand(ctx, buildSource, "sh", "scripts/build"); err != nil {
 		return Release{}, fmt.Errorf("scripts/build failed: %w", err)
 	}
@@ -164,6 +188,7 @@ func (manager Manager) Stage(ctx context.Context, source string) (Release, error
 			return Release{}, fmt.Errorf("UI validation failed: %w", err)
 		}
 	}
+	manager.report("dependencies")
 	if err := manager.runCommand(ctx, filepath.Join(buildSource, "ui"), "bun", "install", "--production", "--frozen-lockfile"); err != nil {
 		return Release{}, fmt.Errorf("bun install --production --frozen-lockfile failed: %w", err)
 	}
@@ -176,6 +201,7 @@ func (manager Manager) Stage(ctx context.Context, source string) (Release, error
 	id := stagedAt.Format("20060102T150405.000000000Z") + "-" + hash[:12] + "-" + idSuffix
 	stagePath := filepath.Join(root, "releases", ".stage-"+id)
 	finalPath := filepath.Join(root, "releases", id)
+	manager.report("stage")
 	if err := os.Mkdir(stagePath, 0o700); err != nil {
 		return Release{}, fmt.Errorf("create staged release: %w", err)
 	}
@@ -237,6 +263,7 @@ func (manager Manager) runCommand(ctx context.Context, directory, name string, a
 // optional health check runs against the new executable after switching; a
 // failure restores the prior current pointer before returning.
 func (manager Manager) Activate(ctx context.Context, id string, healthCheck func(context.Context, Release) error) error {
+	manager.report("activate")
 	root, err := manager.root()
 	if err != nil {
 		return err

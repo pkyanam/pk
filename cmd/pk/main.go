@@ -37,6 +37,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		command = args[0]
 	}
 	switch command {
+	case "acp":
+		return runACPCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "update", "rollback", "version", "__install-artifacts":
 		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
@@ -463,6 +465,7 @@ func usage(out io.Writer) {
   pk --plain [OPTIONS]       use the line-based interactive fallback
   pk -p PROMPT [OPTIONS]     send one prompt and exit
   pk rpc                     start the JSONL frontend backend
+  pk acp                     serve Agent Client Protocol v1 over stdio
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...
   pk config [show|set model|set effort VALUE]
