@@ -295,3 +295,11 @@ will do.
 - Installed public GitHub revision `0d5476d` as release `20260923T060454.646785000Z-3b3cead7ab77-e9f7c088`. Foreground QueueInputs no longer suppresses normal idle completion; `/new` and `/attach` retain negotiated steering. MCP RPC/UI `/mcp` and `/tools` are included.
 - Evidence: isolated full Go race suite/vet/build passed, all updater Go/UI validation gates passed. One live installed Luna RPC smoke returned `turn_finished` without Escape or input-channel closure; subsequent new/attach events both advertised steering. Existing user sessions were left untouched.
 - Replay-compaction pilot completed all eight paired task runs with passing holdouts. Luna owner is analyzing and sanitizing results; no efficiency claim yet. Provider selection, managed subagent wiring, TinyFish tools, and the next skill refresh remain in progress.
+
+### 2026-09-23 02:09 EDT — installed Cmux interaction checks
+
+- Created a separate Cmux workspace in `/tmp/pk-ui-validation`, leaving the user's existing AgentMail session running. A live short Luna response visibly returned to Ready.
+- Selected the generated response with a mouse drag; native clipboard readback matched the expected test text (32 characters including trailing whitespace). This verifies copy-on-release in this Cmux setup.
+- Invoked `/reload`; a new UI/backend process restored the same session ID and full transcript. Typed two lines with Shift+Enter afterward; both remained in the composer without submitting, confirming input remained responsive.
+- Finder file-paste validation was deferred when Computer Use reported external user interaction. No private files were uploaded or recorded. Native Finder drag/drop remains open.
+- Published the matched replay-compaction pilot in `a0e47cf`; it shows lower input tokens in this small sample with all holdouts passing, plus output/response-count increases and mixed paired latency. Default production behavior is unchanged.

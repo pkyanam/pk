@@ -29,11 +29,16 @@ pk version
 
 The updater validates the checkout, runs Go and OpenTUI checks/builds in a staged copy, then activates
 a paired release containing both the Go binary and UI assets. `pk rollback` restores the previous
-release. Without `--source`, `pk update` uses the current directory; pass an explicit path when the
-intended checkout is not the current directory. This is a CLI workflow. The installed `f608b9e`
-release does not provide in-app `/update` or `/reload`; exit and relaunch `pk` after a CLI update.
-Use `/new` to start with updated prompts and skills, or `/attach SESSION_ID` to continue an older
-conversation with its saved context.
+release. Without `--source`, `pk update` fetches the official [pk GitHub repository](https://github.com/pkyanam/pk)
+on `main`; use `--source /path/to/pk` to update from a local checkout. The TUI also supports
+`/update [--source PATH]`, `/rollback`, and `/reload`; bare `/update` uses the same GitHub default. Update and
+rollback require an idle foreground session. After the update succeeds, `/reload` requests a
+session-preserving restart on the new release. That restart path is implemented, but if the active
+terminal does not relaunch cleanly, exit and run `pk` again, then use `/attach SESSION_ID`.
+
+New sessions load the current prompt and skill files. Existing sessions retain their saved prompt,
+tools, and skill contents; attaching does not refresh them. Use `/new` to pick up an updated bundled
+skill or prompt, or `/attach SESSION_ID` to continue with the saved context.
 
 ## Sign in
 

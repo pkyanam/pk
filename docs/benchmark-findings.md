@@ -1,0 +1,10 @@
+# Benchmark findings
+
+These are small pilot observations from Luna/medium on macOS ARM64. They are not product claims, statistically powered comparisons, or evidence of general savings. Full methodology and raw records remain beside each experiment.
+
+- The single-repetition pk vs. Unreal Agent v0.1.1 pilot passed all six pristine correctness holdouts. pk generally used more input/output tokens and took longer on the observed phases. The harnesses have different prompts and tool presentation, so this does not isolate implementation efficiency: [`pilot results`](../benchmarks/results/pilot-20260923T033523Z/summary.md).
+- In a two-repetition pk-only replay-compaction ablation, all four verification holdouts passed in both arms. Compact replay had 72,419 total input tokens vs. 87,203 for current replay, but the sample covered only two tasks; total wall time was 109,683 vs. 115,543 ms, with one task/repetition pair slower under treatment. The lower cached-token sum is not evidence of a better cache-hit rate. Treat the result as a hypothesis for larger matched trials: [`replay-compaction results`](../benchmarks/results/replay-compaction-rep2-20260923/summary.md).
+- A two-repetition tool-description ablation covered two tasks and passed its pristine verification holdouts. It reduced selected description text from 573 to 452 UTF-8 bytes, but per-phase token counts varied and no general token reduction is established: [`tool-schema results`](../benchmarks/results/tool-schema-rep2-20260923/summary.md).
+- The one-repetition Bash output-cap ablation did not exercise the treatment: no model call omitted `max_output_length`, so both arms applied zero defaults. It is inconclusive: [`output-cap results`](../benchmarks/results/output-cap-rep1-20260923/summary.md).
+
+Next useful evidence is more matched repetitions, with holdouts, success, provider-reported input/output/cache counts, and wall time retained per task. Do not compare cached tokens alone as cost or savings, and do not infer cache hits from session labels.
