@@ -205,6 +205,7 @@ describe("MCPManager", () => {
     const cancelRow = cancelFrame.split("\n").findIndex((line) => line.includes("Cancel · Esc"))
     const cancelColumn = cancelFrame.split("\n")[cancelRow]!.indexOf("Cancel · Esc")
     await act(async () => setup.mockMouse.click(cancelColumn, cancelRow, 0))
-    expect(setup.captureCharFrame()).not.toContain("Connection type:")
+    const closedFrame = await setup.waitForFrame((value) => value.includes("No servers configured") && !value.includes("Connection type:"))
+    expect(closedFrame).not.toContain("Connection type:")
   })
 })
