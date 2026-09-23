@@ -42,6 +42,13 @@ function authLabel(mode: AuthMode) {
   return ({ anonymous: "No auth", oauth: "OAuth", bearer_env: "Bearer · environment variable", header_env: "Custom header · environment variable", bearer_secret: "Bearer · enter credential", header_secret: "Custom header · enter credential" } as const)[mode]
 }
 
+function leftClick(event: { button: number; preventDefault: () => void; stopPropagation: () => void }, action: () => void) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  event.stopPropagation()
+  action()
+}
+
 export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
   const renderer = useRenderer()
   const [servers, setServers] = useState<MCPServer[]>([])
@@ -64,10 +71,15 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
   const [removeID, setRemoveID] = useState("")
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState("")
+  const [formError, setFormError] = useState("")
   const pending = useRef(new Map<string, Pending>())
   const opened = useRef(false)
   const rows = selectedTab === "servers" ? servers : tools
   const visibleRows = Math.max(3, Math.min(10, Math.floor((renderer.height - 18) / 2)))
+  const formOrder = mode === "stdio"
+    ? [0, 1, 2, 3, 4, 5]
+    : [0, 1, 2, 3, ...((auth === "header_env" || auth === "header_secret") ? [4] : []), ...((auth === "bearer_env" || auth === "header_env" || auth === "bearer_secret" || auth === "header_secret") ? [5] : []), 6]
+  const saveIndex = formOrder[formOrder.length - 1]!
 
   const request = (kind: RequestKind, type: string, payload?: Record<string, unknown>) => {
     const requestID = send(type, payload)
@@ -120,7 +132,7 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
   }, [event, open])
 
   const clearForm = () => {
-    setID(""); setCommand(""); setArgs(""); setWorkingDirectory(""); setURL(""); setHeaderName("X-API-Key"); setCredentialReference(""); setSecret(""); setAuth("anonymous"); setMode("stdio"); setFormOpen(false); setFieldIndex(0)
+    setID(""); setCommand(""); setArgs(""); setWorkingDirectory(""); setURL(""); setHeaderName("X-API-Key"); setCredentialReference(""); setSecret(""); setAuth("anonymous"); setMode("stdio"); setFormOpen(false); setFieldIndex(0); setFormError("")
   }
 
   const addServer = () => {
@@ -138,11 +150,20 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
       else if (auth === "header_env") server.auth = { mode: "header_env", header_name: headerName.trim(), header_value_env: credentialReference.trim() }
       else if (auth === "header_secret") server.auth = { mode: "header_secret", header_name: headerName.trim() }
     }
-    if (!id.trim() || (mode === "stdio" ? !command.trim() : !url.trim())) { setNotice(mode === "stdio" ? "Enter a server ID and executable path." : "Enter a server ID and HTTPS endpoint URL."); return }
-    if (mode === "http" && ((auth === "bearer_env" || auth === "header_env") && !credentialReference.trim() || (auth === "header_env" || auth === "header_secret") && !headerName.trim() || (auth === "bearer_secret" || auth === "header_secret") && !secret.trim())) { setNotice("Complete the selected authentication fields."); return }
+    if (!id.trim() || (mode === "stdio" ? !command.trim() : !url.trim())) {
+      setFormError(mode === "stdio" ? "Enter a server ID and executable path." : "Enter a server ID and HTTPS endpoint URL.")
+      setFieldIndex(!id.trim() ? 1 : mode === "stdio" ? 2 : 2)
+      return
+    }
+    if (mode === "http" && ((auth === "bearer_env" || auth === "header_env") && !credentialReference.trim() || (auth === "header_env" || auth === "header_secret") && !headerName.trim() || (auth === "bearer_secret" || auth === "header_secret") && !secret.trim())) {
+      setFormError("Complete the selected authentication fields.")
+      setFieldIndex((auth === "header_env" || auth === "header_secret") && !headerName.trim() ? 4 : 5)
+      return
+    }
     const payload: Record<string, unknown> = { server }
     if (auth === "bearer_secret" || auth === "header_secret") { payload.credential_kind = auth === "bearer_secret" ? "bearer" : "header"; payload.secret = secret }
     request("add", "mcp_add", payload)
+    setFormError("")
     setSecret("")
     clearForm()
   }
@@ -165,26 +186,24 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     if (formOpen) {
       if (name === "escape") { clearForm(); return }
       if (name === "tab") {
-        const order = mode === "stdio" ? [0, 1, 2, 3, 4] : auth === "header_env" || auth === "header_secret" ? [0, 1, 2, 3, 4, 5, 6] : auth === "bearer_env" || auth === "bearer_secret" ? [0, 1, 2, 3, 5, 6] : [0, 1, 2, 3, 4]
-        const current = Math.max(0, order.indexOf(fieldIndex))
-        setFieldIndex(order[(current + 1) % order.length]!)
+        const current = Math.max(0, formOrder.indexOf(fieldIndex))
+        const step = key.shift ? -1 : 1
+        setFieldIndex(formOrder[(current + step + formOrder.length) % formOrder.length]!)
         return
       }
-      if (name === "return" && fieldIndex === (mode === "stdio" ? 4 : auth === "header_env" || auth === "header_secret" ? 6 : auth === "bearer_env" || auth === "bearer_secret" ? 6 : 4)) { addServer(); return }
+      if (name === "return" && fieldIndex === saveIndex) { addServer(); return }
       if (name === "left" || name === "right") {
         if (fieldIndex === 0) setMode((value) => value === "stdio" ? "http" : "stdio")
-        else if (fieldIndex === 1 && mode === "http") setAuth((value) => authModes[(authModes.indexOf(value) + (name === "right" ? 1 : authModes.length - 1)) % authModes.length]!)
+        else if (fieldIndex === 3 && mode === "http") setAuth((value) => authModes[(authModes.indexOf(value) + (name === "right" ? 1 : authModes.length - 1)) % authModes.length]!)
         return
       }
-      if (name === "return" && fieldIndex === 0) { setMode((value) => value === "stdio" ? "http" : "stdio"); return }
-      if (name === "return" && fieldIndex === 1 && mode === "http") { setAuth((value) => authModes[(authModes.indexOf(value) + 1) % authModes.length]!); return }
       return
     }
     if (name === "escape") { onClose(); return }
     if (name === "1") { setSelectedTab("servers"); setSelectedIndex(0); return }
     if (name === "2") { setSelectedTab("tools"); setSelectedIndex(0); return }
-    if (name === "arrowup") { setSelectedIndex((index) => Math.max(0, index - 1)); return }
-    if (name === "arrowdown") { setSelectedIndex((index) => Math.min(rows.length - 1, index + 1)); return }
+    if (name === "up" || name === "arrowup") { setSelectedIndex((index) => Math.max(0, index - 1)); return }
+    if (name === "down" || name === "arrowdown") { setSelectedIndex((index) => Math.min(rows.length - 1, index + 1)); return }
     if (name === "a" && !busy) { setFormOpen(true); setMode("stdio"); setAuth("anonymous"); setNotice("Choose local stdio or remote HTTP; credentials are sent only with Save."); return }
     if (name === "r" && !busy) { refresh(); return }
     if (name === "x" && currentServer && !busy) { setRemoveID(currentServer.id); return }
@@ -196,41 +215,42 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
 
   const field = (label: string, value: string, update: (value: string) => void, index: number, placeholder = "") => <box key={label} style={{ flexDirection: "column", gap: 0 }}>
     <text fg={fieldIndex === index ? colors.accent : colors.muted} content={`${fieldIndex === index ? "› " : "  "}${label}`} />
-    <input focused={formOpen && fieldIndex === index && label !== "Mode" && label !== "Authentication"} value={value} maxLength={maxField} placeholder={placeholder} onChange={update} />
+    <input focused={formOpen && fieldIndex === index && label !== "Mode" && label !== "Authentication"} value={value} maxLength={maxField} placeholder={placeholder} onInput={(next: string) => { update(next); setFormError("") }} />
   </box>
 
   return <box style={{ position: "absolute", left: "5%", right: "5%", top: "5%", bottom: "5%", border: true, borderColor: colors.line, backgroundColor: colors.panel, padding: 2, flexDirection: "column", gap: 1 }}>
     <box style={{ flexDirection: "row", justifyContent: "space-between" }}><text fg={colors.text} content="MCP connections" /><text fg={colors.dim} content="Esc close" /></box>
-    <text fg={colors.muted} content="Configure only. Listing never starts servers or signs in; changes apply to sessions created with /new." />
+    <text fg={colors.muted} content="Changes apply to new sessions." />
     {formOpen ? <>
-      <text fg={colors.accent} content="Add a server · Tab moves · Enter saves · Esc cancels" />
-      <text fg={fieldIndex === 0 ? colors.accent : colors.muted} content={`› Connection type: ${mode === "stdio" ? "Local stdio" : "Remote Streamable HTTP"} · ←/→ or Enter to change`} />
-      {field("Server ID", id, setID, mode === "stdio" ? 1 : 2, "lowercase letters, digits, . _ -")}
+      <text fg={colors.accent} content={fieldIndex === saveIndex ? "Enter saves · Esc cancels" : fieldIndex === 0 || (mode === "http" && fieldIndex === 3) ? "←/→ change · Tab next · Esc cancel" : "Type value · Tab next · Esc cancel"} />
+      {formError && <text fg={colors.red} content={formError} />}
+      <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(0))} fg={fieldIndex === 0 ? colors.accent : colors.muted} content={`${fieldIndex === 0 ? "› " : "  "}Connection type: ${mode === "stdio" ? "Local stdio" : "Remote Streamable HTTP"} · ←/→ change`} />
+      {field("Server ID", id, setID, 1, "lowercase letters, digits, . _ -")}
       {mode === "stdio" ? <>
         {field("Executable path", command, setCommand, 2, "/absolute/path/to/server")}
         {field("Arguments · space-separated; quote values containing spaces", args, setArgs, 3, 'serve --label "My server"')}
         {field("Working directory (optional)", workingDirectory, setWorkingDirectory, 4, "Leave empty for home directory")}
       </> : <>
-        {field("Endpoint URL", url, setURL, 3, "https://example.com/mcp")}
-        <text fg={fieldIndex === 1 ? colors.accent : colors.muted} content={`› Authentication: ${authLabel(auth)} · ←/→ or Enter to change`} />
+        {field("Endpoint URL", url, setURL, 2, "https://example.com/mcp")}
+        <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(3))} fg={fieldIndex === 3 ? colors.accent : colors.muted} content={`${fieldIndex === 3 ? "› " : "  "}Authentication: ${authLabel(auth)} · ←/→ change`} />
         {(auth === "header_env" || auth === "header_secret") && field("Header name", headerName, setHeaderName, 4, "X-API-Key")}
         {(auth === "bearer_env" || auth === "header_env") && field("Credential environment variable", credentialReference, setCredentialReference, 5, "MCP_API_KEY")}
         {(auth === "bearer_secret" || auth === "header_secret") && <>
-          <text fg={fieldIndex === 5 ? colors.accent : colors.muted} content={`${fieldIndex === 5 ? "› " : "  "}Credential · stored separately; never added to transcript`} />
+          <text fg={fieldIndex === 5 ? colors.accent : colors.muted} content={`${fieldIndex === 5 ? "› " : "  "}Credential · stored separately`} />
           <box style={{ position: "relative", height: 1 }}>
-            <input id="mcp-secret-input" focused={formOpen && fieldIndex === 5} value={secret} maxLength={4096} placeholder="Enter credential" selectable={false} onInput={setSecret} />
+            <input id="mcp-secret-input" focused={formOpen && fieldIndex === 5} value={secret} maxLength={4096} placeholder="Enter credential" selectable={false} onInput={(next: string) => { setSecret(next); setFormError("") }} />
             <text style={{ position: "absolute", left: 0, top: 0, right: 0, bg: colors.panel }} fg={colors.text} content={secret ? "•".repeat(Math.min(secret.length, 64)) : "Type credential · masked"} />
           </box>
         </>}
       </>}
       <box style={{ flexDirection: "row", gap: 2 }}>
-        <box onMouseDown={addServer} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Save server · Enter" /></box>
-        <box onMouseDown={clearForm} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.muted} content="Cancel · Esc" /></box>
+        <box onMouseDown={(event) => leftClick(event, () => { setFieldIndex(saveIndex); addServer() })} style={{ backgroundColor: fieldIndex === saveIndex ? colors.accent : colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={fieldIndex === saveIndex ? colors.panel : colors.accent} content="Save server" /></box>
+        <box onMouseDown={(event) => leftClick(event, clearForm)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.muted} content="Cancel · Esc" /></box>
       </box>
     </> : <>
       <box style={{ flexDirection: "row", gap: 2 }}>
-        <box onMouseDown={() => { setSelectedTab("servers"); setSelectedIndex(0) }} style={{ backgroundColor: selectedTab === "servers" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={selectedTab === "servers" ? colors.accent : colors.muted} content={`Servers · ${servers.length} [1]`} /></box>
-        <box onMouseDown={() => { setSelectedTab("tools"); setSelectedIndex(0) }} style={{ backgroundColor: selectedTab === "tools" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={selectedTab === "tools" ? colors.accent : colors.muted} content={`Tools · ${tools.length} [2]`} /></box>
+        <box onMouseDown={(event) => leftClick(event, () => { setSelectedTab("servers"); setSelectedIndex(0) })} style={{ backgroundColor: selectedTab === "servers" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={selectedTab === "servers" ? colors.accent : colors.muted} content={`Servers · ${servers.length} [1]`} /></box>
+        <box onMouseDown={(event) => leftClick(event, () => { setSelectedTab("tools"); setSelectedIndex(0) })} style={{ backgroundColor: selectedTab === "tools" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={selectedTab === "tools" ? colors.accent : colors.muted} content={`Tools · ${tools.length} [2]`} /></box>
       </box>
       <text fg={colors.dim} content={notice || (selectedTab === "servers" ? "A add · R refresh · X remove · L OAuth login · O logout" : `Tools from ${savedSessionTools ? "the saved session snapshot" : "the current catalog"} · listing is read-only`)} />
       <box style={{ flexDirection: "column", flexGrow: 1, minHeight: 3, border: ["top", "bottom"], borderColor: colors.line, paddingTop: 1, paddingBottom: 1 }}>
@@ -241,7 +261,7 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
           if (selectedTab === "tools") return <box key={`${row.server_id}-${row.name}`} style={{ flexDirection: "column", minHeight: 2, backgroundColor: index === selectedIndex ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={index === selectedIndex ? colors.accent : colors.text} content={`${row.server_id} · ${row.name}`} /><text fg={colors.dim} content={row.description} /></box>
           const server = row as MCPServer
           const description = server.transport === "stdio" ? `${server.command} · ${server.arguments_count ?? 0} args · env keys ${(server.environment_keys ?? []).join(", ") || "none"}` : `${server.url} · ${server.auth_mode ?? "anonymous"} (${server.auth_status ?? "configured"})${server.credential_env?.length ? ` · ${server.credential_env.join(", ")}` : ""}`
-          return <box key={server.id} onMouseDown={() => setSelectedIndex(index)} style={{ flexDirection: "column", minHeight: 2, backgroundColor: index === selectedIndex ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={index === selectedIndex ? colors.accent : colors.text} content={`${server.id} · ${server.transport === "stdio" ? "Local stdio" : "Remote HTTP"} · ${server.auth_status ?? server.auth_mode ?? "configured"}`} /><text fg={colors.dim} content={description} /></box>
+          return <box key={server.id} onMouseDown={(event) => leftClick(event, () => setSelectedIndex(index))} style={{ flexDirection: "column", minHeight: 2, backgroundColor: index === selectedIndex ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={index === selectedIndex ? colors.accent : colors.text} content={`${server.id} · ${server.transport === "stdio" ? "Local stdio" : "Remote HTTP"} · ${server.auth_status ?? server.auth_mode ?? "configured"}`} /><text fg={colors.dim} content={description} /></box>
         })}
       </box>
       {currentServer && selectedTab === "servers" && <box style={{ border: ["top"], borderColor: colors.line, paddingTop: 1, flexDirection: "column", minHeight: 3 }}>
@@ -253,10 +273,10 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
         <text fg={colors.dim} content="↑↓ choose · A add · R refresh · X remove · /new applies saved config" />
         <box style={{ flexDirection: "row", gap: 1 }}>
           {currentServer?.auth_mode === "oauth" && <>
-            <box onMouseDown={() => !busy && request("login", "mcp_login", { id: currentServer.id })} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Login · L" /></box>
-            <box onMouseDown={() => !busy && request("logout", "mcp_logout", { id: currentServer.id })} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.muted} content="Logout · O" /></box>
+            <box onMouseDown={(event) => leftClick(event, () => !busy && request("login", "mcp_login", { id: currentServer.id }))} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Login · L" /></box>
+            <box onMouseDown={(event) => leftClick(event, () => !busy && request("logout", "mcp_logout", { id: currentServer.id }))} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.muted} content="Logout · O" /></box>
           </>}
-          {currentServer && <box onMouseDown={() => !busy && setRemoveID(currentServer.id)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Remove · X" /></box>}
+          {currentServer && <box onMouseDown={(event) => leftClick(event, () => !busy && setRemoveID(currentServer.id))} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Remove · X" /></box>}
           <text fg={colors.dim} content={busy ? "Working…" : "Esc close"} />
         </box>
       </box>
@@ -264,8 +284,8 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     {removeID && <box style={{ position: "absolute", left: "15%", right: "15%", top: "35%", border: true, borderColor: colors.red, backgroundColor: colors.raised, padding: 2, flexDirection: "column", gap: 1, minHeight: 4 }}>
       <text fg={colors.red} content={`Remove MCP server “${removeID}”? This changes future sessions; it does not erase old transcripts.`} />
       <box style={{ flexDirection: "row", gap: 2 }}>
-        <box onMouseDown={runRemove} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Remove · Y" /></box>
-        <box onMouseDown={() => setRemoveID("")} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Cancel · Esc" /></box>
+        <box onMouseDown={(event) => leftClick(event, runRemove)} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Remove · Y" /></box>
+        <box onMouseDown={(event) => leftClick(event, () => setRemoveID(""))} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Cancel · Esc" /></box>
       </box>
     </box>}
   </box>
