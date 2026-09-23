@@ -618,3 +618,7 @@ gates or imply that every backlog item is complete.
 
 - Candidate b7a93a2 passed both holdouts and avoided failed Git commands. One-repetition sequential comparison: input 29,717→21,736; uncached 15,893→14,056; output 774→755; responses 11→12. Total wall time worsened; cache hits differed. These preliminary results do not prove general savings.
 - Saved candidate captures and tradeoff analysis under benchmarks/results/git-awareness-luna-low-20260923.
+
+### 08:21 EDT — Git-awareness installment installed
+
+- Managed GitHub updater activated clean 2da4bc0 as 20260923T122106.062697000Z-9553ed49507a-fd890b40 after its validation gates. pk version confirms the source revision. Existing running sessions were not interrupted. Relaunch/reload and start a fresh session to receive the workspace advisory; rollback remains available.
