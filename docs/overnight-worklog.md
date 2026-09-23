@@ -564,3 +564,10 @@ gates or imply that every backlog item is complete.
 
 - Clean GitHub `b06e1ab` activated as `20260923T112302.648900000Z-ed0d042e12b6-5fe9c087` after complete Go/UI tests, typecheck and build. Sessionmanager race tests passed.
 - The delayed-response/copy regression failed twice without restoration and passed with it; a separate rendered-modal test preserves picker focus. Native Cmux reload restored the saved demo history, drag-selection reported a copy, and a subsequent physical `x` key appeared in the composer. The draft was cleared without sending a prompt. This verifies that path, not a general claim that all freezes are solved.
+
+### 07:32 EDT — final reliability audit in progress
+
+- The durable checklist now points to installed `b06e1ab` and preserves unresolved requirements rather than presenting older releases as current.
+- `6eb9fe3` makes concurrent subagent shutdown callers wait for child/event drain. A held-callback regression and affected race suites pass; root added a cancellation barrier and failure cleanup to the test.
+- `91361d1` rejects Chat Completions streams that end successfully with no assistant content or tools. Explicit refusal/output-limit outcomes retain their status and usage, and providers emitting useful content without a finish reason remain compatible. Local provider fixtures and affected race suites pass. This does not diagnose the user's earlier native Codex waiting symptom.
+- A separate TUI regression is checking whether global attachment paste intercepts paths meant for setup fields or AskUser answers. These new code changes are not installed yet; the active release remains `b06e1ab`.
