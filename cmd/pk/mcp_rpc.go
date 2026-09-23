@@ -25,8 +25,13 @@ type mcpCatalogTool struct {
 }
 
 type savedToolCatalogPayload struct {
-	Tools []runner.SavedToolSummary `json:"tools"`
-	Saved bool                      `json:"saved"`
+	Tools       []runner.SavedToolSummary `json:"tools"`
+	Saved       bool                      `json:"saved"`
+	Initialized bool                      `json:"initialized"`
+	Preview     bool                      `json:"preview"`
+	Notice      string                    `json:"notice,omitempty"`
+	Deferred    []string                  `json:"deferred,omitempty"`
+	Warnings    []string                  `json:"warnings,omitempty"`
 }
 
 func (s *rpcServer) modelToolCatalog(ctx context.Context) (savedToolCatalogPayload, error) {
@@ -44,7 +49,18 @@ func (s *rpcServer) modelToolCatalog(ctx context.Context) (savedToolCatalogPaylo
 	if err != nil {
 		return savedToolCatalogPayload{}, err
 	}
-	return savedToolCatalogPayload{Tools: tools, Saved: saved}, nil
+	if saved {
+		return savedToolCatalogPayload{Tools: tools, Saved: true, Initialized: true}, nil
+	}
+	s.mu.Lock()
+	pluginPaths := append([]string(nil), s.pluginPaths...)
+	skillsDirs := append([]string(nil), s.opts.SkillsDirs...)
+	s.mu.Unlock()
+	preview, err := s.previewModelToolCatalog(ctx, workspace, sessionDir, skillsDirs, len(pluginPaths) > 0)
+	if err != nil {
+		return savedToolCatalogPayload{}, err
+	}
+	return preview, nil
 }
 
 func (s *rpcServer) mcpCatalog(ctx context.Context) (mcpCatalogPayload, error) {
