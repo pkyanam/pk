@@ -49,9 +49,10 @@ with no missing-capture fallbacks; it reduced those phase-recorded result bytes
 from 69,416 to 24,132. Provider input tokens were 74,571 compact versus 55,741
 full; uncached input was 25,931 versus 25,533. Compact mode had 19 model
 responses versus 12, and summed phase time was 63,749 ms versus 82,347 ms. One
-repetition was faster and the other slightly slower. The increased cached-input
-total accompanies the higher total input and does not establish better cache
-hit rate. These two repetitions show no overall token-efficiency gain and do
+repetition was faster and the other slightly slower. The provider-reported
+cached-input share was higher in compact mode, but the larger total input and
+more responses do not establish lower total cost or faster execution. These two
+repetitions show no overall token-efficiency gain and do
 not establish general quality or latency effects. Exact raw records, source
 manifest, source snapshot, and generated-source artifacts are retained with
 the result.
