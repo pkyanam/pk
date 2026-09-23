@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/coordinator"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -200,11 +201,27 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 			return RunResult{}, err
 		}
 		id = session.ID(newID)
+	} else {
+		id = session.ID(options.SessionID)
+	}
+	lockDir := options.SessionDir
+	if lockDir == "" {
+		lockDir = filepath.Join(options.Workspace, ".pk", "sessions")
+	}
+	lease, err := sessionlock.Acquire(lockDir, string(id))
+	if err != nil {
+		return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
+	}
+	defer func() {
+		if err := lease.Release(); err != nil {
+			fmt.Fprintf(options.Diagnostics, "pk: release session lease: %v\n", err)
+		}
+	}()
+	if options.SessionID == "" {
 		if _, err := store.Create(ctx, id); err != nil {
 			return RunResult{}, fmt.Errorf("create session: %w", err)
 		}
 	} else {
-		id = session.ID(options.SessionID)
 		var err error
 		restored, err = store.Resume(ctx, id)
 		if err != nil {

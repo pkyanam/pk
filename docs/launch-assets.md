@@ -34,3 +34,21 @@ path. Do not use Bash or other tools.” The tool's own expanded prompt is unava
 store a bounded preview; the sentence above records the request sent to the agent, not a verbatim
 ImageGen tool prompt. The event log is retained locally at `/tmp/pk-imagegen-live-check/events.jsonl`.
 This image is a repository review asset, not a social post or external campaign.
+
+## Privacy-forward launch card concept
+
+[pk-your-workspace-your-choice.png](../output/launch/pk-your-workspace-your-choice.png) is a
+new 1672 × 941 concept card (about 1.6 MiB). It uses a charcoal field, softly lit mint `pk`
+wordmark/cursor, and the line “Your workspace. Your tools. Your choice.” The line is positioning,
+not a claim that every provider, MCP server, or extension has the same privacy practices. The image
+is brand art, not a product screenshot or evidence of a particular UI state. It is a local review
+draft and has not been posted or used in an external campaign.
+
+Generation prompt:
+
+```text
+Use case: ads-marketing. Asset type: wide 16:9 launch card for the pk terminal coding workspace. Create a premium editorial brand image, not an application screenshot. Charcoal-black matte background, restrained mint light, subtle tactile grain, calm privacy-forward mood, generous negative space. Center a sculptural lowercase “pk” wordmark inspired by precise blocky monospace terminal glyphs, softly lit mint cursor motif beside it. Use refined typography and careful spacing. Text verbatim only: “pk” and beneath it “Your workspace. Your tools. Your choice.” No UI, no fake terminal window, no provider logos, no benchmark numbers, no claims of superiority, no licensing language, no other text, no watermark.
+```
+
+Generated once with the built-in image generation tool and inspected after generation. No existing
+asset was replaced. This draft has not been posted or published as a campaign.
