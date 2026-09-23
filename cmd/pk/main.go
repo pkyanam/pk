@@ -16,9 +16,10 @@ import (
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/imagegen"
+	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/runner"
+	pkbuiltins "github.com/pkyanam/pk/skills"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
-	"github.com/unreallabsai/unreal-agent/harness/llm/clients/openaicodex"
 	"github.com/unreallabsai/unreal-agent/harness/llm/responsesapi"
 )
 
@@ -403,7 +404,13 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 
 func defaultSkillDirs() []string {
 	home := userHome()
-	return []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
+	dirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
+	if bundled, err := pkbuiltins.Materialize(pkHome()); err == nil {
+		dirs = append(dirs, bundled)
+	} else {
+		fmt.Fprintf(os.Stderr, "pk: cannot load bundled skills: %v\n", err)
+	}
+	return dirs
 }
 
 type stringList []string
@@ -512,7 +519,7 @@ func newCodexAdapter(credential auth.Credential, useCodex bool) (*codexAdapter, 
 }
 
 func newOpenAICodexClient(credential auth.Credential) (llm.Adapter, error) {
-	return openaicodex.NewClient(openaicodex.Config{AccessToken: credential.AccessToken, AccountID: credential.AccountID})
+	return modelstream.NewClient(modelstream.Config{AccessToken: credential.AccessToken, AccountID: credential.AccountID})
 }
 
 func (adapter *codexAdapter) acquire(ctx context.Context) error {

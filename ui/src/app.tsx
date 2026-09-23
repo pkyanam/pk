@@ -5,8 +5,11 @@ import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 
 type Role = "user" | "assistant" | "system" | "tool"
-type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string }
+type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean }
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
+type StreamDraft = { outerId: string; requestId: string; attempt: number; itemId: string; entryId: number; text: string }
+type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number }
+type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
 type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
@@ -209,6 +212,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
   const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null)
+  const [streamProgress, setStreamProgressState] = useState<StreamProgress | null>(null)
   const [message, setMessage] = useState("")
   const [draft, setDraft] = useState("")
   const [slashIndex, setSlashIndex] = useState(0)
@@ -229,11 +233,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingClipboardRequests = useRef(new Set<string>())
   const activityPhase = useRef("idle")
   const activeToolIds = useRef(new Set<string>())
+  const streamDrafts = useRef(new Map<string, StreamDraft>())
+  const activeStreamAttempt = useRef<ActiveStreamAttempt | null>(null)
+  const toolProgress = useRef(new Map<string, { name: string; bytes: number }>())
+  const streamProgressRef = useRef<StreamProgress | null>(null)
+  const pendingQuestionId = useRef<string | null>(null)
 
   const enterPhase = (phase: string) => {
-    if (activityPhase.current === phase) return
-    activityPhase.current = phase
-    setPhaseStartedAt(phase === "idle" ? null : Date.now())
+    const resolved = pendingQuestionId.current && phase !== "idle" && !phase.startsWith("question:")
+      ? `question:${pendingQuestionId.current}`
+      : phase
+    if (activityPhase.current === resolved) return
+    activityPhase.current = resolved
+    setPhaseStartedAt(resolved === "idle" ? null : Date.now())
   }
 
   const updateFileQueue = (update: string[] | ((current: string[]) => string[])) => {
@@ -251,6 +263,133 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const addEntry = (role: Role, text: string) => {
     if (!text.trim()) return
     setEntries((previous) => [...previous, { id: entryId.current++, role, text }].slice(-300))
+  }
+
+  const setStreamProgress = (next: StreamProgress | null) => {
+    streamProgressRef.current = next
+    setStreamProgressState(next)
+  }
+
+  const clearStreamDraft = (outerId?: string, requestId?: string, attempt?: number, keepProgress = false) => {
+    const matches = [...streamDrafts.current.entries()].filter(([, draft]) =>
+      (!outerId || draft.outerId === outerId)
+      && (!requestId || draft.requestId === requestId)
+      && (attempt === undefined || draft.attempt === attempt))
+    const removedIds = new Set(matches.map(([, draft]) => draft.entryId))
+    if (removedIds.size) setEntries((entries) => entries.filter((entry) => !removedIds.has(entry.id)))
+    for (const [key] of matches) streamDrafts.current.delete(key)
+
+    const progress = streamProgressRef.current
+    const ownsState = !outerId || activeStreamAttempt.current?.outerId === outerId || progress?.outerId === outerId
+    if (ownsState) {
+      if (!requestId || activeStreamAttempt.current?.requestId === requestId) activeStreamAttempt.current = null
+      if (!keepProgress) setStreamProgress(null)
+    }
+  }
+
+  const handleModelProgress = (event: ServerEvent) => {
+    const data = event.payload ?? {}
+    const outerId = String(event.id ?? data.prompt_id ?? "")
+    const requestId = String(data.request_id ?? "")
+    const attempt = Number.isFinite(data.attempt) ? Math.max(1, Number(data.attempt)) : 1
+    const phase = String(data.phase ?? "")
+    if (!outerId || !requestId || !promptCommandId.current || outerId !== promptCommandId.current) return
+
+    const active = activeStreamAttempt.current
+    if (active?.outerId === outerId && attempt < active.attempt) return
+    if (active?.outerId === outerId && attempt === active.attempt && active.requestId !== requestId) return
+    if (active && (active.outerId !== outerId || active.requestId !== requestId || attempt > active.attempt)) {
+      if (active.outerId === outerId) clearStreamDraft(outerId)
+      else clearStreamDraft(active.outerId)
+      for (const key of toolProgress.current.keys()) {
+        if (key.startsWith(`${active.requestId}:${active.attempt}:`)) toolProgress.current.delete(key)
+      }
+    }
+    activeStreamAttempt.current = { outerId, requestId, attempt }
+
+    const toolName = typeof data.tool_name === "string" ? data.tool_name.slice(0, 40) : "tool"
+    let label: string
+    let phaseKey: string
+    switch (phase) {
+      case "attempt_started":
+        label = attempt > 1 ? `Retrying model · attempt ${attempt}` : "Sending request to model"
+        phaseKey = `request:${requestId}:attempt:${attempt}`
+        break
+      case "response_started":
+        label = "Waiting for model response"
+        phaseKey = `response:${requestId}:${attempt}`
+        break
+      case "assistant_delta":
+        label = "Receiving response"
+        phaseKey = `receiving:${requestId}:${attempt}`
+        break
+      case "tool_call_started":
+        toolProgress.current.set(`${requestId}:${attempt}:${String(data.item_id ?? toolName)}`, { name: toolName, bytes: 0 })
+        label = `Preparing ${toolName} tool call`
+        phaseKey = `preparing:${requestId}:${attempt}:${String(data.item_id ?? toolName)}`
+        break
+      case "tool_arguments_progress": {
+        const itemId = String(data.item_id ?? toolName)
+        const key = `${requestId}:${attempt}:${itemId}`
+        const current = toolProgress.current.get(key) ?? { name: toolName, bytes: 0 }
+        current.bytes += Number.isFinite(data.bytes) ? Math.max(0, Number(data.bytes)) : 0
+        toolProgress.current.set(key, current)
+        label = `Preparing ${current.name} tool call · ${current.bytes} bytes`
+        phaseKey = `preparing:${requestId}:${attempt}:${itemId}`
+        break
+      }
+      case "tool_call_ready":
+        label = `Running ${toolName} tool`
+        phaseKey = `tool-ready:${requestId}:${attempt}:${String(data.item_id ?? toolName)}`
+        break
+      case "response_completed":
+        label = "Response received"
+        phaseKey = `completed:${requestId}:${attempt}`
+        break
+      case "response_incomplete":
+        label = "Response incomplete"
+        phaseKey = `incomplete:${requestId}:${attempt}`
+        break
+      case "response_failed":
+        label = "Retrying model response"
+        phaseKey = `response-failed:${requestId}:${attempt}`
+        break
+      case "attempt_failed":
+        label = data.status === "retrying" ? `Retrying model · attempt ${attempt + 1}` : "Model attempt failed"
+        phaseKey = `attempt-failed:${requestId}:${attempt}`
+        clearStreamDraft(outerId, requestId, attempt)
+        break
+      case "request_failed":
+        label = "Model request failed"
+        phaseKey = `request-failed:${requestId}:${attempt}`
+        clearStreamDraft(outerId, requestId, attempt)
+        toolProgress.current.clear()
+        break
+      default:
+        return
+    }
+
+    setStreamProgress({ outerId, requestId, label })
+    enterPhase(pendingQuestionId.current ? `question:${pendingQuestionId.current}` : phaseKey)
+
+    if (phase === "response_completed" || phase === "response_incomplete") {
+      clearStreamDraft(outerId, requestId, attempt, true)
+      for (const key of toolProgress.current.keys()) if (key.startsWith(`${requestId}:${attempt}:`)) toolProgress.current.delete(key)
+    }
+    if (phase !== "assistant_delta" || typeof data.text_delta !== "string" || !data.text_delta) return
+    const itemId = String(data.item_id ?? "assistant")
+    const key = `${outerId}:${requestId}:${attempt}:${itemId}`
+    const previous = streamDrafts.current.get(key)
+    const streamedEntry: StreamDraft = {
+      outerId, requestId, attempt, itemId,
+      entryId: previous?.entryId ?? entryId.current++,
+      text: `${previous?.text ?? ""}${data.text_delta}`.slice(-64 * 1024),
+    }
+    streamDrafts.current.set(key, streamedEntry)
+    const entry: Entry = { id: streamedEntry.entryId, role: "assistant", text: streamedEntry.text, provisional: true }
+    setEntries((entries) => entries.some((current) => current.id === entry.id)
+      ? entries.map((current) => current.id === entry.id ? entry : current)
+      : [...entries, entry].slice(-300))
   }
 
   const requestClipboardPaste = () => {
@@ -342,7 +481,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const text = String(data.text ?? "The agent needs an answer.")
         addEntry("system", `AskUser · ${text}`)
         setActivityStartedAt((current) => current ?? Date.now())
-        enterPhase(`question:${String(data.id ?? "pending")}`)
+        pendingQuestionId.current = String(data.id ?? "pending")
+        enterPhase(`question:${pendingQuestionId.current}`)
         setQuestion({ id: String(data.id ?? ""), text, choices, kind })
         setQuestionIndex(0)
         break
@@ -351,20 +491,28 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (question?.id === String(data.id ?? "")) {
           if (question.submittedAnswer) addEntry("user", `Answer · ${question.submittedAnswer}`)
           setQuestion(null)
-          enterPhase("model")
+          pendingQuestionId.current = null
+          setStreamProgress(null)
+          enterPhase(activeToolIds.current.size ? "tools" : "model")
         }
         break
       case "question_cancelled":
         setQuestion((current) => current?.id === String(data.id ?? "") ? null : current)
-        enterPhase("model")
+        pendingQuestionId.current = null
+        setStreamProgress(null)
+        enterPhase(activeToolIds.current.size ? "tools" : "model")
         break
       case "turn_started":
         setBusy(true)
         setActivityStartedAt((current) => current ?? Date.now())
         activeToolIds.current.clear()
+        toolProgress.current.clear()
         enterPhase("model")
         setTools([])
         turnActive.current = true
+        break
+      case "model_progress":
+        handleModelProgress(event)
         break
       case "attachments_loaded": {
         const submitted = event.id ? pendingPromptFiles.current.get(event.id) : undefined
@@ -400,20 +548,34 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "assistant":
+        clearStreamDraft(String(event.id ?? ""))
+        toolProgress.current.clear()
+        enterPhase(activeToolIds.current.size ? "tools" : "model")
         if (data.text) addEntry("assistant", String(data.text))
         break
       case "tool": {
+        if (streamProgressRef.current?.outerId === String(event.id ?? "")) {
+          setStreamProgress(null)
+          activeStreamAttempt.current = null
+        }
         trackTool(data)
         break
       }
       case "tool_call": {
+        if (streamProgressRef.current?.outerId === String(event.id ?? "")) {
+          setStreamProgress(null)
+          activeStreamAttempt.current = null
+        }
         trackTool(data)
         break
       }
       case "turn_finished":
+        clearStreamDraft()
+        toolProgress.current.clear()
         setBusy(false)
         setActivityStartedAt(null)
         enterPhase("idle")
+        pendingQuestionId.current = null
         activeToolIds.current.clear()
         setTools([])
         waiting.current = false
@@ -476,6 +638,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.status || data.tool) addEntry("system", String(data.message ?? `${data.status ?? "running"} ${data.tool ?? ""}`))
         break
       case "task_finished":
+        clearStreamDraft()
+        toolProgress.current.clear()
         if (data.text) addEntry("assistant", String(data.text))
         addEntry("system", `Task ${String(data.status ?? "finished")}`)
         setActiveTaskId("")
@@ -508,6 +672,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           || data.command_type === "prompt"
           || data.request_type === "prompt"
         if (isPromptError) {
+          clearStreamDraft(event.id ? String(event.id) : undefined)
           if (event.id) pendingPromptFiles.current.delete(event.id)
           waiting.current = false
           turnActive.current = false
@@ -529,6 +694,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "rpc_closed": {
+        clearStreamDraft()
+        toolProgress.current.clear()
         setConnected(false)
         setBusy(false)
         setActivityStartedAt(null)
@@ -538,6 +705,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           : entry))
         setTools([])
         setQuestion(null)
+        pendingQuestionId.current = null
         waiting.current = false
         turnActive.current = false
         promptCommandId.current = ""
@@ -928,7 +1096,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const activityLabel = question
     ? "Waiting for your answer"
     : busy
-      ? tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model"
+      ? streamProgress?.label ?? (tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model")
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
   const phaseTime = phaseStartedAt === null ? "" : ` · ${shortTime(clock - phaseStartedAt)} phase`
   const activityTime = activityStartedAt === null ? "" : ` · ${shortTime(clock - activityStartedAt)} total`
@@ -1071,7 +1239,7 @@ function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
   const markdown = hasMarkdownSyntax(entry.text)
   return <box style={{ flexDirection: "column", width: "100%", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
     <text fg={isUser ? palette.blue : palette.accent} content={isUser ? "you" : "pk"} />
-    {isUser || !markdown
+    {isUser || entry.provisional || !markdown
       ? <text fg={palette.text} content={entry.text} />
       : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
   </box>

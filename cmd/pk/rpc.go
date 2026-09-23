@@ -20,6 +20,7 @@ import (
 	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/interaction"
+	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/tasks"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -359,6 +360,30 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			opts.JSONL = true
 			opts.Diagnostics = s.diagnostics
 			opts.DecorateRegistry = func(base tool.Registry) tool.Registry { return interaction.DecorateRegistry(base, broker) }
+			opts.Adapter = modelProgressAdapter{inner: client, observe: func(progress modelstream.Event) {
+				if ctx.Err() != nil {
+					return
+				}
+				payload := map[string]any{
+					"request_id": progress.RequestID,
+					"attempt":    progress.Attempt,
+					"status":     progress.Status,
+					"phase":      progress.Kind,
+				}
+				if progress.Text != "" {
+					payload["text_delta"] = progress.Text
+				}
+				if progress.ItemID != "" {
+					payload["item_id"] = progress.ItemID
+				}
+				if progress.ToolName != "" {
+					payload["tool_name"] = progress.ToolName
+				}
+				if progress.Bytes != 0 {
+					payload["bytes"] = progress.Bytes
+				}
+				_ = s.emit(msg.ID, "model_progress", payload)
+			}}
 			opts.OnSession = func(id string) {
 				s.mu.Lock()
 				s.session = id

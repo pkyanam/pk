@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +23,7 @@ import (
 	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/clipboard"
+	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -198,7 +201,7 @@ func TestRPCLoadsDefaultSkillDirsAndResumeKeepsSavedSkillCatalog(t *testing.T) {
 		}
 	}
 	wantDirs := []string{filepath.Join(home, ".codex", "skills"), filepath.Join(home, ".agents", "skills")}
-	if fmt.Sprint(server.opts.SkillsDirs) != fmt.Sprint(wantDirs) {
+	if len(server.opts.SkillsDirs) != 3 || fmt.Sprint(server.opts.SkillsDirs[:2]) != fmt.Sprint(wantDirs) {
 		t.Fatalf("RPC skill dirs=%q, want %q", server.opts.SkillsDirs, wantDirs)
 	}
 	runPrompt := func(id, text string) turnDone {
@@ -241,7 +244,7 @@ func TestRPCLoadsDefaultSkillDirsAndResumeKeepsSavedSkillCatalog(t *testing.T) {
 	}
 	assertOriginalSkills := func(snapshot runner.ContextSnapshot) {
 		t.Helper()
-		if len(snapshot.Skills) != 2 {
+		if len(snapshot.Skills) != 3 {
 			t.Fatalf("saved skills=%+v", snapshot.Skills)
 		}
 		got := map[string]string{}
@@ -250,6 +253,9 @@ func TestRPCLoadsDefaultSkillDirsAndResumeKeepsSavedSkillCatalog(t *testing.T) {
 		}
 		if got["codex-helper"] != codexSkill || got["agent-helper"] != agentsSkill {
 			t.Fatalf("saved skill catalog=%v", got)
+		}
+		if got["pk"] == "" {
+			t.Fatal("bundled pk skill missing from saved catalog")
 		}
 	}
 	assertOriginalSkills(loadSnapshot())
@@ -705,6 +711,142 @@ func TestRPCQuestionUsesBrokerAndContinuesRunner(t *testing.T) {
 		server.broker.Close()
 	}
 	_ = server.adapter.Close()
+}
+
+func TestRPCModelProgressPrecedesAuthoritativeAssistantAndIsNotSavedAsHistory(t *testing.T) {
+	streamed := make(chan struct{})
+	release := make(chan struct{})
+	serverHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"message-1\",\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\"}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"message-1\",\"delta\":\"DRAFT_ONLY_TOKEN\"}\n\n")
+		flusher.Flush()
+		close(streamed)
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-release:
+				goto complete
+			case <-ticker.C:
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"message-1\",\"delta\":\" more\"}\n\n")
+				flusher.Flush()
+			}
+		}
+	complete:
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-1\",\"status\":\"completed\",\"output\":[{\"id\":\"message-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"AUTHORITATIVE_FINAL\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		flusher.Flush()
+	}))
+	defer serverHTTP.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	workspace, sessions := t.TempDir(), t.TempDir()
+	model, err := modelstream.NewClient(modelstream.Config{AccessToken: "fake-token", AccountID: "fake-account", BaseURL: serverHTTP.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &codexAdapter{credential: auth.Credential{AccessToken: "fake-token", AccountID: "fake-account"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}
+	sink := &rpcEventSink{events: make(chan []byte, 128)}
+	rpc := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: adapter, requestTypes: map[string]string{}}
+	finished := make(chan turnDone, 1)
+	rpc.handle(rpcMessage{Version: 1, ID: "streamed-prompt", Type: "prompt", Payload: json.RawMessage(`{"text":"answer the question"}`)}, finished)
+	select {
+	case <-streamed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not send its first text delta")
+	}
+	var progress rpcEvent
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case raw := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type == "model_progress" {
+				if payload, ok := event.Payload.(map[string]any); ok && payload["phase"] == "assistant_delta" {
+					progress = event
+					break
+				}
+			}
+		case <-deadline:
+			t.Fatal("RPC did not emit model_progress before response completion")
+		}
+		if progress.Type != "" {
+			break
+		}
+	}
+	if progress.ID != "streamed-prompt" {
+		t.Fatalf("progress envelope ID=%q", progress.ID)
+	}
+	progressPayload, ok := progress.Payload.(map[string]any)
+	if !ok || progressPayload["phase"] != "assistant_delta" || !strings.Contains(fmt.Sprint(progressPayload["text_delta"]), "DRAFT_ONLY_TOKEN") {
+		t.Fatalf("progress payload=%v", progress.Payload)
+	}
+	rpc.mu.Lock()
+	sessionID := rpc.session
+	rpc.mu.Unlock()
+	if sessionID == "" {
+		t.Fatal("session was not created before streaming started")
+	}
+	store, err := localfile.New(sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, err := recentSessionHistory(context.Background(), store, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fmt.Sprint(before), "DRAFT_ONLY_TOKEN") {
+		t.Fatalf("partial model text was persisted as authoritative history: %+v", before)
+	}
+	close(release)
+	select {
+	case result := <-finished:
+		if result.err != nil {
+			t.Fatalf("RPC runner returned error: %v", result.err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("RPC did not finish after final response was released")
+	}
+	rpc.completeTurn(turnDone{id: "streamed-prompt"})
+	after, _, err := recentSessionHistory(context.Background(), store, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := fmt.Sprint(after)
+	if !strings.Contains(joined, "AUTHORITATIVE_FINAL") || strings.Contains(joined, "DRAFT_ONLY_TOKEN") {
+		t.Fatalf("history does not contain only authoritative output: %+v", after)
+	}
+	var finalSeen bool
+	for {
+		select {
+		case raw := <-sink.events:
+			var event rpcEvent
+			if json.Unmarshal(raw, &event) == nil && event.ID == "streamed-prompt" && event.Type == "assistant" {
+				finalSeen = true
+			}
+		default:
+			if !finalSeen {
+				t.Fatal("final authoritative assistant event was not emitted")
+			}
+			_ = adapter.Close()
+			return
+		}
+	}
 }
 
 func TestRPCCancelQuestionStopsTurnWithoutContinuing(t *testing.T) {
