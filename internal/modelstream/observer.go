@@ -173,6 +173,8 @@ func (state *callState) emit(event Event) {
 	if state == nil || state.callback == nil {
 		return
 	}
+	state.deliveryMu.Lock()
+	defer state.deliveryMu.Unlock()
 	if event.Kind == EventAssistantDelta {
 		state.mu.Lock()
 		var pending []Event
@@ -195,9 +197,12 @@ func (state *callState) emit(event Event) {
 		state.pendingBytes += event.Bytes
 		ready := time.Since(state.lastEmit) >= progressCoalesceInterval
 		if ready {
+			state.stopFlushTimerLocked()
 			pending = append(pending, state.takeTextLocked(event.Attempt)...)
 			pending = append(pending, state.takeToolBytesLocked(event.Attempt)...)
 			state.lastEmit = time.Now()
+		} else {
+			state.scheduleFlushLocked(event.Attempt)
 		}
 		state.mu.Unlock()
 		state.send(pending...)
@@ -212,9 +217,12 @@ func (state *callState) emit(event Event) {
 		ready := time.Since(state.lastEmit) >= progressCoalesceInterval
 		var pending []Event
 		if ready {
+			state.stopFlushTimerLocked()
 			pending = append(pending, state.takeTextLocked(event.Attempt)...)
 			pending = append(pending, state.takeToolBytesLocked(event.Attempt)...)
 			state.lastEmit = time.Now()
+		} else {
+			state.scheduleFlushLocked(event.Attempt)
 		}
 		state.mu.Unlock()
 		state.send(pending...)
@@ -222,6 +230,7 @@ func (state *callState) emit(event Event) {
 	}
 	if event.Kind == EventAttemptStarted {
 		state.mu.Lock()
+		state.stopFlushTimerLocked()
 		state.pending.Reset()
 		state.pendingBytes = 0
 		state.pendingID = ""
@@ -230,16 +239,65 @@ func (state *callState) emit(event Event) {
 		state.lastEmit = time.Now()
 		state.mu.Unlock()
 	}
+	if event.Kind == EventRequestFailed || event.Kind == EventAttemptFailed {
+		state.mu.Lock()
+		state.stopFlushTimerLocked()
+		state.pending.Reset()
+		state.pendingID = ""
+		state.pendingBytes = 0
+		state.toolBytes = nil
+		state.mu.Unlock()
+	}
 	state.send(event)
 }
 
 func (state *callState) flush(final Event) {
+	state.deliveryMu.Lock()
+	defer state.deliveryMu.Unlock()
 	state.mu.Lock()
+	state.stopFlushTimerLocked()
 	pending := state.takeTextLocked(final.Attempt)
 	pending = append(pending, state.takeToolBytesLocked(final.Attempt)...)
 	state.mu.Unlock()
 	pending = append(pending, final)
 	state.send(pending...)
+}
+
+func (state *callState) scheduleFlushLocked(attempt int) {
+	if state.flushTimer != nil {
+		return
+	}
+	state.flushVersion++
+	version := state.flushVersion
+	delay := progressCoalesceInterval - time.Since(state.lastEmit)
+	if delay < 0 {
+		delay = 0
+	}
+	state.flushTimer = time.AfterFunc(delay, func() {
+		state.deliveryMu.Lock()
+		defer state.deliveryMu.Unlock()
+		state.mu.Lock()
+		if state.flushVersion != version {
+			state.mu.Unlock()
+			return
+		}
+		state.flushTimer = nil
+		pending := state.takeTextLocked(attempt)
+		pending = append(pending, state.takeToolBytesLocked(attempt)...)
+		if len(pending) > 0 {
+			state.lastEmit = time.Now()
+		}
+		state.mu.Unlock()
+		state.send(pending...)
+	})
+}
+
+func (state *callState) stopFlushTimerLocked() {
+	state.flushVersion++
+	if state.flushTimer != nil {
+		state.flushTimer.Stop()
+		state.flushTimer = nil
+	}
 }
 
 func (state *callState) takeTextLocked(attempt int) []Event {

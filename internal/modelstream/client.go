@@ -64,8 +64,11 @@ type callState struct {
 	requestID    string
 	callback     func(Event)
 	attempt      atomic.Int32
+	deliveryMu   sync.Mutex
 	mu           sync.Mutex
 	lastEmit     time.Time
+	flushTimer   *time.Timer
+	flushVersion uint64
 	pending      strings.Builder
 	pendingID    string
 	draftUsed    int
