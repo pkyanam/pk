@@ -78,3 +78,22 @@ listing still calls upstream `Inspect` and `Items`, each of which reads and
 decodes the complete session log. A combined upstream metadata-and-items API
 would be needed to remove that duplicate decode without reimplementing the
 session format and its replay validation.
+
+## Assistant-history preview assembly
+
+`projectHistory` now retains only the existing per-entry tail limit while
+joining assistant message parts. A three-sample microbenchmark using 32 valid
+assistant message parts totaling about 2.7 MiB measured 2,761,670 B/op and
+1.65 ms/op for join-then-truncate, versus 16,384 B/op and 0.541 ms/op for
+bounded tail assembly. This isolates string assembly only; it is a synthetic
+fixture and does not measure end-to-end RPC history loading. In particular,
+the upstream session store still decodes the whole session log, and tool-result
+redaction still processes full operation output before its display preview is
+cut. Short malformed UTF-8 text retains the old behavior; over-limit text uses
+the existing UTF-8-safe tail normalization.
+
+Reproduce with:
+
+```sh
+go test ./cmd/pk -run '^$' -bench '^BenchmarkAssistantHistoryPreviewLarge$' -benchmem -count=3
+```

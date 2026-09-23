@@ -2104,16 +2104,11 @@ func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
 			}
 		case sessionstore.ItemModelResponse:
 			if response, ok := item.Data.(sessionstore.ModelResponse); ok {
-				var parts []string
-				for _, output := range response.Response.Output {
-					if output.Type == llm.ItemMessage {
-						if message, ok := output.Data.(llm.Message); ok && message.Role == llm.RoleAssistant && message.Phase != "analysis" && strings.TrimSpace(message.Text) != "" {
-							parts = append(parts, message.Text)
-						}
-					}
-				}
-				if len(parts) > 0 {
-					role, text = "assistant", strings.Join(parts, "\n")
+				var previewTruncated bool
+				text, previewTruncated = assistantHistoryPreview(response.Response.Output, maxHistoryEntryBytes)
+				if text != "" {
+					role = "assistant"
+					truncated = truncated || previewTruncated
 				}
 			}
 		case sessionstore.ItemToolCallStatus:
