@@ -273,3 +273,10 @@ will do.
 - Committed boundary-safe steering as `ac26d01` and initial MCP stdio adapter as `b66a375`. MCP configuration/CLI/TUI bridge remains in progress; do not advertise the package alone as usable MCP support.
 - Steering focused runner/RPC race checks and 49 UI tests/220 assertions passed. The next installed update was correctly refused: full isolated checks exposed other one-second imagegen fixture deadlines under concurrent load, plus inherited launcher's PK_UI_ENTRY leaking into build-time UI-path tests. Luna owners are fixing both; the installed `f608b9e` release remains intact.
 - ACP and clean reload helpers are in shared uncommitted work. Preserve explicit file ownership during integration. Update/reload/rollback TUI controls are next; no hot-reload claim until real process handoff is verified.
+
+### 2026-09-23 01:42 EDT — steering and ACP installed
+
+- Installed `e64a9eb` as managed release `20260923T054029.274439000Z-d8f879af2234-ba3650fa`. It includes negotiated mid-turn steering and the initial `pk acp` stdio server, plus isolated update-build environment handling. Full committed Go race suite/vet passed; the updater's Go/UI validation/build gates passed. Installed ACP initialize/session-new wire smoke passed without provider calls.
+- User reported a missing AgentMail worker and tool-description confusion while inside its example directory. Rebuilt the ignored worker and verified initialize returns its three tool names without mail API calls. Enable/runtime executable checks and concise model-tool identity guidance are in progress.
+- User explicitly requests copy-on-selection-release and a GitHub-source updater through `pk --update`, `pk -update`, or `/update`. Luna owners are implementing native confirmed clipboard writes and canonical GitHub source staging. Neither is installed yet.
+- Computer Use validation was deferred after Cmux reported external user interaction; no existing user session was interrupted or recorded.
