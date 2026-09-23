@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -186,6 +187,111 @@ func TestChatContentFilterIsRefusal(t *testing.T) {
 	}
 	if response.Stop != llm.StopRefused || response.Failure == nil || response.Failure.Code != "content_filter" {
 		t.Fatalf("content filter response=%+v", response)
+	}
+}
+
+func TestChatCompletionsPlaceToolImagesAfterParallelTextResults(t *testing.T) {
+	var requestErr error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			Messages []struct {
+				Role       string          `json:"role"`
+				Content    json.RawMessage `json:"content"`
+				ToolCallID string          `json:"tool_call_id"`
+				ToolCalls  []struct {
+					ID string `json:"id"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			requestErr = err
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if len(request.Messages) != 4 {
+			requestErr = fmt.Errorf("got %d messages, want 4: %+v", len(request.Messages), request.Messages)
+		} else {
+			wantRoles := []string{"assistant", "tool", "tool", "user"}
+			for i, message := range request.Messages {
+				if message.Role != wantRoles[i] {
+					requestErr = fmt.Errorf("message %d role=%q, want %q", i, message.Role, wantRoles[i])
+					break
+				}
+				if message.Role == "tool" {
+					var text string
+					if err := json.Unmarshal(message.Content, &text); err != nil {
+						requestErr = fmt.Errorf("tool message content is not a text string: %s", message.Content)
+						break
+					}
+				}
+			}
+			if requestErr == nil && (len(request.Messages[0].ToolCalls) != 2 || request.Messages[0].ToolCalls[0].ID != "call-1" || request.Messages[0].ToolCalls[1].ID != "call-2" || request.Messages[1].ToolCallID != "call-1" || request.Messages[2].ToolCallID != "call-2") {
+				requestErr = fmt.Errorf("parallel tool call/result group was malformed or reordered: %+v", request.Messages)
+			}
+			if requestErr == nil {
+				var parts []struct {
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					ImageURL struct {
+						URL string `json:"url"`
+					} `json:"image_url"`
+				}
+				if err := json.Unmarshal(request.Messages[3].Content, &parts); err != nil || len(parts) != 4 || parts[0].Type != "text" || parts[1].Type != "image_url" || parts[1].ImageURL.URL != "data:image/png;base64,aGVsbG8=" || parts[2].Type != "text" || parts[3].Type != "image_url" || parts[3].ImageURL.URL != "https://example.test/second.png" {
+					requestErr = fmt.Errorf("deferred user image content was not preserved: parts=%+v err=%v", parts, err)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"image-result\",\"choices\":[{\"delta\":{\"content\":\"seen\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client, err := NewClient(Provider{ID: "images", Protocol: ProtocolChatCompletions, BaseURL: server.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.Respond(context.Background(), llm.Request{Model: llm.Model{ID: "vision-model"}, Input: []llm.Item{
+		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "view_image", Arguments: `{}`}},
+		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-2", Name: "view_image", Arguments: `{}`}},
+		{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-1", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "first image"}, {Kind: llm.ToolResultImage, Value: "data:image/png;base64,aGVsbG8="}}}},
+		{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-2", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "second image"}, {Kind: llm.ToolResultImage, Value: "https://example.test/second.png"}}}},
+	}}, llm.RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+}
+
+func TestChatCompletionsRejectMessageInterleavedWithParallelToolResults(t *testing.T) {
+	_, err := encodeMessages([]llm.Item{
+		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "view_image", Arguments: `{}`}},
+		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-2", Name: "view_image", Arguments: `{}`}},
+		{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-1", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "https://example.test/one.png"}}}},
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "another prompt"}},
+		{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call-2", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "https://example.test/two.png"}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "interleaves messages") {
+		t.Fatalf("interleaved parallel results err=%v", err)
+	}
+}
+
+func TestValidateImageReferenceRejectsUnsupportedAndOversizedValues(t *testing.T) {
+	for _, value := range []string{
+		"file:///tmp/private.png",
+		"https://user:secret@example.test/image.png",
+		"data:image/svg+xml;base64,PHN2Zz4=",
+		"data:image/png;base64,%%%",
+		"data:image/png;base64," + strings.Repeat("A", 22<<20),
+	} {
+		if err := validateImageReference(value); err == nil {
+			t.Errorf("accepted unsupported image reference %q", value[:min(len(value), 80)])
+		}
 	}
 }
 

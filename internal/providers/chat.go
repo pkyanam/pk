@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -116,7 +118,39 @@ func (adapter *chatAdapter) Close() error {
 
 func encodeMessages(input []llm.Item) ([]map[string]any, error) {
 	messages := make([]map[string]any, 0, len(input))
+	var deferredImages []map[string]any
+	var pendingAssistantCalls []map[string]any
+	pendingToolResults := make(map[string]bool)
+	flushAssistantCalls := func() {
+		if len(pendingAssistantCalls) == 0 {
+			return
+		}
+		messages = append(messages, map[string]any{"role": "assistant", "tool_calls": pendingAssistantCalls})
+		pendingAssistantCalls = nil
+	}
+	flushImages := func() {
+		if len(deferredImages) == 0 {
+			return
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": deferredImages})
+		deferredImages = nil
+	}
 	for _, item := range input {
+		if item.Type == llm.ItemReasoning {
+			continue
+		}
+		if len(deferredImages) > 0 && len(pendingToolResults) > 0 && item.Type != llm.ItemToolCall && item.Type != llm.ItemToolResult {
+			return nil, errors.New("chat completion input interleaves messages before all parallel tool results")
+		}
+		if item.Type != llm.ItemToolCall {
+			flushAssistantCalls()
+		}
+		// Chat Completions only accepts text parts for tool-role messages. Keep
+		// every parallel tool response adjacent, then add image outputs as a
+		// separate user message after the entire result group.
+		if item.Type != llm.ItemToolResult && len(deferredImages) > 0 && len(pendingToolResults) == 0 {
+			flushImages()
+		}
 		switch item.Type {
 		case llm.ItemMessage:
 			message, ok := item.Data.(llm.Message)
@@ -133,21 +167,32 @@ func encodeMessages(input []llm.Item) ([]map[string]any, error) {
 			if !ok || call.CallID == "" || call.Name == "" || !json.Valid([]byte(call.Arguments)) {
 				return nil, errors.New("chat completion input contains an invalid tool call")
 			}
-			messages = append(messages, map[string]any{"role": "assistant", "tool_calls": []map[string]any{{
+			pendingToolResults[call.CallID] = true
+			pendingAssistantCalls = append(pendingAssistantCalls, map[string]any{
 				"id": call.CallID, "type": "function", "function": map[string]string{"name": call.Name, "arguments": call.Arguments},
-			}}})
+			})
 		case llm.ItemToolResult:
 			result, ok := item.Data.(llm.ToolResult)
 			if !ok || result.CallID == "" {
 				return nil, errors.New("chat completion input contains an invalid tool result")
 			}
+			delete(pendingToolResults, result.CallID)
 			var text strings.Builder
 			for _, output := range result.Output {
-				if output.Kind == llm.ToolResultImage {
-					text.WriteString("[image output omitted: selected provider protocol currently supports text tool results only]\n")
-				} else {
+				switch output.Kind {
+				case llm.ToolResultText:
 					text.WriteString(output.Value)
 					text.WriteByte('\n')
+				case llm.ToolResultImage:
+					if err := validateImageReference(output.Value); err != nil {
+						return nil, fmt.Errorf("chat completion tool result contains an unsupported image: %w", err)
+					}
+					deferredImages = append(deferredImages,
+						map[string]any{"type": "text", "text": "Image output from tool call " + result.CallID},
+						map[string]any{"type": "image_url", "image_url": map[string]any{"url": output.Value}},
+					)
+				default:
+					return nil, fmt.Errorf("chat completion input contains unsupported tool result kind %q", output.Kind)
 				}
 			}
 			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": result.CallID, "content": strings.TrimSpace(text.String())})
@@ -158,7 +203,48 @@ func encodeMessages(input []llm.Item) ([]map[string]any, error) {
 			return nil, fmt.Errorf("unsupported chat completion input item %q", item.Type)
 		}
 	}
+	flushAssistantCalls()
+	if len(pendingToolResults) > 0 && len(deferredImages) > 0 {
+		return nil, errors.New("chat completion input ended before all parallel tool results containing images")
+	}
+	flushImages()
 	return messages, nil
+}
+
+const maxImageReferenceBytes = 24 << 20
+const maxDecodedImageBytes = 16 << 20
+
+func validateImageReference(value string) error {
+	if value == "" || len(value) > maxImageReferenceBytes {
+		return errors.New("image reference is empty or exceeds 24 MiB")
+	}
+	if strings.HasPrefix(value, "data:") {
+		metadata, encoded, ok := strings.Cut(value, ",")
+		if !ok || !strings.HasSuffix(metadata, ";base64") {
+			return errors.New("data image must use a base64 data URL")
+		}
+		switch strings.TrimSuffix(strings.TrimPrefix(metadata, "data:"), ";base64") {
+		case "image/png", "image/jpeg", "image/gif", "image/webp":
+		default:
+			return errors.New("data image type is unsupported")
+		}
+		if encoded == "" {
+			return errors.New("data image is empty")
+		}
+		decodedBytes, err := io.Copy(io.Discard, io.LimitReader(base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(encoded)), maxDecodedImageBytes+1))
+		if err != nil {
+			return errors.New("data image is not valid base64")
+		}
+		if decodedBytes > maxDecodedImageBytes {
+			return errors.New("decoded data image exceeds 16 MiB")
+		}
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+		return errors.New("image reference must be an HTTP(S) URL or supported image data URL")
+	}
+	return nil
 }
 
 type chatChunk struct {
