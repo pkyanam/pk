@@ -228,18 +228,9 @@ func (manager Manager) stage(ctx context.Context, source, gitRepository, gitRef,
 	if err := manager.runCommand(ctx, buildSource, "go", "test", "./..."); err != nil {
 		return Release{}, fmt.Errorf("go test ./... failed: %w", err)
 	}
-	uiSource := filepath.Join(buildSource, "ui")
-	manager.report("dependencies")
-	if err := manager.runCommand(ctx, uiSource, "bun", "install", "--frozen-lockfile"); err != nil {
-		return Release{}, fmt.Errorf("bun install --frozen-lockfile failed: %w", err)
-	}
-	manager.report("ui_validate")
-	if err := manager.runCommand(ctx, uiSource, "bun", "run", "check"); err != nil {
-		return Release{}, fmt.Errorf("UI validation (bun run check) failed: %w", err)
-	}
-	if err := manager.runCommand(ctx, uiSource, "bun", "test"); err != nil {
-		return Release{}, fmt.Errorf("UI validation (bun test) failed: %w", err)
-	}
+	// scripts/build performs the frozen Bun install and builds the frontend.
+	// Validate that generated tree once afterward instead of repeating the
+	// dependency install and UI checks on unchanged source files.
 	manager.report("build")
 	if err := manager.runCommand(ctx, buildSource, "sh", "scripts/build"); err != nil {
 		return Release{}, fmt.Errorf("scripts/build failed: %w", err)

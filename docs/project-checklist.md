@@ -121,6 +121,8 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 ### Open session usability fixes from native review
 
+- [ ] Make installation and updates snappy: publish platform-specific GitHub Release artifacts with checksums, prefer verified downloads for routine updates, keep atomic activation/rollback, and eliminate duplicate UI validation in source builds. Measure unchanged-version and actual-update wall time; retain source builds as an explicit development path.
+
 - [x] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Committed `af07f05`; 11 focused tests pass including 80×24 visibility and active/busy protections. First installed in `347a609`.
 - [x] Restore compact tool activity on attach/reload/history paging, preserving event order, paging bounds, and excluding analysis. First installed in `347a609`; native reload retained grouped Bash and ViewImage activity, with Ctrl+O details.
 - [x] Present saved attachment metadata for new foreground file prompts as user-facing chips, verified against durable input hashes. Installed in `2e365e8`; legacy/mismatched records keep original text. Steering attachments remain unsupported.
