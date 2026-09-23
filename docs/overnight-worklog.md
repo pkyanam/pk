@@ -922,3 +922,5 @@ User supplied the official GLM-5.3-Flash model page with a 1,310,720-token conte
 - Added Workers AI-only `x-session-affinity`, derived as `pk-` plus SHA-256 of the coordinator’s durable session cache key. The coordinator already passes its session ID on every model exchange and resumes with the same ID; no prompt changes or added model tokens.
 - Tests verify stable headers across recreated clients, distinct sessions, omitted empty keys, no header on generic Chat Completions, and no raw session key in the request. Focused tests pass under race; full Go tests and vet pass.
 - Cache counts remain actual latest-response provider usage. Affinity improves routing opportunities but is not a cache-hit guarantee. No paid live comparison was run and no measured hit-rate improvement is claimed.
+
+- Published v0.1.16 from `ae56b1e`. CI `35934385801` and paired release run `35934387758` passed. Downloaded macOS archive verified against SHA256SUMS (`df33718d1efcb34a5fdfb0db4d83b974510b02b7676f6370d2be58693a944185`), installed only under `/tmp/pk-v0116-verify`, and passed the installed TUI startup/clean-exit PTY smoke. User processes and installation were left untouched.
