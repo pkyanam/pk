@@ -49,7 +49,7 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 
 ## Marketing and delivery
 
-- [x] Prepare a friendly, concise README with centered product framing and badge/mockup treatment; the mockup is labeled conceptual, not a real product screenshot.
+- [x] Prepare a friendly, concise README with centered product framing and badges. The header now shows a real pk coding session from the reviewed Cmux demo; earlier concept images remain separately labeled.
 - [~] Create image-generated marketing assets after technical validation. The first conceptual brand card is in the public repository at `output/launch/pk-keep-work-moving.png`; see `docs/launch-assets.md`. It is not a screenshot and has not been posted on social media or used in an external campaign. Avoid public open-source/licensing claims until a license is selected.
 - [~] Draft the requested X launch posts for review after technical validation. Local variants, a four-post thread, and demo captions are ready in `docs/launch-copy.md`; awaiting review. Do not publish or post them without explicit authorization.
 - [x] Record, edit, and review a focused local coding demo in Cmux using Cap. The final [44-second MP4](/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4) is 1080p30 and 552,306 bytes. The Cap project, source export, and reproduction README are retained beside it; source/edit contact sheets and title/outro frames were reviewed. No upload or publication was made.

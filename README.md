@@ -6,8 +6,8 @@
     <img alt="Go 1.27+" src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white">
     <img alt="OpenTUI 0.5.12" src="https://img.shields.io/badge/OpenTUI-0.5.12-6E56CF">
   </p>
-  <img src="output/imagegen/pk-welcome-dark.png" alt="pk interface design concept" width="720">
-  <p><sub>Interface concept · product screenshot coming soon</sub></p>
+  <img src="docs/assets/pk-coding-session.png" alt="pk completing a real Go coding task in Cmux" width="720">
+  <p><sub>Real pk session · a focused fix with passing tests</sub></p>
 </div>
 
 pk is a terminal coding workspace built on [Unreal Agent v0.1.1](https://github.com/unreallabsai/unreal-agent/tree/v0.1.1). Work in a live OpenTUI session, or hand a longer job to a durable task and come back to its progress.

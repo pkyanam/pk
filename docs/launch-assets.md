@@ -9,6 +9,10 @@ The UI concepts are [dark welcome](../output/imagegen/pk-welcome-dark.png),
 [light task list](../output/imagegen/pk-tasks-light.png). They are prompts for visual direction, not
 screenshots or descriptions of shipped UI.
 
+## Real product screenshot
+
+[pk-coding-session.png](assets/pk-coding-session.png) is a 1920 × 1080 frame from the reviewed local Cmux recording of pk fixing a Go interval-count bug and passing its tests. It now appears in the README. Unlike the concepts above, it shows the running product. The reusable demo fixture and video editor are in `scripts/demo-fixture` and `scripts/demo-edit`.
+
 ## Brand card
 
 The first generated brand card is ready for review: [pk-keep-work-moving.png](../output/launch/pk-keep-work-moving.png)
