@@ -124,7 +124,7 @@ describe("MCPManager", () => {
     expect(JSON.stringify(add?.payload)).not.toContain("shell")
   })
 
-  test("Tab follows the visible form order and Enter submits only from Save", async () => {
+  test("Tab and Enter follow the visible form order; only the focused Save submits", async () => {
     const setup = await setupPanel()
     const list = sent.find((item) => item.type === "mcp_list")!
     emit(list.id, "mcp_catalog", { servers: [], tools: [] })
@@ -138,21 +138,53 @@ describe("MCPManager", () => {
     await act(async () => setup.mockInput.pressEnter())
     expect(sent.some((item) => item.type === "mcp_add")).toBe(false)
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("› Server ID")
+    expect(setup.captureCharFrame()).toContain("› Executable path")
 
     await act(async () => setup.mockInput.pressTab({ shift: true }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("› Connection type")
-    await act(async () => setup.mockInput.pressTab()) // ID
+    expect(setup.captureCharFrame()).toContain("› Server ID")
     await act(async () => setup.mockInput.pressTab()) // executable
     await act(async () => { await setup.mockInput.typeText("/bin/echo") })
     await act(async () => setup.mockInput.pressTab()) // args
     await act(async () => setup.mockInput.pressTab()) // working directory
     await act(async () => setup.mockInput.pressTab()) // Save
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Enter saves · Esc cancels")
+    expect(setup.captureCharFrame()).toContain("Enter or click Save · Esc cancels")
     await act(async () => setup.mockInput.pressEnter())
     expect(sent.find((item) => item.type === "mcp_add")?.payload?.server).toEqual({ id: "local", command: "/bin/echo", args: [], env: {} })
+  })
+
+  test("Enter changes connection and auth selectors, then advances to an explicit Save button", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "mcp_list")!
+    emit(list.id, "mcp_catalog", { servers: [], tools: [] })
+    await act(async () => setup.mockInput.pressKey("a"))
+    await setup.flush()
+    await act(async () => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Connection type: Remote Streamable HTTP")
+    expect(setup.captureCharFrame()).toContain("←/→ or Enter change")
+    await act(async () => setup.mockInput.pressTab()) // ID
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("remote") })
+    await setup.flush()
+    await act(async () => setup.mockInput.pressEnter()) // endpoint
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("› Endpoint URL")
+    await act(async () => { await setup.mockInput.typeText("https://mcp.example.test/api") })
+    await setup.flush()
+    await act(async () => setup.mockInput.pressEnter()) // authentication
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("› Authentication: No auth")
+    await act(async () => setup.mockInput.pressEnter()) // OAuth
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Authentication: OAuth")
+    await act(async () => setup.mockInput.pressTab()) // Save
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Enter or click Save · Esc cancels")
+    expect((setup.renderer.root as any).findDescendantById("mcp-save")).toBeDefined()
+    await act(async () => setup.mockInput.pressEnter())
+    expect(sent.find((item) => item.type === "mcp_add")?.payload?.server).toEqual({ id: "remote", url: "https://mcp.example.test/api", auth: { mode: "oauth" } })
   })
 
   test("invalid Save leaves the form open and does not send a request", async () => {
@@ -164,7 +196,7 @@ describe("MCPManager", () => {
     await setup.flush()
     for (let index = 0; index < 5; index++) await act(async () => setup.mockInput.pressTab())
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Enter saves · Esc cancels")
+    expect(setup.captureCharFrame()).toContain("Enter or click Save · Esc cancels")
     await act(async () => setup.mockInput.pressEnter())
     await setup.flush()
     expect(sent.some((item) => item.type === "mcp_add")).toBe(false)
@@ -207,5 +239,31 @@ describe("MCPManager", () => {
     await act(async () => setup.mockMouse.click(cancelColumn, cancelRow, 0))
     const closedFrame = await setup.waitForFrame((value) => value.includes("No servers configured") && !value.includes("Connection type:"))
     expect(closedFrame).not.toContain("Connection type:")
+  })
+
+  test("clicking a text field synchronizes Enter navigation with the clicked field", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "mcp_list")!
+    emit(list.id, "mcp_catalog", { servers: [], tools: [] })
+    await setup.waitForFrame((frame) => frame.includes("No servers configured"))
+    await act(async () => setup.mockInput.pressKey("a"))
+    await setup.flush()
+    await act(async () => setup.mockInput.pressEnter()) // switch to HTTP
+    await setup.flush()
+
+    let frame = setup.captureCharFrame()
+    let row = frame.split("\n").findIndex((line) => line.includes("Server ID")) + 1
+    let column = Math.max(0, frame.split("\n")[row]!.indexOf("lowercase"))
+    await act(async () => setup.mockMouse.click(column, row, 0))
+    await act(async () => { await setup.mockInput.typeText("remote") })
+    await setup.flush()
+    await act(async () => setup.mockInput.pressEnter())
+    await setup.flush()
+
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("› Endpoint URL")
+    expect(frame).toContain("Connection type: Remote Streamable HTTP")
+    expect(frame).toContain("    Authentication: No auth")
+    expect(frame).not.toContain("› Authentication: No auth")
   })
 })

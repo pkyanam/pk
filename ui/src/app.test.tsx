@@ -986,6 +986,31 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("0s")
   })
 
+  test("saved attachments render filename and type chips without paths or file contents", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const entries = [
+      { role: "user", text: "Describe these files.", sequence: 10, attachments: [
+        { name: "family photo.jpeg", kind: "image", content_type: "image/jpeg" },
+        { name: "notes.pdf", kind: "pdf_text", content_type: "application/pdf", truncated: true, pages_extracted: 2, pages_total: 9 },
+      ] },
+      { role: "user", text: "", sequence: 11, attachments: [{ name: "readme.txt", kind: "text", content_type: "text/plain" }] },
+      { role: "assistant", text: "I can review the image and document.", sequence: 12 },
+    ]
+    act(() => fake.emit({ version: 1, type: "history", payload: { session_id: "attachment-history", entries, has_earlier: false, before_sequence: 10 } }))
+    const frame = await setup.waitForFrame((value) => value.includes("family photo.jpeg") && value.includes("readme.txt"))
+    expect(frame).toContain("Describe these files.")
+    expect(frame).toContain("family photo.jpeg · Image")
+    expect(frame).toContain("notes.pdf · PDF · 2/9 pages · shortened")
+    expect(frame).toContain("readme.txt · Text")
+    expect(frame).not.toContain("/private/")
+    expect(frame).not.toContain("[image input")
+    expect(frame).not.toContain("binary file contents")
+    expect(frame).toContain("I can review the image and document.")
+  })
+
   test("browses earlier saved conversation pages without evicting live transcript rows", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
@@ -1597,6 +1622,9 @@ describe("OpenTUI application", () => {
     await setup.flush()
     await act(async () => { await setup.mockInput.typeText("form-only-text") })
     await setup.flush()
+    expect(setup.captureCharFrame()).toContain("MCP connections")
+    expect(setup.captureCharFrame()).toContain("or Enter change")
+    expect(setup.captureCharFrame()).not.toContain("Enter details")
     expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
     expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
   })

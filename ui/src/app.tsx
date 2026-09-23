@@ -7,7 +7,8 @@ import { SessionManager, type ManagedSession } from "./session-manager"
 import { MCPManager } from "./mcp-manager"
 
 type Role = "user" | "assistant" | "system" | "tool"
-type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
+type HistoryAttachment = { name: string; kind: string; contentType?: string; truncated?: boolean; pagesExtracted?: number; pagesTotal?: number }
+type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; historyAttachments?: HistoryAttachment[]; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
 const MAX_TRANSCRIPT_ENTRIES = 300
 const OMITTED_TRANSCRIPT_ENTRY: Entry = { id: -1, role: "system", text: "Earlier activity omitted from this view · transcript is bounded for responsiveness." }
 function appendTranscriptEntries(current: Entry[], incoming: Entry | Entry[]): Entry[] {
@@ -38,17 +39,50 @@ type MCPToolOption = { server_id: string; server_tool_name: string; name: string
 type ModelToolOption = { name: string; description: string; source?: string }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
 type ProviderModelOption = { id: string; object?: string; owned_by?: string }
-type SavedHistoryEntry = { role: "user" | "assistant" | "tool"; text: string; sequence: number; toolName?: string; toolState?: string; toolCallID?: string }
+type SavedHistoryEntry = { role: "user" | "assistant" | "tool"; text: string; sequence: number; toolName?: string; toolState?: string; toolCallID?: string; attachments?: HistoryAttachment[] }
+
+function parseHistoryAttachments(value: unknown): HistoryAttachment[] {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 8).flatMap((item: any) => {
+    if (typeof item?.name !== "string" || typeof item?.kind !== "string") return []
+    const name = item.name.split(/[\\/]/).filter(Boolean).at(-1)?.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 100) ?? ""
+    if (!name) return []
+    const pagesExtracted = Number(item.pages_extracted)
+    const pagesTotal = Number(item.pages_total)
+    return [{
+      name,
+      kind: item.kind.slice(0, 32),
+      ...(typeof item.content_type === "string" ? { contentType: item.content_type.slice(0, 80) } : {}),
+      ...(item.truncated === true ? { truncated: true } : {}),
+      ...(Number.isSafeInteger(pagesExtracted) && pagesExtracted >= 0 ? { pagesExtracted } : {}),
+      ...(Number.isSafeInteger(pagesTotal) && pagesTotal >= 0 ? { pagesTotal } : {}),
+    }]
+  })
+}
+
+function attachmentLabel(attachment: HistoryAttachment): string {
+  const kind = attachment.kind.toLowerCase()
+  const type = kind === "image" ? "Image" : kind === "pdf" || kind === "pdf_text" ? "PDF" : kind === "text" ? "Text" : kind === "file" ? "File" : attachment.contentType ?? kind
+  const pages = attachment.pagesTotal !== undefined ? ` · ${attachment.pagesExtracted ?? 0}/${attachment.pagesTotal} pages` : ""
+  return `${attachment.name} · ${type}${pages}${attachment.truncated ? " · shortened" : ""}`
+}
+
+function savedHistoryPreview(entry: SavedHistoryEntry): string {
+  const files = entry.attachments?.map(attachmentLabel) ?? []
+  return [entry.text, ...(files.length ? [`Attachments · ${files.join(" · ")}`] : [])].filter(Boolean).join("\n")
+}
 
 function parseSavedHistoryEntries(items: unknown): SavedHistoryEntry[] {
   if (!Array.isArray(items)) return []
   return items.flatMap((item: any) => {
     const role = item?.role === "user" || item?.role === "assistant" || item?.role === "tool" ? item.role : null
     const text = typeof item?.text === "string" ? item.text : ""
+    const attachments = parseHistoryAttachments(item?.attachments)
     const sequence = Number(item?.sequence)
-    if (!role || !text.trim() || !Number.isFinite(sequence)) return []
+    if (!role || (!text.trim() && !(role === "user" && attachments.length)) || !Number.isFinite(sequence)) return []
     return [{
       role, text, sequence,
+      ...(attachments.length ? { attachments } : {}),
       ...(typeof item?.name === "string" ? { toolName: item.name } : {}),
       ...(typeof item?.state === "string" ? { toolState: item.state } : {}),
       ...(typeof item?.tool_call_id === "string" ? { toolCallID: item.tool_call_id } : {}),
@@ -739,6 +773,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setHistoryBeforeSequence(Number(data.before_sequence ?? saved[0]?.sequence ?? 0))
         const restored = saved.map((item) => ({
           id: entryId.current++, role: item.role, text: item.role === "tool" ? "" : item.text,
+          ...(item.role === "user" && item.attachments ? { historyAttachments: item.attachments } : {}),
           ...(item.role === "tool" ? { toolName: item.toolName ?? "tool", toolState: item.toolState ?? "completed", historySummary: `${item.toolName ?? "tool"} · ${["running", "working"].includes((item.toolState ?? "").toLowerCase()) ? "was running" : item.toolState ?? "completed"}`, historical: true, callId: item.toolCallID ?? `history-${item.sequence}`, detail: item.text } : {}),
           historySequence: item.sequence,
         } as Entry))
@@ -2420,7 +2455,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const selectedOptions = selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
     : selector === "history" ? [
-      ...historyEntries.map((item) => ({ label: `${item.role === "user" ? "You" : item.role === "tool" ? `Tool · ${item.toolName ?? "tool"}${item.toolState ? ` · ${item.toolState}` : ""}` : "pk"} · #${item.sequence}`, value: `entry-${item.sequence}`, description: item.text.slice(0, 240), state: "saved" })),
+      ...historyEntries.map((item) => ({ label: `${item.role === "user" ? "You" : item.role === "tool" ? `Tool · ${item.toolName ?? "tool"}${item.toolState ? ` · ${item.toolState}` : ""}` : "pk"} · #${item.sequence}`, value: `entry-${item.sequence}`, description: savedHistoryPreview(item).slice(0, 240), state: "saved" })),
       ...(historyHasEarlier ? [{ label: "Load earlier entries…", value: "history-older", description: `Browse entries before #${historyBeforeSequence}`, state: historyLoading ? "loading" : "more" }] : []),
     ]
     : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" }))]
@@ -2525,7 +2560,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+      {selector && !mcpManagerOpen && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
         {selector === "plugin_candidates" && <text fg={pluginSourceOperation ? palette.accent : palette.dim} content={pluginSourceOperation || (pluginCandidateReview ? `${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands · source reviewed before install` : `Source · ${pluginCandidateSource}${pluginCandidateRevision ? ` · revision ${pluginCandidateRevision.slice(0, 12)}` : ""} · review a candidate before installation`)} />}
@@ -2564,7 +2599,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             {option.description && <text fg={palette.dim} content={option.description} />}
           </box>
         })}
-        {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={historyEntries[historyDetailIndex]!.text.slice(0, 1200)} /></box>}
+        {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={savedHistoryPreview(historyEntries[historyDetailIndex]!).slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
         <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "image" ? "Enter or click to toggle · disabled by default · /new activates changes · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
@@ -2684,6 +2719,7 @@ function WelcomeEntry({ onAction }: { onAction: (command: string) => void }) {
 }
 
 const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { entry: Entry; clock: number }) {
+  const renderer = useRenderer()
   if (entry.role === "system") return <box style={{ paddingLeft: 2, paddingBottom: 1 }}><text fg={palette.dim} content={entry.text} /></box>
   if (entry.role === "tool") return <box style={{ flexDirection: "column", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: entry.toolState === "failed" ? palette.red : palette.accent }}>
     <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
@@ -2698,9 +2734,21 @@ const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { en
   const delivery = entry.delivery === "queued" ? "queued · waiting for a boundary" : entry.delivery === "accepted" ? "accepted by active turn" : entry.delivery === "rejected" ? "not accepted" : ""
   return <box style={{ flexDirection: "column", width: "100%", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
     <text fg={isUser ? palette.blue : palette.accent} content={isUser ? `you${delivery ? ` · ${delivery}` : ""}` : entry.speaker ?? "pk"} />
-    {isUser || entry.provisional || !markdown
+    {entry.text && (isUser || entry.provisional || !markdown
       ? <text fg={palette.text} content={entry.text} />
-      : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
+      : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />)}
+    {isUser && entry.historyAttachments?.length ? <box style={{ flexDirection: "row", gap: 1, flexWrap: "wrap", paddingTop: entry.text ? 1 : 0 }}>
+      {entry.historyAttachments.slice(0, 8).map((attachment, index) => {
+        const maxName = renderer.width < 90 ? 18 : 32
+        const name = attachment.name.length > maxName ? `${attachment.name.slice(0, maxName - 1)}…` : attachment.name
+        const kindValue = attachment.kind.toLowerCase()
+        const kind = kindValue === "image" ? "Image" : kindValue === "pdf" || kindValue === "pdf_text" ? "PDF" : kindValue === "text" ? "Text" : "File"
+        const pages = attachment.pagesTotal !== undefined ? ` · ${attachment.pagesExtracted ?? 0}/${attachment.pagesTotal} pages` : ""
+        return <box key={`${attachment.name}-${index}`} style={{ backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, height: 1 }}>
+          <text fg={palette.muted} content={`${name} · ${kind}${pages}${attachment.truncated ? " · shortened" : ""}`} />
+        </box>
+      })}
+    </box> : null}
     {entry.speaker && entry.detail && <text fg={palette.dim} content={entry.detail} />}
     {entry.deliveryMessage && <text fg={entry.delivery === "rejected" ? palette.red : palette.dim} content={entry.deliveryMessage} />}
   </box>

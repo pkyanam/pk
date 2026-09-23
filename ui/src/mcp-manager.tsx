@@ -80,6 +80,10 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     ? [0, 1, 2, 3, 4, 5]
     : [0, 1, 2, 3, ...((auth === "header_env" || auth === "header_secret") ? [4] : []), ...((auth === "bearer_env" || auth === "header_env" || auth === "bearer_secret" || auth === "header_secret") ? [5] : []), 6]
   const saveIndex = formOrder[formOrder.length - 1]!
+  const advanceField = () => {
+    const current = formOrder.indexOf(fieldIndex)
+    setFieldIndex(formOrder[((current < 0 ? 0 : current) + 1) % formOrder.length]!)
+  }
 
   const request = (kind: RequestKind, type: string, payload?: Record<string, unknown>) => {
     const requestID = send(type, payload)
@@ -191,7 +195,13 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
         setFieldIndex(formOrder[(current + step + formOrder.length) % formOrder.length]!)
         return
       }
-      if (name === "return" && fieldIndex === saveIndex) { addServer(); return }
+      if (name === "return") {
+        if (fieldIndex === saveIndex) addServer()
+        else if (fieldIndex === 0) setMode((value) => value === "stdio" ? "http" : "stdio")
+        else if (fieldIndex === 3 && mode === "http") setAuth((value) => authModes[(authModes.indexOf(value) + 1) % authModes.length]!)
+        else advanceField()
+        return
+      }
       if (name === "left" || name === "right") {
         if (fieldIndex === 0) setMode((value) => value === "stdio" ? "http" : "stdio")
         else if (fieldIndex === 3 && mode === "http") setAuth((value) => authModes[(authModes.indexOf(value) + (name === "right" ? 1 : authModes.length - 1)) % authModes.length]!)
@@ -215,14 +225,14 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
 
   const field = (label: string, value: string, update: (value: string) => void, index: number, placeholder = "") => <box key={label} style={{ flexDirection: "column", gap: 0 }}>
     <text fg={fieldIndex === index ? colors.accent : colors.muted} content={`${fieldIndex === index ? "› " : "  "}${label}`} />
-    <input focused={formOpen && fieldIndex === index && label !== "Mode" && label !== "Authentication"} value={value} maxLength={maxField} placeholder={placeholder} onInput={(next: string) => { update(next); setFormError("") }} />
+    <input focused={formOpen && fieldIndex === index} value={value} maxLength={maxField} placeholder={placeholder} onMouseDown={(event) => leftClick(event, () => setFieldIndex(index))} onInput={(next: string) => { update(next); setFormError("") }} />
   </box>
 
   return <box style={{ position: "absolute", left: "5%", right: "5%", top: "5%", bottom: "5%", border: true, borderColor: colors.line, backgroundColor: colors.panel, padding: 2, flexDirection: "column", gap: 1 }}>
     <box style={{ flexDirection: "row", justifyContent: "space-between" }}><text fg={colors.text} content="MCP connections" /><text fg={colors.dim} content="Esc close" /></box>
     <text fg={colors.muted} content="Changes apply to new sessions." />
     {formOpen ? <>
-      <text fg={colors.accent} content={fieldIndex === saveIndex ? "Enter saves · Esc cancels" : fieldIndex === 0 || (mode === "http" && fieldIndex === 3) ? "←/→ change · Tab next · Esc cancel" : "Type value · Tab next · Esc cancel"} />
+      <text fg={colors.accent} content={fieldIndex === saveIndex ? "Enter or click Save · Esc cancels" : fieldIndex === 0 || (mode === "http" && fieldIndex === 3) ? "←/→ or Enter change · Tab next · Esc cancel" : "Type value · Enter/Tab next · Esc cancel"} />
       {formError && <text fg={colors.red} content={formError} />}
       <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(0))} fg={fieldIndex === 0 ? colors.accent : colors.muted} content={`${fieldIndex === 0 ? "› " : "  "}Connection type: ${mode === "stdio" ? "Local stdio" : "Remote Streamable HTTP"} · ←/→ change`} />
       {field("Server ID", id, setID, 1, "lowercase letters, digits, . _ -")}
@@ -237,14 +247,14 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
         {(auth === "bearer_env" || auth === "header_env") && field("Credential environment variable", credentialReference, setCredentialReference, 5, "MCP_API_KEY")}
         {(auth === "bearer_secret" || auth === "header_secret") && <>
           <text fg={fieldIndex === 5 ? colors.accent : colors.muted} content={`${fieldIndex === 5 ? "› " : "  "}Credential · stored separately`} />
-          <box style={{ position: "relative", height: 1 }}>
+          <box style={{ position: "relative", height: 1 }} onMouseDown={(event) => leftClick(event, () => setFieldIndex(5))}>
             <input id="mcp-secret-input" focused={formOpen && fieldIndex === 5} value={secret} maxLength={4096} placeholder="Enter credential" selectable={false} onInput={(next: string) => { setSecret(next); setFormError("") }} />
             <text style={{ position: "absolute", left: 0, top: 0, right: 0, bg: colors.panel }} fg={colors.text} content={secret ? "•".repeat(Math.min(secret.length, 64)) : "Type credential · masked"} />
           </box>
         </>}
       </>}
       <box style={{ flexDirection: "row", gap: 2 }}>
-        <box onMouseDown={(event) => leftClick(event, () => { setFieldIndex(saveIndex); addServer() })} style={{ backgroundColor: fieldIndex === saveIndex ? colors.accent : colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={fieldIndex === saveIndex ? colors.panel : colors.accent} content="Save server" /></box>
+        <box id="mcp-save" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(saveIndex); addServer() })} style={{ backgroundColor: fieldIndex === saveIndex ? colors.accent : colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={fieldIndex === saveIndex ? colors.panel : colors.accent} content="Save server" /></box>
         <box onMouseDown={(event) => leftClick(event, clearForm)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.muted} content="Cancel · Esc" /></box>
       </box>
     </> : <>
