@@ -98,6 +98,38 @@ func TestRPCProviderCatalogSelectionAndRuntime(t *testing.T) {
 	}
 }
 
+func TestRPCProviderPresetAddStoresKeyWithoutEchoAndPreservesDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PK_HOME", home)
+	store := providers.Store{Home: home}
+	if err := store.Put(providers.Provider{ID: "groq", Protocol: providers.ProtocolChatCompletions, BaseURL: "https://api.groq.com/openai/v1", APIKey: "old-secret", DefaultModel: "old-model", DefaultEffort: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 8)}
+	server := &rpcServer{ctx: context.Background(), output: sink, started: true, requestTypes: map[string]string{}}
+	server.handle(rpcMessage{Version: 1, ID: "presets", Type: "provider_presets_list"}, make(chan turnDone, 1))
+	presets := readRPCEvent(t, sink)
+	if presets.Type != "provider_presets" {
+		t.Fatalf("catalog response = %+v", presets)
+	}
+	server.handle(rpcMessage{Version: 1, ID: "add-preset", Type: "provider_preset_add", Payload: json.RawMessage(`{"preset_id":"groq","api_key":"new-secret"}`)}, make(chan turnDone, 1))
+	updated := readRPCEvent(t, sink)
+	if updated.Type != "providers_updated" || updated.Payload.(map[string]any)["added_provider_id"] != "groq" {
+		t.Fatalf("preset add response = %+v", updated)
+	}
+	encoded, _ := json.Marshal(updated.Payload)
+	if strings.Contains(string(encoded), "new-secret") || strings.Contains(string(encoded), "old-secret") {
+		t.Fatalf("preset add response leaked key: %s", encoded)
+	}
+	got, err := store.Get("groq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIKey != "new-secret" || got.DefaultModel != "old-model" || got.DefaultEffort != "low" {
+		t.Fatalf("preset reconnect lost credentials/defaults: %+v", got)
+	}
+}
+
 func TestRPCProviderSelectOnlyBeforeSessionPrompt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PK_HOME", home)
@@ -107,9 +139,9 @@ func TestRPCProviderSelectOnlyBeforeSessionPrompt(t *testing.T) {
 	}
 	sink := &rpcEventSink{events: make(chan []byte, 8)}
 	server := &rpcServer{ctx: context.Background(), output: sink, started: true, opts: runner.Options{Model: "gpt-6-luna", Effort: "medium"}, requestTypes: map[string]string{}}
-	server.handle(rpcMessage{Version: 1, ID: "select", Type: "provider_select", Payload: json.RawMessage(`{"provider_id":"fixture"}`)}, make(chan turnDone, 1))
+	server.handle(rpcMessage{Version: 1, ID: "select", Type: "provider_select", Payload: json.RawMessage(`{"provider_id":"fixture","model":"discovered-model"}`)}, make(chan turnDone, 1))
 	event := readRPCEvent(t, sink)
-	if event.Type != "provider_selected" || event.Payload.(map[string]any)["provider_id"] != "fixture" || event.Payload.(map[string]any)["model"] != "fixture-model" {
+	if event.Type != "provider_selected" || event.Payload.(map[string]any)["provider_id"] != "fixture" || event.Payload.(map[string]any)["model"] != "discovered-model" || server.opts.Model != "discovered-model" {
 		t.Fatalf("provider selection event=%+v", event)
 	}
 	server.session = "saved-session"
@@ -131,6 +163,13 @@ func TestRPCProviderMutationRoutesRedactSecretsAndRespectActiveSession(t *testin
 	if _, err := (providers.Store{Home: home}).Get("secret"); err == nil {
 		t.Fatal("RPC persisted a literal API key")
 	}
+	server.handle(rpcMessage{Version: 1, ID: "secret-case", Type: "provider_add", Payload: json.RawMessage(`{"id":"secret2","protocol":"chat_completions","base_url":"https://api.example.test/v1","API_KEY":"case-secret"}`)}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.Type != "error" {
+		t.Fatalf("case-variant literal credential event=%+v", event)
+	}
+	if _, err := (providers.Store{Home: home}).Get("secret2"); err == nil {
+		t.Fatal("RPC persisted case-variant literal API key")
+	}
 	server.handle(rpcMessage{Version: 1, ID: "add", Type: "provider_add", Payload: json.RawMessage(`{"id":"rpc","protocol":"chat_completions","base_url":"https://api.example.test/v1","api_key_env":"RPC_MODEL_KEY","default_model":"model-x"}`)}, make(chan turnDone, 1))
 	added := readRPCEvent(t, sink)
 	if added.Type != "providers_updated" {
@@ -151,5 +190,87 @@ func TestRPCProviderMutationRoutesRedactSecretsAndRespectActiveSession(t *testin
 	}
 	if _, err := (providers.Store{Home: home}).Get("rpc"); err != nil {
 		t.Fatalf("selected provider was removed: %v", err)
+	}
+}
+
+func TestRPCProviderModelDiscoveryIsResponsiveAndCoalescesCancellation(t *testing.T) {
+	firstEntered := make(chan struct{})
+	var calls atomic.Int32
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if calls.Add(1) == 1 {
+			close(firstEntered)
+			<-r.Context().Done()
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"newest-model"}]}`)
+	}))
+	defer httpServer.Close()
+	home := t.TempDir()
+	t.Setenv("PK_HOME", home)
+	if err := (providers.Store{Home: home}).Put(providers.Provider{ID: "fixture", Protocol: providers.ProtocolChatCompletions, BaseURL: httpServer.URL + "/v1", APIKey: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 16)}
+	server := &rpcServer{ctx: context.Background(), output: sink, started: true, requestTypes: map[string]string{}}
+	server.handle(rpcMessage{Version: 1, ID: "old", Type: "provider_models", Payload: json.RawMessage(`{"provider_id":"fixture"}`)}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.ID != "old" || event.Type != "provider_models_started" {
+		t.Fatalf("first discovery start=%+v", event)
+	}
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first discovery did not reach the fixture server")
+	}
+	// The RPC reader must remain available while the model endpoint is stalled.
+	server.handle(rpcMessage{Version: 1, ID: "unrelated", Type: "providers_list"}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.ID != "unrelated" || event.Type != "providers" {
+		t.Fatalf("unrelated RPC blocked by discovery: %+v", event)
+	}
+	server.handle(rpcMessage{Version: 1, ID: "new", Type: "provider_models", Payload: json.RawMessage(`{"provider_id":"fixture"}`)}, make(chan turnDone, 1))
+	seenNewStart, seenOldCancel := false, false
+	deadline := time.After(3 * time.Second)
+	for !seenNewStart || !seenOldCancel {
+		select {
+		case <-deadline:
+			t.Fatal("replacement discovery did not cancel/coalesce old request")
+		case raw := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.ID == "new" && event.Type == "provider_models_started" {
+				seenNewStart = true
+			}
+			if event.ID == "old" && event.Type == "provider_models_cancelled" {
+				seenOldCancel = true
+			}
+		}
+	}
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("replacement discovery did not finish")
+		case raw := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.ID == "old" && event.Type == "provider_models" {
+				t.Fatalf("stale discovery overwrote replacement: %+v", event)
+			}
+			if event.ID == "new" && event.Type == "provider_models" {
+				if models := event.Payload.(map[string]any)["models"].([]any); len(models) != 1 || models[0].(map[string]any)["id"] != "newest-model" {
+					t.Fatalf("replacement model response=%+v", event)
+				}
+				if calls.Load() != 2 {
+					t.Fatalf("model discovery HTTP calls=%d, want two", calls.Load())
+				}
+				return
+			}
+		}
 	}
 }

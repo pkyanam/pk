@@ -22,6 +22,18 @@ func runProviderCommandWithStore(ctx context.Context, args []string, input io.Re
 		return 2
 	}
 	switch args[0] {
+	case "presets":
+		if len(args) != 1 {
+			printProviderUsage(stderr)
+			return 2
+		}
+		for _, preset := range providers.Presets() {
+			fmt.Fprintf(stdout, "%s (%s)\n  API style: %s\n  protocol: %s\n  base URL: %s\n  API key variable: %s\n  docs: %s\n", preset.Label, preset.ID, preset.APIStyle, preset.Protocol, preset.BaseURL, preset.APIKeyEnv, preset.DocsURL)
+			if preset.CompatibilityNote != "" {
+				fmt.Fprintf(stdout, "  note: %s\n", preset.CompatibilityNote)
+			}
+		}
+		return 0
 	case "list":
 		if len(args) != 1 {
 			printProviderUsage(stderr)
@@ -120,7 +132,7 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 	flags := flag.NewFlagSet("provider add", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	id := flags.String("id", "", "provider ID")
-	protocol := flags.String("protocol", "", "responses or chat_completions")
+	protocol := flags.String("protocol", "", "responses, chat_completions, or anthropic_messages")
 	baseURL := flags.String("base-url", "", "OpenAI-compatible API root URL (bare hosts default to /v1)")
 	keyEnv := flags.String("api-key-env", "", "environment variable containing the API key")
 	keyStdin := flags.Bool("api-key-stdin", false, "read an API key from stdin and store it in the private provider config")
@@ -129,7 +141,7 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 	reasoning := flags.Bool("reasoning-effort", false, "send reasoning_effort when supported by the provider")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: pk provider add --id ID --protocol responses|chat_completions --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort low|medium|high|xhigh|max] [--reasoning-effort]")
+			fmt.Fprintln(stdout, "Usage: pk provider add --id ID --protocol responses|chat_completions|anthropic_messages --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort low|medium|high|xhigh|max] [--reasoning-effort]")
 			return 0
 		}
 		fmt.Fprintf(stderr, "pk provider add: %v\n", err)
@@ -168,5 +180,5 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 }
 
 func printProviderUsage(out io.Writer) {
-	fmt.Fprintln(out, "Usage: pk provider list | use ID|native | add --id ID --protocol responses|chat_completions --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort VALUE] [--reasoning-effort] | models ID | remove ID")
+	fmt.Fprintln(out, "Usage: pk provider presets | list | use ID|native | add --id ID --protocol responses|chat_completions|anthropic_messages --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort VALUE] [--reasoning-effort] | models ID | remove ID")
 }

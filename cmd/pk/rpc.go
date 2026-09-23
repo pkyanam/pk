@@ -80,6 +80,9 @@ type rpcServer struct {
 	steeringEnabled         bool
 	session                 string
 	providerID              string
+	providerModelsRequestID string
+	providerModelsCancel    context.CancelFunc
+	pendingProviderModels   *providerModelsRequest
 	activeCancel            context.CancelFunc
 	releaseCancel           context.CancelFunc
 	releaseDone             chan struct{}
@@ -1583,22 +1586,65 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "provider_id is required", "recoverable": true})
 			return
 		}
-		_ = s.emit(msg.ID, "provider_models_started", map[string]any{"provider_id": providerID})
-		models, err := rpcProviderModels(s.ctx, providerID)
+		provider, err := resolveRPCProvider(providerID)
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
-		_ = s.emit(msg.ID, "provider_models", map[string]any{"provider_id": providerID, "models": models})
+		key, err := provider.APIKeyValue()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		provider.APIKey, provider.APIKeyEnv = key, ""
+		s.startProviderModels(providerModelsRequest{RequestID: msg.ID, Provider: provider})
+	case "provider_models_cancel":
+		if err := s.cancelProviderModels(get("request_id")); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "provider_models_cancelled", map[string]any{"request_id": get("request_id")})
+	case "provider_presets_list":
+		_ = s.emit(msg.ID, "provider_presets", map[string]any{"presets": rpcProviderPresets()})
+	case "provider_preset_add":
+		request, err := decodeProviderPresetAdd(msg.Payload)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid provider preset request", "recoverable": true})
+			return
+		}
+		id := strings.TrimSpace(request.ID)
+		if id == "" {
+			id = strings.TrimSpace(request.PresetID)
+		}
+		if err := s.providerMutationAllowed(id); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		store := rpcProviderStore()
+		provider, err := putRPCProviderPreset(store, request.PresetID, id, request.APIKey, request.DefaultModel, request.DefaultEffort)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		updated, err := rpcProvidersUpdated()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		updated.AddedProviderID = provider.ID
+		updated.PresetID = request.PresetID
+		_ = s.emit(msg.ID, "providers_updated", updated)
 	case "provider_add":
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(msg.Payload, &raw); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid provider configuration: " + err.Error(), "recoverable": true})
 			return
 		}
-		if _, hasLiteralKey := raw["api_key"]; hasLiteralKey {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": "literal API keys cannot be sent over RPC; configure api_key_env or use `pk provider add --api-key-stdin`", "recoverable": true})
-			return
+		for key := range raw {
+			if strings.EqualFold(key, "api_key") {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "literal API keys cannot be sent over this route; use a preset setup action or configure api_key_env", "recoverable": true})
+				return
+			}
 		}
 		var provider providers.Provider
 		if err := json.Unmarshal(msg.Payload, &provider); err != nil {
@@ -1685,6 +1731,13 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		if effort == "" {
 			effort = cfg.Effort
+		}
+		if modelOverride := strings.TrimSpace(get("model")); modelOverride != "" {
+			if len(modelOverride) > 256 || strings.ContainsAny(modelOverride, "\r\n\x00") {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "model ID must be at most 256 bytes and contain no control characters", "recoverable": true})
+				return
+			}
+			model = modelOverride
 		}
 		s.mu.Lock()
 		if s.active || s.session != "" || s.attachedTask != "" {
