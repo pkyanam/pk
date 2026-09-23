@@ -530,3 +530,8 @@ gates or imply that every backlog item is complete.
 - `32f3160` memoizes transcript grouping and skips static timeline reconciliation on activity-only ticks while preserving live timers. All 124 UI tests/568 assertions pass. No end-to-end speedup percentage is claimed.
 - Installed b5aa90b passed a real Luna/low scanned-page inspection: one ViewImage call, correct red-square description, two provider responses, 6,974 input/169 output/1,536 cached input tokens. The real-renderer fixture was corrected to use exact PDF stream lengths and now asserts nonwhite expected pixels.
 - The large-output replay profile is benchmark-only. Preflight cannot prove any eligible 16KiB output in existing tasks, so no paid cohort was run merely to exercise a new setting. Production full-context default remains unchanged.
+
+### 06:49 EDT — reliability installment installed
+
+- Clean GitHub revision `8d2217d` activated as `20260923T104825.645608000Z-f78554af8afa-93f7a64a`, including OAuth logout invalidation, the subagent race fix, and static-transcript clock optimization. Full Go suite, affected race tests, and all 124 UI tests passed.
+- A further native Finder-to-Cmux automated drag attempt did not produce a queued file. This is not proof of a parser failure because cross-window drop delivery was not observed. Keep native drag/drop unverified and recommend the verified paste or `/file` routes.

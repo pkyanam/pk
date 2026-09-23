@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `b5aa90b` (`20260923T103610.264877000Z-e6a9b9b1a6d2-34126c4e`), including negotiated plugin progress, local usage reporting, and fresh-session reload. Native Cmux reload and `/usage` inspection passed; see the handoff evidence below.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `8d2217d` (`20260923T104825.645608000Z-f78554af8afa-93f7a64a`), including negotiated plugin progress, local usage reporting, and fresh-session reload. Native Cmux reload and `/usage` inspection passed; see the handoff evidence below.
 
 ## Product and implementation
 
@@ -100,7 +100,7 @@ The 08:00 EDT, 23 September target was the requested handoff deadline, not evide
 - [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy, Finder Cmd+C/Cmd+V of a spaced image path, and Preview raw-pixel paste are verified; Luna inspected both image routes with `ViewImage`. Native GUI drag/drop remains unverified. Keep those limits distinct from the tested paste routes.
 - [x] Finish the local focused coding demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization; a broader montage remains optional.
 
-Latest installed checkpoint: `b5aa90b` (`20260923T103610.264877000Z-e6a9b9b1a6d2-34126c4e`). Fresh-session reload is native-verified without a model request. `/usage` reports durable session token totals with per-metric coverage, without a provider request. Native Cmux `/skills search react` → review → install → `/new` → `/skills available` succeeded for Vercel React; `pk skills list` confirmed the managed installation (06:20 EDT worklog entry). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
+Latest installed checkpoint: `8d2217d` (`20260923T104825.645608000Z-f78554af8afa-93f7a64a`). Fresh-session reload is native-verified without a model request. `/usage` reports durable session token totals with per-metric coverage, without a provider request. Native Cmux `/skills search react` → review → install → `/new` → `/skills available` succeeded for Vercel React; `pk skills list` confirmed the managed installation (06:20 EDT worklog entry). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
