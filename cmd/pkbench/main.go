@@ -25,8 +25,8 @@ import (
 	"github.com/pkyanam/pk/internal/auth"
 )
 
-const modelID = "gpt-6-luna"
-const effort = "medium"
+var modelID = "gpt-6-luna"
+var effort = "medium"
 
 type task struct {
 	name, implementationPrompt, verificationPrompt string
@@ -117,12 +117,23 @@ type suite struct {
 
 func main() { os.Exit(run(os.Args[1:])) }
 
+func validEffort(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
+}
+
 func run(args []string) int {
 	flags := flag.NewFlagSet("pkbench", flag.ContinueOnError)
 	repo := flags.String("repo", ".", "pk repository root")
 	out := flags.String("out", "", "result directory (default: benchmarks/results/<timestamp>)")
 	repetitions := flags.Int("repetitions", 1, "pilot repetitions (1 or 2)")
 	timeout := flags.Duration("timeout", 90*time.Second, "hard timeout for each model phase")
+	model := flags.String("model", "gpt-6-luna", "model ID")
+	effortFlag := flags.String("effort", "medium", "reasoning effort")
 	includeUnreal := flags.Bool("unreal", true, "also run the unchanged Unreal v0.1.1 CLI baseline")
 	outputCapExperiment := flags.Bool("output-cap-ablation", false, "run the paired current-vs-4K-default Bash policy experiment only")
 	toolSchemaExperiment := flags.Bool("tool-schema-ablation", false, "run the paired current-vs-compact tool-description experiment only")
@@ -138,6 +149,11 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: pkbench [-repo DIR] [-out DIR] [-repetitions 1|2] [-timeout 90s]")
 		return 2
 	}
+	if strings.TrimSpace(*model) == "" || !validEffort(*effortFlag) {
+		fmt.Fprintln(os.Stderr, "-model must not be empty and -effort must be low, medium, high, xhigh, or max")
+		return 2
+	}
+	modelID, effort = strings.TrimSpace(*model), strings.ToLower(strings.TrimSpace(*effortFlag))
 	if (*outputCapExperiment && *toolSchemaExperiment) || (*outputCapExperiment && *replayCompactionExperiment) || (*toolSchemaExperiment && *replayCompactionExperiment) {
 		fmt.Fprintln(os.Stderr, "choose at most one benchmark ablation")
 		return 2

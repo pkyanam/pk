@@ -56,7 +56,11 @@ For the benchmark-only large Bash-result context replay experiment, use
 excerpt policy, and byte-versus-token interpretation are in
 [`experiments/replay-compaction.md`](experiments/replay-compaction.md).
 Use `-replay-tasks clamp,webhook` to select the opt-in multi-file task cohort;
-the default replay experiment still runs `routematch,eventmerge`.
+the default replay experiment still runs `routematch,eventmerge`. The
+`jobqueue` recovery fixture has its own 8-phase, 20-minute Luna-low cohort;
+see [`experiments/jobqueue-recovery.md`](experiments/jobqueue-recovery.md).
+The ablation accepts `-model` and `-effort` for a matched model configuration;
+the default remains gpt-6-luna/medium.
 
 Fixtures are separate Go modules under `benchmarks/tasks/`. Their TODO
 implementations intentionally fail tests, so repository `go test ./...` does

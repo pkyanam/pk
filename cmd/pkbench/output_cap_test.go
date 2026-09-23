@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSelectReplayTasksPreservesDefaultSuite(t *testing.T) {
@@ -16,6 +21,29 @@ func TestSelectReplayTasksPreservesDefaultSuite(t *testing.T) {
 	}
 	if want := []string{"routematch", "eventmerge"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("default replay tasks = %#v, want %#v", names, want)
+	}
+}
+
+func TestJobQueueHoldoutRestoresTestsAfterWorkspaceEdits(t *testing.T) {
+	fixture, err := filepath.Abs(filepath.Join("..", "..", "benchmarks", "tasks", "jobqueue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, output := t.TempDir(), t.TempDir()
+	if err := copyTree(fixture, workspace); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a model deleting or weakening its visible tests. Holdout must
+	// restore the benchmark-owned suite before testing production source.
+	if err := os.WriteFile(filepath.Join(workspace, "recovery_test.go"), []byte("package jobqueue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	passed, err := verifyHoldout(context.Background(), fixture, workspace, output, "pk-current", 1, "jobqueue")
+	if passed || err == nil || !strings.Contains(err.Error(), "not implemented") || !strings.Contains(err.Error(), "TestRecoverExpiredRequeuesAndCanBeClaimedAgain") {
+		t.Fatalf("pristine recovery holdout = passed:%t err:%v", passed, err)
+	}
+	if _, err := os.Stat(filepath.Join(output, "artifacts", "pk-current-rep1-jobqueue", "recovery.go.txt")); err != nil {
+		t.Fatalf("holdout source artifact was not archived: %v", err)
 	}
 }
 
@@ -33,6 +61,19 @@ func TestSelectReplayTasksSupportsMatchedClampWebhookCohort(t *testing.T) {
 	}
 	if got[0].implementationPrompt == "" || got[0].verificationPrompt == "" || got[1].implementationPrompt == "" || got[1].verificationPrompt == "" {
 		t.Fatal("selected tasks must each have both new-session and resume prompts")
+	}
+}
+
+func TestSelectReplayTasksSupportsJobQueueRecoveryFixture(t *testing.T) {
+	got, err := selectReplayTasks("jobqueue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].name != "jobqueue" || !strings.Contains(got[0].verificationPrompt, "Resume") {
+		t.Fatalf("selected replay task = %#v", got)
+	}
+	if timeout := replayWholeTimeout(got); timeout != 20*time.Minute {
+		t.Fatalf("jobqueue overall timeout = %s, want 20m", timeout)
 	}
 }
 

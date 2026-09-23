@@ -39,6 +39,9 @@ The webhook cohort's fixture, immutable holdout behavior, and bounded command
 are documented in [`multifile-webhook.md`](multifile-webhook.md). Its results
 must remain separate from the earlier replay pilot.
 
+For a longer worker-recovery task, use `-replay-tasks jobqueue`; its fixture and
+separate pilot limits are documented in [`jobqueue-recovery.md`](jobqueue-recovery.md).
+
 The run is bounded to 16 model phases at 90 seconds each, with a 30-minute
 overall experiment timeout. It writes checkpointed JSONL records, a source
 manifest, generated-code artifacts, and a Markdown/JSON summary under

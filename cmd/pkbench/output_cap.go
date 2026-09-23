@@ -57,6 +57,11 @@ var replayTaskSelection = map[string]task{
 		implementationPrompt: "This workspace is a self-contained Git fixture. Implement the signed, idempotent HTTP webhook receiver in event.go, signature.go, memory_store.go, and handler.go. Validate a nonblank event ID and type plus exactly one JSON object payload. Verify HMAC-SHA256 against the exact raw request body, accepting the lowercase hex digest with or without a sha256= prefix and comparing it in constant time. Accept POST only; limit bodies to MaxBodyBytes; reject malformed, trailing, or unknown JSON fields. Return 401 for an invalid signature, 400 for invalid event input, 413 for oversized bodies, and 503 when configuration or storage is unavailable. Atomically store only the first event for each ID, respect canceled contexts, and defensively copy payload bytes on store and read. Return JSON {\"accepted\":true,\"duplicate\":false} with 202 for first delivery and {\"accepted\":true,\"duplicate\":true} with 200 for duplicates. Do not expose storage errors. Do not run tests during this implementation phase.",
 		verificationPrompt:   "Resume this webhook task. Run go test -v ./... and fix the implementation until all tests pass. Do not weaken or remove the benchmark tests.",
 	},
+	"jobqueue": {
+		name:                 "jobqueue",
+		implementationPrompt: "This is a self-contained Go Git fixture with a multi-file in-memory queue. Check only its root AGENTS.md if present; do not search parent directories. Implement expired-lease recovery in queue.go and recovery.go. At the exact lease deadline a lease is expired; return unexpired and terminal jobs unchanged. Requeue an expired job if Attempts is below MaxAttempts without incrementing Attempts; mark an expired job dead when attempts are exhausted. Clear LeaseUntil, preserve FIFO result order, keep transitions atomic under concurrent recovery, and honor context cancellation. Do not change tests or unrelated behavior. Do not run tests in this phase.",
+		verificationPrompt:   "Resume the job queue recovery task. Run `go test -v ./...`; fix the implementation if any benchmark-owned tests fail, without changing or weakening tests. Recheck that recovery is idempotent and only changes expired leased jobs.",
+	},
 }
 
 type pairedPolicy struct {
@@ -68,6 +73,7 @@ type pairedPolicy struct {
 	toolSchema       bool
 	replayCompaction bool
 	tasks            []task
+	wholeTimeout     time.Duration
 }
 
 func runOutputCapExperiment(repo, out string, repetitions int, phaseTimeout time.Duration) int {
@@ -92,8 +98,17 @@ func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeo
 	return runPairedPolicyExperiment(repo, out, repetitions, phaseTimeout, pairedPolicy{
 		resultPrefix: "replay-compaction", name: "Large Bash result context replay: current vs compact captured result",
 		currentMode: "replay-compaction-current", treatmentEngine: "pk-compact-replayed-output", treatmentMode: "compact-replayed-shell-output",
-		replayCompaction: true, tasks: tasks,
+		replayCompaction: true, tasks: tasks, wholeTimeout: replayWholeTimeout(tasks),
 	})
+}
+
+func replayWholeTimeout(selected []task) time.Duration {
+	for _, current := range selected {
+		if current.name == "jobqueue" {
+			return 20 * time.Minute
+		}
+	}
+	return 0
 }
 
 func selectReplayTasks(selection string) ([]task, error) {
@@ -113,7 +128,7 @@ func selectReplayTasks(selection string) ([]task, error) {
 		}
 		current, ok := replayTaskSelection[name]
 		if !ok {
-			return nil, fmt.Errorf("unknown replay task %q (available: clamp, eventmerge, routematch, webhook)", name)
+			return nil, fmt.Errorf("unknown replay task %q (available: clamp, eventmerge, routematch, webhook, jobqueue)", name)
 		}
 		selected = append(selected, current)
 		seen[name] = struct{}{}
@@ -146,6 +161,9 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 	wholeTimeout := 15 * time.Minute
 	if repetitions == 2 {
 		wholeTimeout = 30 * time.Minute
+	}
+	if policy.wholeTimeout > 0 {
+		wholeTimeout = policy.wholeTimeout
 	}
 	ctx, cancel := context.WithTimeout(processContext, wholeTimeout)
 	defer cancel()
@@ -199,7 +217,7 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 			sourceTasks = policy.tasks
 		}
 		tasks := append([]task(nil), sourceTasks...)
-		if rep%2 == 0 {
+		if rep%2 == 0 && len(tasks) > 1 {
 			tasks[0], tasks[1] = tasks[1], tasks[0]
 		}
 		engines := []struct{ name, mode string }{{"pk-current", policy.currentMode}, {policy.treatmentEngine, policy.treatmentMode}}
