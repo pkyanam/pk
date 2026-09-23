@@ -267,6 +267,7 @@ func (m Manager) artifacts(ctx context.Context, store *localfile.Store, sessions
 	paths = append(paths, contextSnapshotPath(sessionsDir, id))
 	paths = append(paths, contextUsagePath(sessionsDir, id))
 	paths = append(paths, contextCheckpointPath(sessionsDir, id))
+	paths = append(paths, contextCompactionUsagePath(sessionsDir, id))
 	paths = append(paths, outputCompactionPath(operationDir, id))
 	resume, err := store.Resume(ctx, session.ID(id))
 	if err != nil {
@@ -612,7 +613,7 @@ func validManagedPath(sessionID, rel string) bool {
 	}
 	sum := sha256.Sum256([]byte(sessionID))
 	digest := hex.EncodeToString(sum[:])
-	if rel == digest+".context.json" || rel == digest+".context-usage.json" || rel == digest+".context-checkpoint.json" || rel == filepath.Join("operations", "output-compaction", digest) || rel == filepath.Join("presentation", digest) {
+	if rel == digest+".context.json" || rel == digest+".context-usage.json" || rel == digest+".context-checkpoint.json" || rel == digest+".context-compaction-usage.json" || rel == filepath.Join("operations", "output-compaction", digest) || rel == filepath.Join("presentation", digest) {
 		return true
 	}
 	if rel == filepath.Join("pdf-pages", digest) || rel == filepath.Join("inline-images", digest) {
@@ -1108,6 +1109,11 @@ func contextUsagePath(dir, id string) string {
 func contextCheckpointPath(dir, id string) string {
 	sum := sha256.Sum256([]byte(id))
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".context-checkpoint.json")
+}
+
+func contextCompactionUsagePath(dir, id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return filepath.Join(dir, hex.EncodeToString(sum[:])+".context-compaction-usage.json")
 }
 
 func outputCompactionPath(operationDir, id string) string {

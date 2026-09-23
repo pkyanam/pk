@@ -265,6 +265,10 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if err := os.WriteFile(checkpoint, []byte(`{"version":1,"summary":"preserved task constraints"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	summaryUsage := contextCompactionUsagePath(sessionDir, id)
+	if err := os.WriteFile(summaryUsage, []byte(`{"attempts":2,"input_tokens":123}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	pageDir := attachments.PromptPDFPageDir(sessionDir, id, "input-with-pdf")
 	if err := os.MkdirAll(pageDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -306,7 +310,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if len(result) != 1 || !result[0].OK {
 		t.Fatalf("archive result: %+v", result)
 	}
-	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, contextUsage, checkpoint, compactionPath, capture, pagePath} {
+	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, contextUsage, checkpoint, summaryUsage, compactionPath, capture, pagePath} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Errorf("live artifact still exists at %s (err=%v)", path, err)
 		}
@@ -328,6 +332,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 		contextPath:    "stable",
 		contextUsage:   `"total_bytes":123`,
 		checkpoint:     "preserved task constraints",
+		summaryUsage:   `"input_tokens":123`,
 		compactionPath: "summary",
 		capture:        "complete output",
 		pagePath:       "rendered page",

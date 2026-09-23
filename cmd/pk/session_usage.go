@@ -22,14 +22,15 @@ type sessionUsageCoverage struct {
 }
 
 type sessionUsageSummary struct {
-	SessionID           string                     `json:"session_id"`
-	ResponseCount       int                        `json:"response_count"`
-	InputTokens         *int64                     `json:"input_tokens"`
-	OutputTokens        *int64                     `json:"output_tokens"`
-	CachedInputTokens   *int64                     `json:"cached_input_tokens"`
-	UncachedInputTokens *int64                     `json:"uncached_input_tokens"`
-	Coverage            sessionUsageCoverage       `json:"coverage"`
-	Context             *runner.ContextUsageRecord `json:"context,omitempty"`
+	SessionID           string                         `json:"session_id"`
+	ResponseCount       int                            `json:"response_count"`
+	InputTokens         *int64                         `json:"input_tokens"`
+	OutputTokens        *int64                         `json:"output_tokens"`
+	CachedInputTokens   *int64                         `json:"cached_input_tokens"`
+	UncachedInputTokens *int64                         `json:"uncached_input_tokens"`
+	Coverage            sessionUsageCoverage           `json:"coverage"`
+	Context             *runner.ContextUsageRecord     `json:"context,omitempty"`
+	HistoryCompaction   *runner.HistoryCompactionUsage `json:"history_compaction_usage,omitempty"`
 }
 
 func readSessionUsage(ctx context.Context, store *localfile.Store, id string, metadataDirs ...string) (sessionUsageSummary, error) {
@@ -99,6 +100,10 @@ func readSessionUsage(ctx context.Context, store *localfile.Store, id string, me
 		contextUsage, available, contextErr := runner.LoadContextUsage(ctx, metadataDirs[0], "", id)
 		if contextErr == nil && available {
 			summary.Context = &contextUsage
+		}
+		compactionUsage, compactionAvailable, compactionErr := runner.LoadHistoryCompactionUsage(ctx, metadataDirs[0], id)
+		if compactionErr == nil && compactionAvailable {
+			summary.HistoryCompaction = &compactionUsage
 		}
 	}
 	return summary, nil
