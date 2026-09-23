@@ -1270,6 +1270,39 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("[object Object]")
   })
 
+  test("subagent lifecycle and final output keep the parent turn active until turn_finished", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", capabilities: ["steer"] } }))
+    await act(async () => { await setup.mockInput.typeText("delegate a file check") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => {
+      fake.emit({ version: 1, type: "subagent", payload: { type: "subagent", child_id: "child-a1b2c3", sequence: 1, state: "running", text: "Child started" } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "assistant", child_id: "child-a1b2c3", sequence: 2, phase: "commentary", text: "Checking the file now." } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "assistant", child_id: "child-a1b2c3", sequence: 3, phase: "final_answer", text: "The file is valid." } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "subagent", child_id: "child-a1b2c3", sequence: 4, state: "completed", text: "The file is valid." } })
+    })
+    let frame = await setup.waitForFrame((value) => value.includes("The file is valid."))
+    expect(frame).toContain("Waiting for model")
+    expect(frame).toContain("Checking the file now.")
+
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "assistant", payload: { text: "The delegated check passed." } }))
+    await setup.flush()
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("The delegated check passed.")
+    expect(frame).toContain("Waiting for model")
+    expect(frame).not.toContain("Ready · cache")
+
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+    frame = await setup.waitForFrame((value) => value.includes("Ready · cache"))
+    expect(frame).toContain("The delegated check passed.")
+  })
+
   test("plugin command catalog exposes namespaced descriptions and selecting inserts a command", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })

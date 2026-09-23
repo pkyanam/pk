@@ -44,7 +44,7 @@ Tasks have durable output and can be attached to, steered, canceled, or resumed.
 
 The default model is `gpt-6-luna` with `medium` reasoning effort. Change it with `pk config set model MODEL` and `pk config set effort EFFORT`.
 
-pk builds on Unreal Agent's asynchronous tool coordinator and keeps full shell captures while bounding the result text sent back to the model. Prompt caching is provider-controlled; reported counters are actual provider usage, and a cache hit is never guaranteed. A small paired coding-task pilot is documented in [benchmark findings](docs/benchmark-findings.md); it is exploratory and does not establish a general performance advantage.
+pk builds on Unreal Agent's asynchronous tool coordinator and keeps full shell captures while bounding the result text sent back to the model. Prompt caching is provider-controlled; reported counters are actual provider usage, and a cache hit is never guaranteed. See the [verified runtime foundation](docs/unreal-foundation-audit.md). A small paired coding-task pilot is documented in [benchmark findings](docs/benchmark-findings.md); it is exploratory and does not establish a general performance advantage.
 
 **Learn more:** [Getting started](docs/getting-started.md) · [Providers](docs/providers.md) · [Available tools](docs/toolbelt.md) · [MCP](docs/mcp.md) · [ACP](docs/acp.md) · [Validation](docs/validation.md)
 
