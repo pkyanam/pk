@@ -68,11 +68,16 @@ type rpcServer struct {
 	steeringEnabled     bool
 	session             string
 	activeCancel        context.CancelFunc
+	releaseCancel       context.CancelFunc
+	releaseDone         chan struct{}
+	releaseActive       bool
+	reloadPrepared      bool
 	activeInputs        chan runner.Input
 	pendingSteers       map[string]func(error)
 	active              bool
 	quit                bool
 	attachedTask        string
+	taskFollowRequest   string
 	taskFollowCancel    context.CancelFunc
 	pluginPaths         []string
 	requestTypes        map[string]string
@@ -80,6 +85,7 @@ type rpcServer struct {
 	loadAttachments     func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
 	prepareAdapter      func(context.Context, bool, string) (*codexAdapter, error)
 	clipboardProvider   clipboard.Provider
+	runReleaseCommand   func(context.Context, []string, io.Writer, io.Writer) int
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -103,6 +109,138 @@ func (s *rpcServer) rejectSteer(requestID, message string) {
 	sessionID := s.session
 	s.mu.Unlock()
 	_ = s.emit(requestID, "input_rejected", map[string]any{"input_id": requestID, "session_id": sessionID, "message": message})
+}
+
+func (s *rpcServer) startReleaseOperation(requestID, operation, sourcePath string) {
+	if operation == "update" && strings.TrimSpace(sourcePath) != "" {
+		resolved, err := filepath.Abs(strings.TrimSpace(sourcePath))
+		if err != nil {
+			_ = s.emit(requestID, "error", map[string]any{"message": "resolve update source path: " + err.Error(), "recoverable": true})
+			return
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			_ = s.emit(requestID, "error", map[string]any{"message": "update source must be an existing directory", "recoverable": true})
+			return
+		}
+		sourcePath = resolved
+	}
+	s.mu.Lock()
+	if !s.started {
+		s.mu.Unlock()
+		_ = s.emit(requestID, "error", map[string]any{"message": "send start before updating", "recoverable": true})
+		return
+	}
+	if s.active || s.releaseActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared {
+		s.mu.Unlock()
+		_ = s.emit(requestID, "error", map[string]any{"message": "update and rollback require an idle session with no attached task", "recoverable": true})
+		return
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	done := make(chan struct{})
+	s.releaseActive = true
+	s.releaseCancel = cancel
+	s.releaseDone = done
+	s.mu.Unlock()
+	_ = s.emit(requestID, operation+"_started", map[string]any{"source_path": sourcePath})
+	progress := "Preparing the update; validation and build stages will appear as they run."
+	if operation == "rollback" {
+		progress = "Restoring the previous managed release."
+	}
+	_ = s.emit(requestID, operation+"_progress", map[string]any{"text": progress})
+	go func() {
+		writer := &rpcReleaseProgressWriter{server: s, requestID: requestID, eventType: operation + "_progress"}
+		args := []string{operation}
+		if operation == "update" && sourcePath != "" {
+			args = append(args, "--source", sourcePath)
+		}
+		runCommand := s.runReleaseCommand
+		if runCommand == nil {
+			runCommand = runUpdateCommand
+		}
+		var code int
+		if operation == "update" && s.runReleaseCommand == nil {
+			code = runUpdateWithProgress(ctx, args, writer, writer, func(stage string) {
+				_ = s.emit(requestID, "update_progress", map[string]any{"stage": stage, "text": updateStageMessage(stage)})
+			})
+		} else {
+			code = runCommand(ctx, args, writer, writer)
+		}
+		message := strings.TrimSpace(writer.String())
+		if message == "" {
+			if code == 0 {
+				message = "Operation completed."
+			} else if ctx.Err() != nil {
+				message = "Operation canceled."
+			} else {
+				message = "Operation failed; see progress output for details."
+			}
+		}
+		s.mu.Lock()
+		s.releaseActive = false
+		s.releaseCancel = nil
+		s.mu.Unlock()
+		_ = s.emit(requestID, operation+"_finished", map[string]any{"success": code == 0, "cancelled": ctx.Err() != nil, "exit_code": code, "message": message})
+		close(done)
+	}()
+}
+
+func updateStageMessage(stage string) string {
+	messages := map[string]string{
+		"source_validate":  "Validating the selected pk source.",
+		"clone":            "Cloning the official pk source into an isolated checkout.",
+		"resolve_revision": "Resolving the requested pk revision.",
+		"copy":             "Copying source into an isolated build directory.",
+		"test":             "Running Go tests.",
+		"dependencies":     "Installing production UI dependencies.",
+		"ui_validate":      "Checking and testing the UI.",
+		"build":            "Building the release artifacts.",
+		"stage":            "Publishing the staged release.",
+		"activate":         "Activating the release and updating the stable launcher.",
+	}
+	if message := messages[stage]; message != "" {
+		return message
+	}
+	return "Updating pk."
+}
+
+type rpcReleaseProgressWriter struct {
+	mu        sync.Mutex
+	server    *rpcServer
+	requestID string
+	eventType string
+	text      strings.Builder
+}
+
+func (w *rpcReleaseProgressWriter) Write(data []byte) (int, error) {
+	const maxOutput = 16 << 10
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.text.Len() < maxOutput {
+		remaining := maxOutput - w.text.Len()
+		chunk := data
+		if len(chunk) > remaining {
+			chunk = chunk[:remaining]
+		}
+		w.text.Write(chunk)
+	}
+	if len(data) > 0 {
+		const eventChunkLimit = 4096
+		chunk := data
+		truncated := false
+		if len(chunk) > eventChunkLimit {
+			chunk = chunk[:eventChunkLimit]
+			truncated = true
+		}
+		_ = w.server.emit(w.requestID, w.eventType, map[string]any{"text": string(chunk), "truncated": truncated})
+	}
+	return len(data), nil
+}
+
+func (w *rpcReleaseProgressWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return strings.TrimSpace(w.text.String())
 }
 
 func (s *rpcServer) serve() error {
@@ -151,6 +289,15 @@ func (s *rpcServer) serve() error {
 	if s.activeCancel != nil {
 		s.activeCancel()
 		s.completeTurn(<-finished)
+	}
+	s.mu.Lock()
+	releaseCancel, releaseDone := s.releaseCancel, s.releaseDone
+	s.mu.Unlock()
+	if releaseCancel != nil {
+		releaseCancel()
+	}
+	if releaseDone != nil {
+		<-releaseDone
 	}
 	if s.taskFollowCancel != nil {
 		s.taskFollowCancel()
@@ -299,6 +446,16 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		if s.active {
 			s.mu.Unlock()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "a turn is already running", "recoverable": true})
+			return
+		}
+		if s.reloadPrepared {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "reload is being prepared", "recoverable": true})
+			return
+		}
+		if s.releaseActive {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "an update or rollback is running", "recoverable": true})
 			return
 		}
 		workspace, sessionID := s.opts.Workspace, s.session
@@ -498,6 +655,58 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			cancel()
 		}
 		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "cancel_requested": active})
+	case "update":
+		sourcePath := get("source_path")
+		s.startReleaseOperation(msg.ID, "update", sourcePath)
+	case "rollback":
+		s.startReleaseOperation(msg.ID, "rollback", "")
+	case "update_cancel":
+		s.mu.Lock()
+		cancel, active := s.releaseCancel, s.releaseActive
+		s.mu.Unlock()
+		if !active || cancel == nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "no update or rollback is running", "recoverable": true})
+			return
+		}
+		cancel()
+		_ = s.emit(msg.ID, "update_cancel_requested", map[string]any{"operation": "release"})
+	case "reload":
+		s.mu.Lock()
+		busy := s.active || s.releaseActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared
+		handoff := reloadHandoff{Workspace: s.opts.Workspace, SessionID: s.session, Model: s.opts.Model, Effort: s.opts.Effort}
+		started := s.started
+		if started && !busy {
+			s.reloadPrepared = true // reserve the idle lifecycle while the handoff is written
+		}
+		s.mu.Unlock()
+		if !started {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before reloading", "recoverable": true})
+			return
+		}
+		if busy {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "reload requires an idle session with no attached task", "recoverable": true})
+			return
+		}
+		if err := writeReloadHandoff(handoff); err != nil {
+			s.mu.Lock()
+			s.reloadPrepared = false
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "reload_ready", map[string]any{"session_id": handoff.SessionID})
+	case "reload_exit":
+		s.mu.Lock()
+		prepared := s.reloadPrepared
+		if prepared {
+			s.quit = true
+		}
+		s.mu.Unlock()
+		if !prepared {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "reload handoff is not prepared", "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "reload_exit", map[string]any{"ready": true})
 	case "steer":
 		text := get("text")
 		if strings.TrimSpace(text) == "" {
@@ -763,22 +972,49 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "task_id is required", "recoverable": true})
 			return
 		}
+		s.mu.Lock()
+		blocked := s.active || s.releaseActive || s.reloadPrepared
+		previousCancel := s.taskFollowCancel
+		s.mu.Unlock()
+		if blocked {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot attach a task while another foreground operation is active", "recoverable": true})
+			return
+		}
 		store := tasks.Store{Root: filepath.Join(pkHome(), "tasks")}
 		task, err := store.Get(id)
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
-		if s.taskFollowCancel != nil {
-			s.taskFollowCancel()
-		}
 		followCtx, cancel := context.WithCancel(s.ctx)
+		s.mu.Lock()
+		if s.active || s.releaseActive || s.reloadPrepared {
+			s.mu.Unlock()
+			cancel()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "cannot attach a task while another foreground operation is active", "recoverable": true})
+			return
+		}
+		previousCancel = s.taskFollowCancel
 		s.taskFollowCancel = cancel
 		s.attachedTask = id
+		s.taskFollowRequest = msg.ID
+		s.mu.Unlock()
+		if previousCancel != nil {
+			previousCancel()
+		}
 		_ = s.emit(msg.ID, "task_attached", taskPayload(task))
 		go func() {
 			writer := taskOutputWriter{server: s, requestID: msg.ID, taskID: id}
 			_, followErr := store.Follow(followCtx, id, 0, writer)
+			defer func() {
+				s.mu.Lock()
+				if s.taskFollowRequest == msg.ID {
+					s.taskFollowCancel = nil
+					s.taskFollowRequest = ""
+					s.attachedTask = ""
+				}
+				s.mu.Unlock()
+			}()
 			if errors.Is(followErr, context.Canceled) {
 				_ = s.emit(msg.ID, "task_detached", map[string]any{"task_id": id})
 				return
@@ -831,15 +1067,18 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "detach":
 		s.mu.Lock()
 		active, sessionID := s.active, s.session
-		s.mu.Unlock()
 		if active {
+			s.mu.Unlock()
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "cancel the active turn before detaching", "recoverable": true})
 			return
 		}
-		if s.taskFollowCancel != nil {
-			s.taskFollowCancel()
-			s.taskFollowCancel = nil
-			s.attachedTask = ""
+		followCancel := s.taskFollowCancel
+		s.taskFollowCancel = nil
+		s.taskFollowRequest = ""
+		s.attachedTask = ""
+		s.mu.Unlock()
+		if followCancel != nil {
+			followCancel()
 		}
 		_ = s.emit(msg.ID, "detached", map[string]any{"session_id": sessionID})
 	case "set_model":
