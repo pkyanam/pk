@@ -250,3 +250,12 @@ will do.
 - Open issues or limits:
 - Next:
 ```
+
+### 2026-09-23 01:18 EDT — skills/plugins checkpoint and protocol scope
+
+- Installed paired backend/OpenTUI from committed `be8b59c`, built from a clean archive to exclude in-flight updater and steering work. `/skills` discovers the saved session catalog, including bundled pk; `/plugins` manages explicit manifests for new sessions. Activity/Ready/cache is now muted directly above the composer, with the top-right cleared.
+- Evidence: isolated full `go test -race ./...`, `go vet ./...`, Go build; UI typecheck, 45 tests/200 assertions and bundle build all passed. Installed RPC smoke verified bundled pk catalog and empty plugin list with a temporary PK_HOME. Existing user processes were left running.
+- User explicitly requests MCP and ACP and completion ideally by 08:00 EDT. Separate Luna agents own initial MCP client and ACP server adapters with official protocol research and fixture tests. Protocol support is not installed yet.
+- AgentMail worker has read-only authenticated smoke evidence from its owner; root requested stricter output bounds and corrected TUI instructions before commit. No mail mutations.
+- Updater staging correctly refused a release while the new steering-boundary regression failed. Both implementations remain in flight and are excluded from this installed checkpoint.
+- Next: complete steering integration and updater/restart, integrate MCP/ACP, revalidate native input and long-session stability, then record/edit the truthful Cmux/Cap demo. Benchmark superiority remains unproven.
