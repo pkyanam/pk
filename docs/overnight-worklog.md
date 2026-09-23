@@ -431,3 +431,8 @@ gates or imply that every backlog item is complete.
 ### 2026-09-23 08:45 UTC — scope audit and ImageGen gap
 - Auditing actual startup exposed ImageGen as one-shot only, contrary to intended TUI tool availability. Luna backend/UI agents are implementing explicit persisted opt-in plus a keyboard/mouse setting; separate image driver will remain distinct from chat model and disabled by default.
 - Native Finder drag attempt produced no queued file; coordinate interaction did not establish a successful cross-window drop. Kept native drag/drop unverified rather than inferring behavior from parser tests.
+
+### 2026-09-23 08:52 UTC — real screenshot and async runtime proof
+- README now uses the reviewed real coding-demo frame (e2f6cc7), pushed to main. Concept assets remain labeled separately.
+- Added a barrier-controlled runtime regression proving two Bash operations overlap, running events are emitted before release, and the model receives the first result with a still-running placeholder for the second. Final request contains both outputs; model calls remain serialized. Luna reviewer ran ten race iterations; root independently reran successfully. This is behavioral evidence, not a speed or token-savings benchmark.
+- MCP form's six focused UI tests pass; installed f6d5783 already has context-specific hints and Enter saves only on the focused Save action.
