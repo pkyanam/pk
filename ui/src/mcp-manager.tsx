@@ -25,7 +25,7 @@ export type MCPManagerProps = {
 type FormMode = "stdio" | "http"
 type AuthMode = "anonymous" | "oauth" | "bearer_env" | "header_env" | "bearer_secret" | "header_secret"
 type RequestKind = "list" | "add" | "remove" | "login" | "logout"
-type Pending = { kind: RequestKind; id?: string }
+type Pending = { kind: RequestKind; id?: string; preservedNotice?: string }
 
 const colors = { panel: "#181b1e", raised: "#202428", line: "#2b3035", text: "#e5e8eb", muted: "#858e96", dim: "#5d666e", accent: "#8ab4a1", amber: "#d3ac72", red: "#d88787" }
 const authModes: AuthMode[] = ["anonymous", "oauth", "bearer_env", "header_env", "bearer_secret", "header_secret"]
@@ -76,27 +76,28 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
   const opened = useRef(false)
   const rows = selectedTab === "servers" ? servers : tools
   const visibleRows = Math.max(3, Math.min(10, Math.floor((renderer.height - 18) / 2)))
+  const saveIndex = mode === "stdio" ? 5 : 6
+  const cancelIndex = saveIndex + 1
   const formOrder = mode === "stdio"
-    ? [0, 1, 2, 3, 4, 5]
-    : [0, 1, 2, 3, ...((auth === "header_env" || auth === "header_secret") ? [4] : []), ...((auth === "bearer_env" || auth === "header_env" || auth === "bearer_secret" || auth === "header_secret") ? [5] : []), 6]
-  const saveIndex = formOrder[formOrder.length - 1]!
+    ? [0, 1, 2, 3, 4, saveIndex, cancelIndex]
+    : [0, 1, 2, 3, ...((auth === "header_env" || auth === "header_secret") ? [4] : []), ...((auth === "bearer_env" || auth === "header_env" || auth === "bearer_secret" || auth === "header_secret") ? [5] : []), saveIndex, cancelIndex]
   const advanceField = () => {
     const current = formOrder.indexOf(fieldIndex)
     setFieldIndex(formOrder[((current < 0 ? 0 : current) + 1) % formOrder.length]!)
   }
 
-  const request = (kind: RequestKind, type: string, payload?: Record<string, unknown>) => {
+  const request = (kind: RequestKind, type: string, payload?: Record<string, unknown>, preservedNotice?: string) => {
     const requestID = send(type, payload)
     if (!requestID) { setNotice("pk is disconnected; this request was not sent."); return }
-    pending.current.set(requestID, { kind, id: typeof payload?.id === "string" ? payload.id : undefined })
+    pending.current.set(requestID, { kind, id: typeof payload?.id === "string" ? payload.id : undefined, preservedNotice })
     setBusy(true)
-    setNotice(kind === "list" ? "Loading saved MCP configuration…" : kind === "add" ? "Saving server configuration…" : kind === "remove" ? "Removing server configuration…" : kind === "login" ? "Starting browser authorization…" : "Clearing local authorization…")
+    if (!preservedNotice) setNotice(kind === "list" ? "Loading saved MCP configuration…" : kind === "add" ? "Saving server configuration…" : kind === "remove" ? "Removing server configuration…" : kind === "login" ? "Starting browser authorization…" : "Clearing local authorization…")
   }
 
-  const refresh = () => request("list", "mcp_list")
+  const refresh = (preservedNotice?: string) => request("list", "mcp_list", undefined, preservedNotice)
 
   useEffect(() => {
-    if (!open) { opened.current = false; setSecret(""); setFormOpen(false); setRemoveID(""); return }
+    if (!open) { opened.current = false; setSecret(""); setFormOpen(false); setRemoveID(""); setNotice(""); return }
     if (opened.current) return
     opened.current = true
     refresh()
@@ -110,7 +111,8 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     if (event.type === "error") {
       pending.current.delete(event.id)
       setBusy(false)
-      setNotice(String(data.message ?? "MCP operation failed."))
+      const error = String(data.message ?? "MCP operation failed.")
+      setNotice(current.preservedNotice ? `${current.preservedNotice} · Catalog refresh failed: ${error}` : error)
       return
     }
     if (event.type === "mcp_catalog" || event.type === "mcp_updated") {
@@ -122,7 +124,7 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
       setSavedSessionTools(data.saved_session_tools === true)
       setSelectedIndex((index) => Math.max(0, Math.min(index, Math.max(0, nextServers.length - 1))))
       setBusy(false)
-      setNotice(event.type === "mcp_updated" && data.next_session_only ? "Configuration saved · use /new to activate it in a session." : "")
+      setNotice(current.preservedNotice ?? (event.type === "mcp_updated" && data.next_session_only ? "Configuration saved · use /new to activate it in a session." : ""))
       return
     }
     if (event.type === "mcp_auth_status") {
@@ -130,8 +132,13 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
       if (status === "authorizing") { setNotice("Browser authorization is waiting for your consent."); return }
       pending.current.delete(event.id)
       setBusy(false)
-      setNotice(status === "authenticated" ? "Authorization complete." : status === "needs_login" ? "Local sign-in cleared." : status || "Authorization updated.")
-      refresh()
+      const outcome = status === "authenticated"
+        ? "Signed in; new connections can use this account."
+        : status === "needs_login" && data.local_session_cleared === true
+          ? "Signed out for new connections; active runs may retain access until stopped."
+          : status === "needs_login" ? "Local sign-in cleared." : status || "Authorization updated."
+      setNotice(outcome)
+      refresh(outcome)
     }
   }, [event, open])
 
@@ -197,8 +204,7 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
       }
       if (name === "return") {
         if (fieldIndex === saveIndex) addServer()
-        else if (fieldIndex === 0) setMode((value) => value === "stdio" ? "http" : "stdio")
-        else if (fieldIndex === 3 && mode === "http") setAuth((value) => authModes[(authModes.indexOf(value) + 1) % authModes.length]!)
+        else if (fieldIndex === cancelIndex) clearForm()
         else advanceField()
         return
       }
@@ -232,7 +238,7 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
     <box style={{ flexDirection: "row", justifyContent: "space-between" }}><text fg={colors.text} content="MCP connections" /><text fg={colors.dim} content="Esc close" /></box>
     <text fg={colors.muted} content="Changes apply to new sessions." />
     {formOpen ? <>
-      <text fg={colors.accent} content={fieldIndex === saveIndex ? "Enter or click Save · Esc cancels" : fieldIndex === 0 || (mode === "http" && fieldIndex === 3) ? "←/→ or Enter change · Tab next · Esc cancel" : "Type value · Enter/Tab next · Esc cancel"} />
+      <text fg={colors.accent} content={fieldIndex === saveIndex ? "Enter saves · click Save · Tab to Cancel" : fieldIndex === cancelIndex ? "Enter or click Cancel · Esc cancels" : fieldIndex === 0 || (mode === "http" && fieldIndex === 3) ? "←/→ change · Tab/Enter next · Esc cancels" : "Type value · Tab/Enter next · Esc cancels"} />
       {formError && <text fg={colors.red} content={formError} />}
       <text onMouseDown={(event) => leftClick(event, () => setFieldIndex(0))} fg={fieldIndex === 0 ? colors.accent : colors.muted} content={`${fieldIndex === 0 ? "› " : "  "}Connection type: ${mode === "stdio" ? "Local stdio" : "Remote Streamable HTTP"} · ←/→ change`} />
       {field("Server ID", id, setID, 1, "lowercase letters, digits, . _ -")}
@@ -255,7 +261,7 @@ export function MCPManager({ open, onClose, send, event }: MCPManagerProps) {
       </>}
       <box style={{ flexDirection: "row", gap: 2 }}>
         <box id="mcp-save" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(saveIndex); addServer() })} style={{ backgroundColor: fieldIndex === saveIndex ? colors.accent : colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={fieldIndex === saveIndex ? colors.panel : colors.accent} content="Save server" /></box>
-        <box onMouseDown={(event) => leftClick(event, clearForm)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.muted} content="Cancel · Esc" /></box>
+        <box id="mcp-cancel" focusable onMouseDown={(event) => leftClick(event, () => { setFieldIndex(cancelIndex); clearForm() })} style={{ backgroundColor: fieldIndex === cancelIndex ? colors.accent : colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={fieldIndex === cancelIndex ? colors.panel : colors.muted} content="Cancel · Esc" /></box>
       </box>
     </> : <>
       <box style={{ flexDirection: "row", gap: 2 }}>

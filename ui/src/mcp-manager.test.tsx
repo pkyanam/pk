@@ -56,6 +56,37 @@ describe("MCPManager", () => {
     await act(async () => setup.mockInput.pressEscape())
   })
 
+  test("login and logout outcomes remain visible through catalog refresh", async () => {
+    const setup = await setupPanel()
+    const initialList = sent.find((item) => item.type === "mcp_list")!
+    const oauthServer = { id: "calendar", transport: "http", url: "https://mcp.example.test/api", auth_mode: "oauth", auth_status: "needs_login", command: "", arguments_count: 0, environment_keys: [] }
+    emit(initialList.id, "mcp_catalog", { servers: [oauthServer], tools: [] })
+    await setup.waitForFrame((frame) => frame.includes("calendar · Remote HTTP"))
+
+    await act(async () => setup.mockInput.pressKey("l"))
+    const login = sent.find((item) => item.type === "mcp_login")!
+    emit(login.id, "mcp_auth_status", { id: "calendar", status: "authorizing" })
+    await setup.waitForFrame((frame) => frame.includes("waiting for your consent"))
+    emit(login.id, "mcp_auth_status", { id: "calendar", status: "authenticated" })
+    const afterLogin = sent.filter((item) => item.type === "mcp_list").at(-1)!
+    await setup.waitForFrame((frame) => frame.includes("Signed in; new connections can use this account."))
+    emit(afterLogin.id, "mcp_catalog", { servers: [{ ...oauthServer, auth_status: "authenticated" }], tools: [] })
+    expect(setup.captureCharFrame()).toContain("Signed in; new connections can use this account.")
+
+    await act(async () => setup.mockInput.pressKey("o"))
+    const logout = sent.find((item) => item.type === "mcp_logout")!
+    emit(logout.id, "mcp_auth_status", { id: "calendar", status: "needs_login", local_session_cleared: true })
+    const afterLogout = sent.filter((item) => item.type === "mcp_list").at(-1)!
+    const logoutNotice = "Signed out for new connections; active runs may retain access until stopped."
+    await setup.waitForFrame((frame) => frame.includes(logoutNotice))
+    emit(afterLogout.id, "mcp_catalog", { servers: [{ ...oauthServer, auth_status: "needs_login" }], tools: [] })
+    await setup.waitForFrame((frame) => frame.includes("calendar · Remote HTTP · needs_login"))
+    expect(setup.captureCharFrame()).toContain(logoutNotice)
+    await act(async () => setup.mockInput.pressKey("r"))
+    await setup.waitForFrame((frame) => frame.includes("Loading saved MCP configuration…"))
+    expect(setup.captureCharFrame()).not.toContain(logoutNotice)
+  })
+
   test("adds a remote endpoint with a one-shot masked bearer credential", async () => {
     const setup = await setupPanel()
     const list = sent.find((item) => item.type === "mcp_list")!
@@ -149,22 +180,25 @@ describe("MCPManager", () => {
     await act(async () => setup.mockInput.pressTab()) // working directory
     await act(async () => setup.mockInput.pressTab()) // Save
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Enter or click Save · Esc cancels")
+    expect(setup.captureCharFrame()).toContain("Enter saves · click Save · Tab to Cancel")
     await act(async () => setup.mockInput.pressEnter())
     expect(sent.find((item) => item.type === "mcp_add")?.payload?.server).toEqual({ id: "local", command: "/bin/echo", args: [], env: {} })
   })
 
-  test("Enter changes connection and auth selectors, then advances to an explicit Save button", async () => {
+  test("Enter advances through selectors while arrows change them, then focuses explicit Save and Cancel controls", async () => {
     const setup = await setupPanel()
     const list = sent.find((item) => item.type === "mcp_list")!
     emit(list.id, "mcp_catalog", { servers: [], tools: [] })
     await act(async () => setup.mockInput.pressKey("a"))
     await setup.flush()
-    await act(async () => setup.mockInput.pressEnter())
+    await act(async () => setup.mockInput.pressKey("ARROW_RIGHT"))
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Connection type: Remote Streamable HTTP")
-    expect(setup.captureCharFrame()).toContain("←/→ or Enter change")
-    await act(async () => setup.mockInput.pressTab()) // ID
+    expect(setup.captureCharFrame()).toContain("←/→ change · Tab/Enter next · Esc cancels")
+    await act(async () => setup.mockInput.pressEnter()) // ID, without changing connection type
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("› Server ID")
+    expect(setup.captureCharFrame()).toContain("Connection type: Remote Streamable HTTP")
     await setup.flush()
     await act(async () => { await setup.mockInput.typeText("remote") })
     await setup.flush()
@@ -176,12 +210,12 @@ describe("MCPManager", () => {
     await act(async () => setup.mockInput.pressEnter()) // authentication
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("› Authentication: No auth")
-    await act(async () => setup.mockInput.pressEnter()) // OAuth
+    await act(async () => setup.mockInput.pressKey("ARROW_RIGHT")) // OAuth
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Authentication: OAuth")
-    await act(async () => setup.mockInput.pressTab()) // Save
+    await act(async () => setup.mockInput.pressEnter()) // Save
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Enter or click Save · Esc cancels")
+    expect(setup.captureCharFrame()).toContain("Enter saves · click Save · Tab to Cancel")
     expect((setup.renderer.root as any).findDescendantById("mcp-save")).toBeDefined()
     await act(async () => setup.mockInput.pressEnter())
     expect(sent.find((item) => item.type === "mcp_add")?.payload?.server).toEqual({ id: "remote", url: "https://mcp.example.test/api", auth: { mode: "oauth" } })
@@ -196,13 +230,21 @@ describe("MCPManager", () => {
     await setup.flush()
     for (let index = 0; index < 5; index++) await act(async () => setup.mockInput.pressTab())
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Enter or click Save · Esc cancels")
+    expect(setup.captureCharFrame()).toContain("Enter saves · click Save · Tab to Cancel")
     await act(async () => setup.mockInput.pressEnter())
     await setup.flush()
     expect(sent.some((item) => item.type === "mcp_add")).toBe(false)
     expect(setup.captureCharFrame()).toContain("Save server")
     expect(setup.captureCharFrame()).toContain("› Server ID")
     expect(setup.captureCharFrame()).toContain("Enter a server ID and executable path.")
+    for (let index = 0; index < 5; index++) await act(async () => setup.mockInput.pressTab())
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Enter or click Cancel · Esc cancels")
+    expect((setup.renderer.root as any).findDescendantById("mcp-cancel")).toBeDefined()
+    await act(async () => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Connection type:")
+    expect(sent.some((item) => item.type === "mcp_add")).toBe(false)
   })
 
   test("mouse activates Save and Cancel only with the left button", async () => {
@@ -248,7 +290,7 @@ describe("MCPManager", () => {
     await setup.waitForFrame((frame) => frame.includes("No servers configured"))
     await act(async () => setup.mockInput.pressKey("a"))
     await setup.flush()
-    await act(async () => setup.mockInput.pressEnter()) // switch to HTTP
+    await act(async () => setup.mockInput.pressKey("ARROW_RIGHT")) // switch to HTTP
     await setup.flush()
 
     let frame = setup.captureCharFrame()
