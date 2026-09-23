@@ -33,6 +33,12 @@ gates or imply that every backlog item is complete.
 
 ## Checkpoints
 
+### 23 September — context-budget audit and webhook ablation
+
+- The four-arm webhook subagent-schema experiment at `benchmarks/results/subagent-webhook-d83e97f-20260923/` passed all holdouts and child usage/action-coverage checks. The smaller dispatcher schema nevertheless increased combined input/output by 8.1% and uncached input by 16.4%; it failed the preregistered gates. Keep the direct-tool production default. One earlier setup attempt stopped before provider calls because the source hash changed during the build; the completed run used the clean `d83e97f` snapshot.
+- The requested model-limit audit found no preflight window enforcement or automatic history compaction. Existing compact mode only shortens eligible captured Bash output. Context overflow currently returns the provider error. New work separates model capacities, operational fallback budgets, token estimates, and byte composition, with explicit reserves and durable model-visible checkpoints while preserving original history.
+- The benchmark source freeze is lifted. GPT-6 Luna agents own the runtime engine, capacity resolver, CLI/RPC controls, UI, and independent recovery review. No user installation or active process was changed.
+
 ### 22 September 2026 — initial overnight handoff
 
 - `fd9633c` added the concise README and a design preview. The preview is conceptual, not a product

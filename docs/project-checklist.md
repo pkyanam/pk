@@ -143,6 +143,8 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 ### Latest reported defects and compatibility requests
 
+- [~] Resolve model context/input/output limits with provenance and explicit overrides; reserve output and compaction headroom. Add automatic, durable history checkpoints, a manual `/compact` action, and truthful budget reporting in `/usage`. Preserve the complete transcript, current instructions, recent work, and unresolved tool transactions. The existing Bash-output `compact` policy is not context-window protection; the current provider overflow path returns an error. Implementation and recovery validation are underway.
+
 - [~] Guided provider setup: searchable major-provider presets, masked key entry, live model discovery, and explicit session-bound model selection. Native Anthropic Messages and nine endpoint presets are committed; final TUI integration and release verification are in progress. Provider compatibility is fixture-tested, not a live account certification.
 - [~] Animate the launch ASCII pk wordmark with a short mint transition targeting 60 FPS, reduced-motion support, and idle renderer restoration. Component tests pass; integrated release pending.
 - [~] Label cached input in tokens and show latest input/output counts above the composer. Add a `/usage` category grid with session totals kept separate from the latest matched request. Byte composition must not masquerade as exact token attribution or context-window occupancy; unknown model capacity stays unavailable.

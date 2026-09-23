@@ -1,4 +1,4 @@
-# Next efficiency experiment: flat subagent schema on a multi-file feature
+# Flat subagent schema on a multi-file feature
 
 ## Evidence and hypothesis
 
@@ -95,3 +95,27 @@ File ownership here is a prompted coordination rule, not a sandbox. Final
 holdout correctness and child lifecycle records do not prove which process
 authored every edit. The parent intentionally integrates `handler.go`; report
 this as a delegation experiment, not a verified child-only implementation.
+
+## Results: preregistered gates not met
+
+The two-repetition Luna/low webhook run completed all four arms. Both children
+started and completed in every arm, both children had fully available usage,
+action coverage was true, the recorded model/effort was Luna/low, and every
+independent holdout passed. The archived [raw records and pinned source
+snapshot](../results/subagent-webhook-d83e97f-20260923/analysis.md) retain the
+per-arm evidence.
+
+| Pair | Five direct tools: combined input + output | Flat dispatcher: combined input + output | Token change | Wall time: direct → dispatcher |
+|---|---:|---:|---:|---:|
+| 1 | 41,784 | 52,688 | +26.1% | 58,414 → 57,494 ms |
+| 2 | 64,107 | 61,754 | −3.7% | 87,031 → 70,167 ms |
+| Total | 105,891 | 114,442 | +8.1% | 145,445 → 127,661 ms |
+
+Combined uncached input was 49,529 tokens for direct tools and 57,661 for the
+dispatcher (+16.4%). Combined response count was 31 versus 35, exceeding the
+one-response tolerance. Thus both the aggregate combined-token gate (requires
+at least 5% lower) and uncached-input/response-count gates fail. Although wall
+time was lower in both dispatcher pairs, two observations do not support a
+general latency claim. The 807-byte schema reduction is a representation-size
+measurement, not a token saving. Keep the current five-tool production schema;
+do not change defaults based on this pilot.
