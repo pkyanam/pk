@@ -1859,7 +1859,7 @@ describe("OpenTUI application", () => {
     await act(async () => { await setup.mockInput.typeText("form-only-text") })
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("MCP connections")
-    expect(setup.captureCharFrame()).toContain("or Enter change")
+    expect(setup.captureCharFrame()).toContain("←/→ change · Tab/Enter next")
     expect(setup.captureCharFrame()).not.toContain("Enter details")
     expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
     expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
