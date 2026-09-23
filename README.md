@@ -52,6 +52,6 @@ The default model is `gpt-6-luna` with `medium` reasoning effort. Change it with
 
 pk builds on Unreal Agent's asynchronous tool coordinator and can keep full local shell captures while compacting large result text sent back to the model when explicitly enabled. Prompt caching is provider-controlled; reported counters are actual provider usage, and a cache hit is never guaranteed. See the [verified runtime foundation](docs/unreal-foundation-audit.md). A small paired coding-task pilot is documented in [benchmark findings](docs/benchmark-findings.md); it is exploratory and does not establish a general performance advantage.
 
-**Learn more:** [Getting started](docs/getting-started.md) · [Install and update](docs/updates.md) · [Providers](docs/providers.md) · [Available tools](docs/toolbelt.md) · [MCP](docs/mcp.md) · [ACP](docs/acp.md) · [Validation](docs/validation.md)
+**Learn more:** [Documentation index](docs/README.md) · [Getting started](docs/getting-started.md) · [Install and update](docs/updates.md) · [Providers](docs/providers.md) · [Available tools](docs/toolbelt.md) · [MCP](docs/mcp.md) · [ACP](docs/acp.md) · [Validation](docs/validation.md)
 
 **Permissions:** Bash uses the operating-system permissions of pk. A workspace organizes files; it does not sandbox the process.
