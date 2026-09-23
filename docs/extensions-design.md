@@ -24,7 +24,7 @@ The worker's standard input and standard output are UTF-8 JSON Lines. Standard o
 
 Tool calls use `tool.execute` with the registered name, stable call ID, raw JSON arguments, and workspace path. Command calls use `command.execute` with the registered command name and text arguments. The response contains a result value or a typed error. The Go host validates IDs, declared names, JSON values, and response sizes before returning data to the agent.
 
-Requests to each worker are serialized. The runner submits a tool call as an Unreal remote-job operation, so the coordinator can report it as running while its child process executes. A per-call deadline bounds a stuck worker. Cancellation terminates that worker process; on Unix-like systems the host kills its process group, including descendants. Windows v1 currently guarantees termination of the worker executable but does not claim descendant cleanup. Other workers continue. The released protocol has no streaming progress channel.
+Requests to each worker are serialized. The runner submits a tool call as an Unreal remote-job operation, so the coordinator can report it as running while its child process executes. A per-call deadline bounds a stuck worker. Cancellation terminates that worker process; on Unix-like systems the host kills its process group, including descendants. Windows v1 currently guarantees termination of the worker executable but does not claim descendant cleanup. Other workers continue. The currently installed release has no extension-worker progress display; the implementation below is in the development tree and awaits its next release checkpoint.
 
 ## Go integration
 
@@ -42,9 +42,17 @@ The host is constructed with a caller-owned context and closed when that session
 
 The prototype uses bounded calls and durable remote-job operations. It does not implement event hooks, dynamic reload within an existing session, persistent extension state, privilege reduction, a sandbox, or automatic project-local extension loading. Repository-source discovery and managed package installation are supported; an installable candidate is selected explicitly after metadata review, and unsupported build requirements are shown without executing the candidate. Installed plugins are managed in `/plugins`; `/commands` lists namespaced commands from the session's frozen enabled-manifest set. Choosing a command inserts it into the composer, and submitting it invokes only that command with the remaining text as arguments. `/cancel` or Escape requests cancellation while it runs. Browsing candidates and listing commands do not execute plugin tools or commands. The sample worker demonstrates the actual process protocol; in-process fakes cover registration and host behavior, not the security of arbitrary executable extensions.
 
-### Pending: worker progress notifications
+### Worker progress notifications — implemented, release pending
 
-The cache/runtime agent is implementing an optional JSONL progress notification negotiated through the `tool_progress` host feature. The proposed bounds are 64 notifications per call and 4 KiB of sanitized text per notification; an asynchronous host queue may drop overflow. Existing workers remain compatible and continue to return one final response when they do not announce the feature. This is not yet verified or exposed through the user-facing RPC/TUI, so treat these limits and behavior as pending until implementation tests and integration pass.
+The host advertises `tool_progress` in `host_features` during `initialize`. A worker can then send a JSONL notification during `tool.execute`, using that request's transport ID:
+
+```json
+{"id":"request-42","method":"tool.progress","params":{"text":"Fetched 2 of 5 pages"}}
+```
+
+The in-repository Go worker helper is `extensions.ReportProgress(ctx, "Fetched 2 of 5 pages")`; a `false` return means progress was unavailable or dropped, so the worker should continue its work without it. The host sanitizes and bounds text to 4 KiB, accepts at most 64 notifications per call, and ignores notifications with stale request IDs. The host and RPC/UI relay queues are asynchronous and bounded; overflow drops updates to keep the progress callback off the worker execution path. RPC output still shares the normal UI transport. The UI shows progress only on the active tool row. These transient updates are not added to the model context or saved history. Avoid putting secrets in progress text: sanitization covers common credential patterns, not every possible secret.
+
+Workers that do not use the negotiated feature remain compatible and return their ordinary final response. Installed in `71170b9`; the extension and RPC race suites plus all 115 UI tests passed before activation.
 
 ## How to claim an advantage
 

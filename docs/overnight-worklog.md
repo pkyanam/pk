@@ -479,3 +479,8 @@ gates or imply that every backlog item is complete.
 ### 2026-09-23 — completed matched baseline
 - Luna-owned exec53227 completed once: 16 phases, eight passing holdouts, 2m15s overall. Result committed `3cac34d`; root independently verified all 331 preserved source-file hashes. pk input 43,889 (28,017 uncached), output 1,752; Unreal input 20,011, output 1,333; both 22 responses. No general savings or speed claim. Shared-machine checks and fixed ordering confound wall time.
 - Prompt/tool overhead analysis is now assigned to Luna using local captures only. Extension progress package, RPC bridge, and TUI are under integration; do not mark released yet.
+
+### 2026-09-23 09:50 UTC — negotiated plugin progress installed
+- `90a04f9` adds negotiated bounded plugin progress, worker-process correlation, asynchronous queues, common-credential/control sanitization, RPC relay and compact active-tool updates. Late/wrong-turn updates cannot revive finished rows. Full UI suite 115 tests / 522 assertions; extension and cmd/pk race suites pass, including final-result delivery from an immediately exiting worker and cancellation under progress flood.
+- Installed clean `71170b9`, release `20260923T095015.036503000Z-a250ac420c82-7bb96df1`. Local installed real-worker/fake-provider smoke is assigned to cli_v2. Existing workers remain compatible; progress is opt-in and never enters model context or saved history.
+- `/usage` read-only session accounting is in development, with partial/unavailable reporting rather than inferred zeroes. No provider/model/default policy changes.
