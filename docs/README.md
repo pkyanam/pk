@@ -18,6 +18,8 @@ Start with [getting started](getting-started.md) for installation and the TUI. U
 
 ## Develop and verify
 
+- [Development handoff](HANDOFF.md) — recovery checkpoint, self-update workflow, and remaining priorities.
+
 - [Architecture](architecture.md) and [prompt reference](prompt-reference.md) — runtime boundaries and the saved prompt/tool schema.
 - [Self-development audit](self-development-handoff-audit.md) — tested source-update boundaries and remaining validation limits.
 - [Updates](updates.md) — source builds, paired releases, reload, and rollback.
