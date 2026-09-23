@@ -29,7 +29,7 @@ The matched Luna/low pk-versus-Unreal pilot passed all eight holdout checks, but
 
 Read [benchmark findings](benchmark-findings.md), [prompt overhead](research/prompt-overhead.md), and the [work log](overnight-worklog.md) for measurements and reproducibility details. Synthetic allocation improvements are separate from model-token savings.
 
-`/usage` passed the installed localhost-provider restart/attach smoke and native Cmux rendering check. The earlier complete terminal freeze has not been reliably reproduced. Native drag/drop remains unverified; Finder file-path paste and Preview pixel paste were verified. Scanned PDF page rendering passed a real local Poppler smoke; model interpretation of those rendered pages remains a separate check. Cloudflare account OAuth and a real external ACP editor have not been exercised.
+`/usage` passed the installed localhost-provider restart/attach smoke and native Cmux rendering check. The earlier complete terminal freeze has not been reliably reproduced. Native drag/drop remains unverified; Finder file-path paste and Preview pixel paste were verified. Scanned PDF page rendering passed a real local Poppler smoke and a bounded Luna/low vision check. Cloudflare account OAuth and a real external ACP editor have not been exercised.
 
 ## Launch material
 

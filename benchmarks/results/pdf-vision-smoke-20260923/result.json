@@ -1,0 +1,14 @@
+{
+  "revision": "b5aa90b",
+  "model": "gpt-6-luna",
+  "effort": "low",
+  "purpose": "Read the image-only second page of a mixed PDF",
+  "provider_responses": 2,
+  "input_tokens": 6974,
+  "output_tokens": 169,
+  "cached_input_tokens": 1536,
+  "tool": "ViewImage",
+  "answer": "A solid red square appears against a white background.",
+  "exit_code": 0,
+  "scope": "One bounded live fixture, not general PDF accuracy or cost evidence"
+}

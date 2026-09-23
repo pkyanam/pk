@@ -115,3 +115,5 @@ Two separately exercised paths reached the model successfully:
 These are terminal-specific observations, not a guarantee for every terminal or image encoding.
 Native cross-window drag/drop remains unverified: automated attempts did not produce a queued
 file. Use `/file`, Finder paste, or `/paste` while that interaction is still being validated.
+
+A bounded live Luna/low run on installed `b5aa90b` attached a valid mixed PDF, invoked `ViewImage` on the rendered second page, and returned “A solid red square appears against a white background.” The opt-in Poppler integration test now checks visible red pixels, not only valid PNG decoding. This one fixture does not establish general PDF fidelity. [Usage record](../benchmarks/results/pdf-vision-smoke-20260923/result.json).

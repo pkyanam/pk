@@ -523,3 +523,10 @@ gates or imply that every backlog item is complete.
 
 - Downloaded the public raw GitHub `install.sh` and ran it with isolated PK_BIN_DIR/PK_LIB_DIR destinations. It built clean `3fe1908`; the resulting launcher reported that revision. The normal installation and running sessions were untouched.
 - Fixed the startup measurement PTY child to use its intended temporary workspace. Installed b5aa90b reached its ready frame in about 0.5 seconds in this small shared-machine run; RPC catalog warm median was 10.5 ms. Raw results and reproduction are in `docs/performance.md`. No model calls.
+
+### 06:46 EDT — reliability fixes and live PDF vision
+
+- `ba9cee7` fixes an unlocked subagent active-count read found by race testing; cancellation tests verify final child events drain before Close returns. `d1540d5` rotates MCP OAuth credential references on logout so stale token refreshes cannot repopulate them. Already-connected runs may retain in-memory access until they end, as documented.
+- `32f3160` memoizes transcript grouping and skips static timeline reconciliation on activity-only ticks while preserving live timers. All 124 UI tests/568 assertions pass. No end-to-end speedup percentage is claimed.
+- Installed b5aa90b passed a real Luna/low scanned-page inspection: one ViewImage call, correct red-square description, two provider responses, 6,974 input/169 output/1,536 cached input tokens. The real-renderer fixture was corrected to use exact PDF stream lengths and now asserts nonwhite expected pixels.
+- The large-output replay profile is benchmark-only. Preflight cannot prove any eligible 16KiB output in existing tasks, so no paid cohort was run merely to exercise a new setting. Production full-context default remains unchanged.
