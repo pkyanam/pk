@@ -6,4 +6,4 @@ The panel shows input, output, cached input, and uncached input tokens, plus the
 
 Totals cover the current session's durable response records. They are not an account-wide billing statement, a dollar estimate, or a measurement of separate child sessions. Reopen the panel to refresh after more responses. Older records may lack the metadata needed to distinguish explicit zero from unreported usage.
 
-This feature is under validation in the development checkout; consult the active `/help` to check whether your installed release includes it.
+Available from revision `097bab8`. Use `/reload` while idle after updating, or relaunch `pk`, to load the new interface.
