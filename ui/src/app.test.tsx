@@ -1636,6 +1636,28 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("[Docs][reference]")
   })
 
+  test("renders bold currency spans without dropping their delimiters or text", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const text = "Bitcoin (BTC) is **about $84,094 USD** right now, according to CoinDesk’s live price page. CoinMarketCap showed **$84,190**, so prices vary slightly by source and update time.\n\n[CoinDesk](https://www.coindesk.com/price/bitcoin) · [CoinMarketCap](https://coinmarketcap.com/currencies/bitcoin/)"
+    const parsed = await getTreeSitterClient().highlightOnce(text, "markdown")
+    expect(parsed.error).toBeUndefined()
+    expect(parsed.highlights?.some(([, , scope]) => scope === "markup.strong")).toBe(true)
+    expect(parsed.highlights?.some(([, , scope]) => scope === "markup.link.label")).toBe(true)
+    act(() => fake.emit({ version: 1, id: "currency-markdown", type: "assistant", payload: { text } }))
+    const frame = await setup.waitForFrame((value) => value.includes("$84,094 USD") && value.includes("$84,190"))
+    expect(frame).toContain("Bitcoin (BTC) is about")
+    expect(frame).toContain("right now, according to CoinDesk’s live price page.")
+    expect(frame).toContain("CoinMarketCap showed")
+    expect(frame).toContain("so prices vary slightly by source and update time.")
+    expect(frame).toContain("CoinDesk")
+    expect(frame).toContain("CoinMarketCap")
+    expect(frame).not.toContain("**about $84,094 USD**")
+    expect(frame).not.toContain("**$84,190**")
+  })
+
   test("keeps live activity visible through tool and model gaps until turn_finished", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })

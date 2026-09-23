@@ -139,11 +139,13 @@ const markdownStyle = SyntaxStyle.fromStyles({
   "markup.heading.1": { fg: palette.text, bold: true },
   "markup.list": { fg: palette.accent },
   "markup.link": { fg: palette.blue, underline: true },
+  "markup.link.label": { fg: palette.blue, underline: true },
   "markup.link.url": { fg: palette.blue, underline: true },
   "markup.raw": { fg: palette.accent },
   "markup.raw.block": { fg: palette.accent },
   "markup.quote": { fg: palette.muted, italic: true },
   "markup.bold": { fg: palette.text, bold: true },
+  "markup.strong": { fg: palette.text, bold: true },
   "markup.italic": { fg: palette.text, italic: true },
 })
 
