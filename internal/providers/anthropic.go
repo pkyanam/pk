@@ -163,7 +163,9 @@ func listAnthropicModels(ctx context.Context, baseURL, key string) ([]Model, err
 		}
 		var result struct {
 			Data []struct {
-				ID string `json:"id"`
+				ID             string `json:"id"`
+				MaxInputTokens *int64 `json:"max_input_tokens"`
+				MaxTokens      *int64 `json:"max_tokens"`
 			} `json:"data"`
 			HasMore bool   `json:"has_more"`
 			LastID  string `json:"last_id"`
@@ -177,7 +179,13 @@ func listAnthropicModels(ctx context.Context, baseURL, key string) ([]Model, err
 				continue
 			}
 			seenIDs[id] = true
-			models = append(models, Model{ID: id, Object: "model", OwnedBy: "anthropic"})
+			model := Model{ID: id, Object: "model", OwnedBy: "anthropic"}
+			model.InputTokens = clonePositiveLimit(item.MaxInputTokens)
+			model.OutputTokens = clonePositiveLimit(item.MaxTokens)
+			if model.InputTokens != nil || model.OutputTokens != nil {
+				model.LimitsSource = "provider_reported"
+			}
+			models = append(models, model)
 		}
 		if !result.HasMore {
 			sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })

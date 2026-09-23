@@ -23,7 +23,7 @@ func TestAnthropicMessagesStreamsToolsUsageSystemAndDiscovery(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/models":
 			if r.URL.Query().Get("after_id") == "" {
-				_, _ = io.WriteString(w, `{"data":[{"id":"claude-z"},{"id":"claude-a"},{"id":"claude-a"}],"has_more":true,"last_id":"claude-a"}`)
+				_, _ = io.WriteString(w, `{"data":[{"id":"claude-z","max_input_tokens":200000,"max_tokens":16000},{"id":"claude-a"},{"id":"claude-a"}],"has_more":true,"last_id":"claude-a"}`)
 			} else {
 				_, _ = io.WriteString(w, `{"data":[{"id":"claude-b"}],"has_more":false}`)
 			}
@@ -87,6 +87,9 @@ func TestAnthropicMessagesStreamsToolsUsageSystemAndDiscovery(t *testing.T) {
 	models, err := provider.Models(context.Background())
 	if err != nil || len(models) != 3 || models[0].ID != "claude-a" || models[2].ID != "claude-z" {
 		t.Fatalf("models=%+v err=%v", models, err)
+	}
+	if models[2].InputTokens == nil || *models[2].InputTokens != 200_000 || models[2].OutputTokens == nil || *models[2].OutputTokens != 16_000 || models[2].LimitsSource != "provider_reported" {
+		t.Fatalf("Anthropic model limits were not retained: %+v", models[2])
 	}
 	client, err := NewClient(provider)
 	if err != nil {

@@ -4,6 +4,7 @@
 package providers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -160,9 +161,64 @@ func Summarize(provider Provider) Summary {
 }
 
 type Model struct {
-	ID      string `json:"id"`
-	Object  string `json:"object,omitempty"`
-	OwnedBy string `json:"owned_by,omitempty"`
+	ID            string `json:"id"`
+	Object        string `json:"object,omitempty"`
+	OwnedBy       string `json:"owned_by,omitempty"`
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
+	InputTokens   *int64 `json:"input_tokens,omitempty"`
+	OutputTokens  *int64 `json:"output_tokens,omitempty"`
+	LimitsSource  string `json:"limits_source,omitempty"`
+}
+
+// UnmarshalJSON keeps optional advertised limits when a provider exposes them.
+// Unknown/null/zero values remain unavailable rather than turning into zero
+// token capacities. Provider APIs use several field spellings, so known
+// common forms are accepted without treating a model-list response as a full
+// capability catalog.
+func (model *Model) UnmarshalJSON(data []byte) error {
+	var base struct {
+		ID           string `json:"id"`
+		Object       string `json:"object"`
+		OwnedBy      string `json:"owned_by"`
+		LimitsSource string `json:"limits_source"`
+	}
+	if err := json.Unmarshal(data, &base); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	model.ID, model.Object, model.OwnedBy, model.LimitsSource = base.ID, base.Object, base.OwnedBy, base.LimitsSource
+	model.ContextTokens = firstPositiveInteger(fields, "context_tokens", "context_window", "context_length", "max_model_len")
+	model.InputTokens = firstPositiveInteger(fields, "input_tokens", "input_token_limit", "inputTokenLimit", "max_input_tokens")
+	model.OutputTokens = firstPositiveInteger(fields, "output_tokens", "output_token_limit", "outputTokenLimit", "max_output_tokens", "max_tokens")
+	if model.ContextTokens != nil || model.InputTokens != nil || model.OutputTokens != nil {
+		model.LimitsSource = "provider_reported"
+	}
+	return nil
+}
+
+func firstPositiveInteger(fields map[string]json.RawMessage, names ...string) *int64 {
+	for _, name := range names {
+		raw, ok := fields[name]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		var value int64
+		if json.Unmarshal(raw, &value) == nil && value > 0 {
+			return &value
+		}
+	}
+	return nil
+}
+
+func clonePositiveLimit(value *int64) *int64 {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 type ModelsResult struct {
