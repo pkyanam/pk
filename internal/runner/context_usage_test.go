@@ -18,6 +18,18 @@ type contextUsageFixtureAdapter struct {
 	release  chan struct{}
 }
 
+type contextUsageLateAdapter struct {
+	started  chan struct{}
+	release  chan struct{}
+	response llm.Response
+}
+
+func (adapter contextUsageLateAdapter) Respond(context.Context, llm.Request, llm.RequestOptions) (llm.Response, error) {
+	close(adapter.started)
+	<-adapter.release // Deliberately model a transport that returns after cancellation.
+	return adapter.response, nil
+}
+
 func (adapter contextUsageFixtureAdapter) Respond(ctx context.Context, _ llm.Request, _ llm.RequestOptions) (llm.Response, error) {
 	if adapter.started != nil {
 		close(adapter.started)
@@ -132,6 +144,47 @@ func TestContextUsageUnavailableForLegacyAndMonotonicOnResume(t *testing.T) {
 	latest, err := store.LoadContextUsage(context.Background(), "session-resume")
 	if err != nil || latest.RequestOrdinal != 9 || latest.Pending {
 		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
+func TestCanceledLateContextUsageCannotOverwriteNextRequest(t *testing.T) {
+	store := fileContextUsageStore{directory: t.TempDir()}
+	id := session.ID("session-late-usage")
+	started, release := make(chan struct{}), make(chan struct{})
+	oldResponse := llm.Response{ID: "old-response", Usage: llm.Usage{InputTokens: 11, OutputTokens: 2, Raw: json.RawMessage(`{"input_tokens":11,"output_tokens":2}`)}}
+	oldAdapter := &contextUsageAdapter{next: contextUsageLateAdapter{started: started, release: release, response: oldResponse}, store: store, id: id}
+	ctx, cancel := context.WithCancel(context.Background())
+	oldDone := make(chan error, 1)
+	go func() {
+		_, err := oldAdapter.Respond(ctx, llm.Request{Input: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "old"}}}}, llm.RequestOptions{})
+		oldDone <- err
+	}()
+	<-started
+	cancel()
+
+	pending, err := store.LoadContextUsage(context.Background(), id)
+	if err != nil || !pending.Pending || pending.RequestOrdinal != 1 {
+		t.Fatalf("canceled request metadata=%+v err=%v", pending, err)
+	}
+	newResponse := llm.Response{ID: "new-response", Usage: llm.Usage{InputTokens: 29, OutputTokens: 7, Raw: json.RawMessage(`{"input_tokens":29,"output_tokens":7}`)}}
+	next := &contextUsageAdapter{next: contextUsageFixtureAdapter{response: newResponse}, store: store, id: id, ordinal: pending.RequestOrdinal}
+	if _, err := next.Respond(context.Background(), llm.Request{Input: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "new"}}}}, llm.RequestOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-oldDone; err != nil {
+		t.Fatalf("late adapter response returned %v", err)
+	}
+	latest, err := store.LoadContextUsage(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Pending || latest.RequestOrdinal != 2 || latest.LatestProviderUsage.InputTokens == nil || *latest.LatestProviderUsage.InputTokens != 29 {
+		gotInput := int64(-1)
+		if latest.LatestProviderUsage.InputTokens != nil {
+			gotInput = *latest.LatestProviderUsage.InputTokens
+		}
+		t.Fatalf("late canceled response overwrote latest metadata: ordinal=%d pending=%v input=%d", latest.RequestOrdinal, latest.Pending, gotInput)
 	}
 }
 

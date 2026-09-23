@@ -195,7 +195,11 @@ func (adapter *contextUsageAdapter) Respond(ctx context.Context, request llm.Req
 	response, responseErr := adapter.next.Respond(ctx, request, options)
 	completed := contextUsageRecord(record, ordinal, benchcontext.MeasureUsage(response.Usage), false)
 	completed.ResponseFailed = responseErr != nil
-	adapter.persist(context.WithoutCancel(ctx), completed)
+	// The coordinator may stop without joining an in-flight adapter request. Do
+	// not let a late canceled response overwrite usage from a later turn.
+	if ctx.Err() == nil {
+		adapter.persist(ctx, completed)
+	}
 	return response, responseErr
 }
 
