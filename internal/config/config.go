@@ -8,19 +8,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 const (
-	DefaultModel         = "gpt-6-luna"
-	DefaultEffort        = "medium"
-	ContextPolicyFull    = "full"
-	ContextPolicyCompact = "compact"
+	DefaultModel          = "gpt-6-luna"
+	DefaultEffort         = "medium"
+	DefaultImageGenDriver = "gpt-6-astra"
+	ContextPolicyFull     = "full"
+	ContextPolicyCompact  = "compact"
 )
 
 type Config struct {
-	Model         string `json:"model"`
-	Effort        string `json:"effort"`
-	ContextPolicy string `json:"context_policy"`
+	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+	ContextPolicy  string `json:"context_policy"`
+	ImageGenDriver string `json:"imagegen_driver,omitempty"`
 }
 
 func Defaults() Config {
@@ -56,6 +59,7 @@ func (c Config) Normalized() Config {
 	} else {
 		c.ContextPolicy = strings.ToLower(strings.TrimSpace(c.ContextPolicy))
 	}
+	c.ImageGenDriver = strings.TrimSpace(c.ImageGenDriver)
 	return c
 }
 func Load(path string) (Config, error) {
@@ -74,12 +78,18 @@ func Load(path string) (Config, error) {
 	if !ValidContextPolicy(c.ContextPolicy) {
 		return Config{}, fmt.Errorf("invalid context_policy %q (use full or compact)", c.ContextPolicy)
 	}
+	if !ValidImageGenDriver(c.ImageGenDriver) {
+		return Config{}, fmt.Errorf("invalid imagegen_driver %q", c.ImageGenDriver)
+	}
 	return c, nil
 }
 func Save(path string, c Config) error {
 	c = c.Normalized()
 	if !ValidContextPolicy(c.ContextPolicy) {
 		return fmt.Errorf("invalid context_policy %q (use full or compact)", c.ContextPolicy)
+	}
+	if !ValidImageGenDriver(c.ImageGenDriver) {
+		return fmt.Errorf("invalid imagegen_driver %q", c.ImageGenDriver)
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -97,4 +107,23 @@ func Save(path string, c Config) error {
 		return err
 	}
 	return nil
+}
+
+// ValidImageGenDriver accepts an empty value (disabled) or a bounded model ID
+// made from printable non-whitespace characters. The value is passed as one
+// argv element to the Codex CLI image worker; it is never interpreted by a shell.
+func ValidImageGenDriver(driver string) bool {
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		return true
+	}
+	if len(driver) > 200 {
+		return false
+	}
+	for _, r := range driver {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

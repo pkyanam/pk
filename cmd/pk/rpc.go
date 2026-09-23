@@ -20,6 +20,7 @@ import (
 	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/extensions"
+	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/mcpclient"
 	"github.com/pkyanam/pk/internal/modelstream"
@@ -411,6 +412,18 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		workspace, _ = filepath.Abs(workspace)
 		sessionID := get("session_id")
+		imageGenDriver := cfg.ImageGenDriver
+		if sessionID != "" {
+			imageGenDriver = ""
+			savedDriver, saved, snapshotErr := runner.LoadSavedImageGenFingerprint(s.ctx, s.sessionDir, sessionID, workspace)
+			if snapshotErr != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "load saved session ImageGen configuration: " + snapshotErr.Error(), "recoverable": true})
+				return
+			}
+			if saved {
+				imageGenDriver = savedDriver
+			}
+		}
 		requestedProviderID := get("provider_id")
 		providerID := ""
 		if sessionID != "" {
@@ -498,7 +511,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		for _, issue := range pluginIssues {
 			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
 		}
-		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, CompactCapturedOutput: cfg.ContextPolicy == config.ContextPolicyCompact, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
+		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, ImageGenFingerprint: imageGenDriver, CompactCapturedOutput: cfg.ContextPolicy == config.ContextPolicyCompact, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
 		s.providerID = providerID
 		s.session = sessionID
 		s.opts.SessionID = s.session
@@ -515,7 +528,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		s.started = true
 		capabilities := rpcCapabilities(steeringEnabled)
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
@@ -723,7 +736,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				s.mu.Unlock()
 				_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
 			}
-			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics, tinyFishRegistryExtension(broker.Context()))
+			additional := []cliRegistryExtension{tinyFishRegistryExtension(broker.Context())}
+			if opts.ImageGenFingerprint != "" {
+				imageConfig := imagegen.Config{Driver: opts.ImageGenFingerprint, Effort: "low", CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME"))}
+				additional = append(additional, cliRegistryExtension{Decorate: imagegen.Decorator(imageConfig, opts.Workspace), RemoteJobHandlers: imagegen.HandlerFactory(imageConfig, opts.Workspace)})
+			}
+			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics, additional...)
 			if err != nil {
 				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load session plugins: %w", err)}
 				return
@@ -1045,6 +1063,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not resolve saved session workspace", "recoverable": true})
 			return
 		}
+		savedImageDriver, hasImageSnapshot, imageErr := runner.LoadSavedImageGenFingerprint(s.ctx, s.sessionDir, id, workspace)
+		if imageErr != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load saved session ImageGen configuration: " + imageErr.Error(), "recoverable": true})
+			return
+		}
 		workspaceInfo, err := os.Stat(workspace)
 		if err != nil || !workspaceInfo.IsDir() {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "saved session workspace is unavailable; restore that directory before attaching", "recoverable": true})
@@ -1064,7 +1087,13 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		s.opts.Workspace = workspace
+		if hasImageSnapshot {
+			s.opts.ImageGenFingerprint = savedImageDriver
+		} else {
+			s.opts.ImageGenFingerprint = ""
+		}
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
+		imageGenDriver := s.opts.ImageGenFingerprint
 		steeringEnabled, providerID := s.steeringEnabled, s.providerID
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
@@ -1072,7 +1101,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "attached": true, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "attached": true, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "new":
 		s.mu.Lock()
 		active, sessionID := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive, s.session
@@ -1089,15 +1118,22 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		for _, issue := range pluginIssues {
 			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
 		}
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load pk defaults: " + err.Error(), "recoverable": true})
+			return
+		}
 		s.mu.Lock()
 		s.session = ""
 		s.opts.SessionID = ""
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
+		s.opts.ImageGenFingerprint = cfg.ImageGenDriver
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
+		imageGenDriver := s.opts.ImageGenFingerprint
 		steeringEnabled, providerID := s.steeringEnabled, s.providerID
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "history_before":
 		var request struct {
 			SessionID      string `json:"session_id"`
@@ -1223,6 +1259,53 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		cancel()
 		_ = s.emit(msg.ID, "plugin_command_cancel_requested", map[string]any{})
+	case "image_status":
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load pk defaults: " + err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "image_status", map[string]any{"enabled": cfg.ImageGenDriver != "", "driver": cfg.ImageGenDriver})
+	case "image_configure":
+		var request struct {
+			Enabled bool   `json:"enabled"`
+			Driver  string `json:"driver,omitempty"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid ImageGen configuration", "recoverable": true})
+			return
+		}
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load pk defaults: " + err.Error(), "recoverable": true})
+			return
+		}
+		if request.Enabled {
+			driver := strings.TrimSpace(request.Driver)
+			if driver == "" {
+				driver = cfg.ImageGenDriver
+			}
+			if driver == "" {
+				driver = config.DefaultImageGenDriver
+			}
+			if !config.ValidImageGenDriver(driver) {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid ImageGen driver; use a model ID without whitespace", "recoverable": true})
+				return
+			}
+			cfg.ImageGenDriver = driver
+		} else {
+			cfg.ImageGenDriver = ""
+		}
+		if err := config.Save(s.cfgPath, cfg); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "save ImageGen configuration: " + err.Error(), "recoverable": true})
+			return
+		}
+		s.mu.Lock()
+		if s.session == "" && !s.active && s.attachedTask == "" {
+			s.opts.ImageGenFingerprint = cfg.ImageGenDriver
+		}
+		s.mu.Unlock()
+		_ = s.emit(msg.ID, "image_configured", map[string]any{"enabled": cfg.ImageGenDriver != "", "driver": cfg.ImageGenDriver, "next_session_only": true})
 	case "providers_list":
 		items, err := rpcProviderStore().Summaries()
 		if err != nil {

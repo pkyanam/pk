@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/pkyanam/pk/internal/helperregistry"
+	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/mcpclient"
 	"github.com/pkyanam/pk/internal/runner"
@@ -14,7 +15,7 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
-func (s *rpcServer) previewModelToolCatalog(ctx context.Context, workspace, sessionDir string, skillsDirs []string, hasPlugins bool) (savedToolCatalogPayload, error) {
+func (s *rpcServer) previewModelToolCatalog(ctx context.Context, workspace, sessionDir string, skillsDirs []string, hasPlugins bool, imageDriver string) (savedToolCatalogPayload, error) {
 	if err := ctx.Err(); err != nil {
 		return savedToolCatalogPayload{}, err
 	}
@@ -35,6 +36,9 @@ func (s *rpcServer) previewModelToolCatalog(ctx context.Context, workspace, sess
 	options.DecorateRegistry = func(base tool.Registry) tool.Registry {
 		base = interaction.DecorateRegistry(base, broker)
 		base = web(base)
+		if imageDriver != "" {
+			base = imagegen.Decorator(imagegen.Config{Driver: imageDriver, Effort: "low"}, workspace)(base)
+		}
 		return helperregistry.DecorateRegistry(base, manager)
 	}
 	tools, warnings, err := runner.PreviewToolCatalog(ctx, options)

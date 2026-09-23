@@ -102,7 +102,7 @@ func TestResumeRejectsMissingSavedToolBeforeModelRequest(t *testing.T) {
 	first := &cacheProbeAdapter{response: response}
 	created, err := runner.Run(ctx, runner.Options{Prompt: "start", Workspace: workspace, SessionDir: sessionDir, Adapter: first,
 		DecorateRegistry: func(registry tool.Registry) tool.Registry {
-			return extraDefinitionRegistry{Registry: registry, definition: llm.Tool{Type: llm.ToolFunction, Name: "ImageGen"}}
+			return extraDefinitionRegistry{Registry: registry, definition: llm.Tool{Type: llm.ToolFunction, Name: "CustomImageTool"}}
 		},
 	})
 	if err != nil {
@@ -110,8 +110,8 @@ func TestResumeRejectsMissingSavedToolBeforeModelRequest(t *testing.T) {
 	}
 	second := &cacheProbeAdapter{response: response}
 	_, err = runner.Run(ctx, runner.Options{Prompt: "continue", SessionID: created.SessionID, Workspace: workspace, SessionDir: sessionDir, Adapter: second})
-	if err == nil || !strings.Contains(err.Error(), "ImageGen") || !strings.Contains(err.Error(), "restore the original extension") {
-		t.Fatalf("resume error = %v, want missing ImageGen diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), "CustomImageTool") || !strings.Contains(err.Error(), "restore the original extension") {
+		t.Fatalf("resume error = %v, want missing custom tool diagnostic", err)
 	}
 	if len(second.requests) != 0 {
 		t.Fatalf("provider was called %d times before rejecting missing tool", len(second.requests))

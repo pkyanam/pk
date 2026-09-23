@@ -156,20 +156,20 @@ workspace, session, system-instruction, and credential flags as `pk run`:
 pk run -p "Summarize this project" --workspace /path/to/project --model gpt-6-luna --effort medium
 ```
 
-Backend changes in `1ebe672` add explicitly opted-in extension manifests and an optional ImageGen
-driver to one-shot requests:
+For a one-shot request, `--extension` can load an explicitly named manifest, and `--image-driver`
+adds the separate ImageGen tool:
 
 ```sh
 pk -p "Inspect the repository" --extension /path/to/manifest.json
 pk -p "Create a small mint cursor image" --image-driver gpt-6-astra
 ```
 
-Repeat `--extension` to load multiple manifests. The current extension CLI exposes tools, not
-extension commands or hooks; manifests execute trusted programs with pk's OS permissions. The
-ImageGen driver is separate from the chat model, and the verified path uses the Astra driver with
-ChatGPT authentication; this does not mean Luna generates images natively. These options change
-the available tool schema and cannot be combined with `--session`. See
-[extension design](extensions-design.md) for its current limits.
+Repeat `--extension` to load multiple manifests. These one-shot options change the tool schema and
+cannot be combined with `--session`. For interactive sessions, use the plugin browser described
+below. Plugins can provide tools and namespaced slash commands; their worker programs run with pk's
+OS permissions. The ImageGen driver is separate from the chat model, and the verified path uses the
+Astra driver with ChatGPT authentication; this does not mean Luna generates images natively. See
+[extension design](extensions-design.md) for the protocol and its limits.
 
 For the line-oriented interface without OpenTUI, run `pk --plain`. Add `--session SESSION_ID` to
 continue a session. Its commands are `/help`, `/exit`, and `/quit`; Ctrl-C cancels the current turn
@@ -213,14 +213,35 @@ operating location, not a process sandbox.
 
 ## Skills and workspace instructions
 
-The built-in tools are **Bash**, **ViewImage**, and **SkillUse**. Bash runs with the permissions of the
-pk process and is not confined to the workspace. ViewImage lets the model inspect images. SkillUse
-loads a registered skill.
+The core foreground tools are **Bash**, **ViewImage**, **SkillUse**, and **AskUser**. Parent runs also
+have tools for starting, steering, checking, waiting for, and canceling child agents. Bash and child
+agents run with the permissions of the pk process; neither is confined to the workspace. ViewImage
+lets the model inspect images, and SkillUse loads a registered skill. Configured MCP servers and
+enabled plugins can add tools to a new session. ImageGen is an optional tool with a driver model
+separate from pk's chat model; it is off by default. In the TUI, use `/image` to enable or disable
+it, then start a new session for the change to apply. The default driver when enabled is
+`gpt-6-astra`. From a shell, `pk config set image-driver gpt-6-astra` enables it persistently and
+`pk config set image-driver off` disables it. One-shot `--image-driver MODEL` overrides remain
+available. Image generation uses the Codex CLI and its existing ChatGPT authentication.
 
-Use `/skills` to browse available skills and insert one into the prompt. Use `/plugins` to inspect
-known extension manifests. To register a manifest explicitly, enter `/plugin enable "/absolute/path/to/manifest.json"`, then use `/new` because extension tools are fixed for a session. `/plugins` toggles known plugins and is not a manifest file browser.
+Use `/skills` to browse available skills and insert one into the prompt. Use `/plugins` to list
+installed plugins or discover a source. To add one, open the plugin source prompt and enter a
+`OWNER/REPO`, GitHub URL, or local repository path, then inspect a candidate and choose **Install
+and enable**. Browsing only reads supported manifest metadata; it does not start plugin workers.
+Installation is an explicit trust decision: pk copies the selected component into its managed
+plugin directory and may build its declared Go worker. Candidates marked **build required** can be
+reviewed but are not installable from the picker yet. You can also use `pk plugin discover SOURCE`
+to inspect candidates or `pk plugin add --id ID SOURCE` to install and enable one from a shell.
 
-By default pk discovers skills below `~/.codex/skills` and `~/.agents/skills`. For direct runs, pass
+In the `/plugins` list, select an installed plugin and press Enter to toggle it. From a shell, use
+`pk plugin disable ID` or `pk plugin enable ID`. The lower-level `/plugin enable "MANIFEST_PATH"`
+and `/plugin disable ID` commands are also available. Changes to plugin tools and commands apply to
+new sessions, so use `/new` after installing, enabling, or disabling a plugin. `/commands` browses
+enabled plugins' namespaced slash commands. `pk plugin list` shows the installed plugin catalog.
+Plugins run with pk's OS permissions; inspect a candidate before installing it.
+
+By default pk discovers skills below `~/.codex/skills`, `~/.agents/skills`, and its managed
+`~/.pk/skills` directory. For direct runs, pass
 one or more `--skills-dir DIR` flags to use custom directories instead of those defaults. A skill is
 a directory containing `SKILL.md`; for example:
 

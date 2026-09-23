@@ -44,7 +44,7 @@ func TestRPCAttachSwitchesToSavedWorkspace(t *testing.T) {
 	createRPCSession(t, sessionDir, id, "resume this workspace")
 	digest := sha256.Sum256([]byte(id))
 	contextPath := filepath.Join(sessionDir, hex.EncodeToString(digest[:])+".context.json")
-	if err := os.WriteFile(contextPath, []byte("{\"Workspace\":"+strconvQuote(workspace)+"}"), 0o600); err != nil {
+	if err := os.WriteFile(contextPath, []byte("{\"Version\":1,\"Workspace\":"+strconvQuote(workspace)+"}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sink := &rpcEventSink{events: make(chan []byte, 4)}

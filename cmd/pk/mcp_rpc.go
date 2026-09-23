@@ -56,8 +56,9 @@ func (s *rpcServer) modelToolCatalog(ctx context.Context) (savedToolCatalogPaylo
 	s.mu.Lock()
 	pluginPaths := append([]string(nil), s.pluginPaths...)
 	skillsDirs := append([]string(nil), s.opts.SkillsDirs...)
+	imageDriver := s.opts.ImageGenFingerprint
 	s.mu.Unlock()
-	preview, err := s.previewModelToolCatalog(ctx, workspace, sessionDir, skillsDirs, len(pluginPaths) > 0)
+	preview, err := s.previewModelToolCatalog(ctx, workspace, sessionDir, skillsDirs, len(pluginPaths) > 0, imageDriver)
 	if err != nil {
 		return savedToolCatalogPayload{}, err
 	}

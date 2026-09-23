@@ -23,7 +23,7 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "plugin_commands" | "history" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "plugin_commands" | "history" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type PluginCommandRun = { id: string; name: string; startedAt: number; cancelRequested?: boolean }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean; source?: string; url?: string; installs?: number; id?: string }
@@ -59,6 +59,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/tools", description: "Inspect the tools available to the active model session", action: "tools" },
   { name: "/history", description: "Browse saved conversation entries from earlier in this session", action: "history" },
   { name: "/provider", description: "List providers, inspect models, or select one for a new session", action: "provider" },
+  { name: "/image", description: "Opt in to ImageGen for new sessions · disabled by default", action: "image" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
   { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
   { name: "/reload", description: "Restart pk and resume this session", action: "reload" },
@@ -295,7 +296,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | "history" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_models" | "image" | "extension_commands" | "history" | null>(null)
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
   const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
   const [mcpManagerOpen, setMcpManagerOpen] = useState(false)
@@ -336,6 +337,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [providerModels, setProviderModels] = useState<ProviderModelOption[]>([])
   const [providerModelsLoading, setProviderModelsLoading] = useState(false)
   const [providerID, setProviderID] = useState("native")
+  const [imagegenEnabled, setImagegenEnabled] = useState(false)
+  const [imagegenDriver, setImagegenDriver] = useState("")
+  const [imageConfigPending, setImageConfigPending] = useState(false)
   const [releaseUpdateAvailable, setReleaseUpdateAvailable] = useState(false)
   const sessionHasPrompt = useRef(false)
   const childSequences = useRef(new Map<string, number>())
@@ -375,6 +379,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingToolsRequest = useRef("")
   const pendingHistoryRequest = useRef("")
   const pendingProviderModelsRequest = useRef("")
+  const pendingImageConfigRequest = useRef("")
   const historySessionID = useRef("")
   const pendingSteers = useRef(new Map<string, number>())
   const steeringNegotiated = useRef(false)
@@ -693,6 +698,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
+        if (typeof data.imagegen_enabled === "boolean") setImagegenEnabled(data.imagegen_enabled)
+        if (typeof data.imagegen_driver === "string") setImagegenDriver(data.imagegen_driver)
         if (data.release_status && typeof data.release_status.reload_available === "boolean") setReleaseUpdateAvailable(data.release_status.reload_available)
         if (typeof data.session_id === "string" && data.session_id) {
           setSessionId(data.session_id)
@@ -1168,6 +1175,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         addEntry("system", `Provider selected · ${String(data.provider_id || "Native Codex")} · applies to the next conversation.`)
         break
       }
+      case "image_status":
+      case "image_configured": {
+        if (event.id !== pendingImageConfigRequest.current) break
+        pendingImageConfigRequest.current = ""
+        setImageConfigPending(false)
+        setImagegenEnabled(data.enabled === true)
+        setImagegenDriver(typeof data.driver === "string" ? data.driver : "")
+        setSelectionIndex(0)
+        setSelector("image")
+        if (event.type === "image_configured" && data.next_session_only) {
+          addEntry("system", `ImageGen ${data.enabled === true ? "enabled" : "disabled"}. Start a new session with /new to apply this change.`)
+        }
+        break
+      }
       case "subagent": {
         const childID = String(data.child_id ?? "child")
         const sequence = Number(data.sequence ?? 0)
@@ -1348,6 +1369,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        if (data.request_type === "image_status" || data.command_type === "image_status" || data.request_type === "image_configure" || data.command_type === "image_configure") {
+          if (!event.id || event.id !== pendingImageConfigRequest.current) break
+          pendingImageConfigRequest.current = ""
+          setImageConfigPending(false)
+          addEntry("system", `ImageGen setup · ${String(data.message ?? "Configuration request failed.").slice(0, 300)}`)
+          break
+        }
         if (event.id && event.id === newSessionCommandID.current) {
           newSessionCommandID.current = ""
           setNewSessionPending(false)
@@ -1670,6 +1698,30 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     if (!pluginSourceRequest.current) { setPluginSourceOperation(""); addEntry("system", "Could not inspect plugin source because the RPC connection is unavailable.") }
   }
 
+  const requestImageStatus = () => {
+    setSelector("image")
+    setImageConfigPending(true)
+    pendingImageConfigRequest.current = transport.send("image_status") ?? ""
+    if (!pendingImageConfigRequest.current) {
+      setImageConfigPending(false)
+      addEntry("system", "ImageGen status is unavailable because the agent connection is closed.")
+    }
+  }
+
+  const configureImagegen = (enabled: boolean) => {
+    if (imageConfigPending) return
+    if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || reloadPending) {
+      addEntry("system", "ImageGen configuration is available while the session is idle.")
+      return
+    }
+    pendingImageConfigRequest.current = transport.send("image_configure", {
+      enabled,
+      ...(enabled ? { driver: "gpt-6-astra" } : {}),
+    }) ?? ""
+    if (pendingImageConfigRequest.current) { setSelector("image"); setImageConfigPending(true) }
+    else addEntry("system", "Could not update ImageGen because the agent connection is unavailable.")
+  }
+
   const openPluginSourceEntry = () => {
     if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pluginCommandRun) {
       addEntry("system", "Plugin discovery is available while the session is idle.")
@@ -1836,6 +1888,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           if (invalid) addEntry("system", invalid)
           else transport.send("provider_add" as any, provider as Record<string, unknown>)
         } else addEntry("system", 'Usage: /provider [list] · /provider models ID · /provider use ID|native · /provider default ID|native · /provider add --id ID --protocol responses|chat_completions --base-url URL [--api-key-env ENV] [--model ID] · /provider remove ID')
+        break
+      }
+      case "image": {
+        const operation = (args[0] ?? "").toLowerCase()
+        if (operation === "enable" || operation === "on") configureImagegen(true)
+        else if (operation === "disable" || operation === "off") configureImagegen(false)
+        else if (!operation || operation === "status") requestImageStatus()
+        else addEntry("system", "Usage: /image · /image enable · /image disable. ImageGen uses the Astra driver and applies to new sessions.")
         break
       }
       case "plugin": {
@@ -2097,6 +2157,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (server) addEntry("system", server.url
         ? `MCP ${server.id} · remote ${server.url} · auth ${server.auth_mode ?? "anonymous"} (${server.auth_status ?? "configured"})${server.credential_env?.length ? ` · credential env ${server.credential_env.join(", ")}` : ""}. OAuth: /mcp login ${server.id} or /mcp logout ${server.id}. Remove with /mcp remove ${server.id}; configuration changes apply to new sessions.`
         : `MCP ${server.id} · ${server.command} · ${server.arguments_count} args · environment keys: ${server.environment_keys.join(", ") || "none"} · ${server.working_directory || "default working directory"}. Use /mcp remove ${server.id} to remove it; changes apply to new sessions.`)
+    } else if (selector === "image") {
+      configureImagegen(!imagegenEnabled)
     } else if (selector === "providers") {
       const provider = index === 0 ? null : providers[index - 1]
       const id = provider?.id ?? "native"
@@ -2206,7 +2268,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "image" ? 1 : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
       if (selector === "plugin_candidates" && pluginSourceOperation && isEscape) {
         transport.send("plugin_source_cancel" as any)
         pluginSourceRequest.current = ""
@@ -2263,6 +2325,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (selector === "provider_models" && pendingProviderModelsRequest.current) {
           pendingProviderModelsRequest.current = ""
           setProviderModelsLoading(false)
+        }
+        if (selector === "image" && pendingImageConfigRequest.current) {
+          pendingImageConfigRequest.current = ""
+          setImageConfigPending(false)
         }
         if (selector === "history" && pendingHistoryRequest.current) {
           cancelHistoryRead()
@@ -2359,6 +2425,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       ...(historyHasEarlier ? [{ label: "Load earlier entries…", value: "history-older", description: `Browse entries before #${historyBeforeSequence}`, state: historyLoading ? "loading" : "more" }] : []),
     ]
     : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" }))]
+    : selector === "image" ? [{ label: imagegenEnabled ? "Disable ImageGen" : "Enable ImageGen with Astra", value: imagegenEnabled ? "disable" : "enable", description: imageConfigPending ? "Saving configuration…" : imagegenEnabled ? `Enabled · ${imagegenDriver || "gpt-6-astra"}` : "Off by default · uses existing ChatGPT authentication", state: imagegenEnabled ? "enabled" : "disabled" }]
       : selector === "extension_commands" ? extensionCommands.map((item) => ({ label: item.name, value: item.name, description: item.description || `Plugin command · ${item.extension_id}`, state: "available" }))
       : selector === "provider_models" ? providerModels.map((item) => ({ label: item.id, value: item.id, description: [item.object, item.owned_by].filter(Boolean).join(" · "), state: "model" }))
       : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
@@ -2460,12 +2527,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>
       </box>
       {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
         {selector === "plugin_candidates" && <text fg={pluginSourceOperation ? palette.accent : palette.dim} content={pluginSourceOperation || (pluginCandidateReview ? `${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands · source reviewed before install` : `Source · ${pluginCandidateSource}${pluginCandidateRevision ? ` · revision ${pluginCandidateRevision.slice(0, 12)}` : ""} · review a candidate before installation`)} />}
         {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
         {selector === "providers" && <text fg={palette.dim} content="Enter selects for this session · /provider use ID persists only through pk provider use ID" />}
+        {selector === "image" && <text fg={imageConfigPending ? palette.accent : palette.dim} content={imageConfigPending ? "Saving ImageGen preference…" : `ImageGen ${imagegenEnabled ? `enabled with ${imagegenDriver || "gpt-6-astra"}` : "is off"}. It uses existing ChatGPT authentication; this is a separate Astra image driver, not native Luna image support. Changes apply after /new.`} />}
         {selector === "provider_models" && <text fg={palette.dim} content={providerModelsLoading ? "Contacting provider model catalog…" : "Model discovery is read-only · use /provider use ID before the first prompt"} />}
         {selector === "tools" && <text fg={palette.dim} content={modelToolsLoading ? "Loading model-visible tools…" : modelToolsPreview ? modelToolsNotice || "Preview of the core tools available before the first prompt" : modelToolsSaved ? "Saved snapshot for this session" : modelToolsInitialized ? "Current available tool registry" : "The session tool catalog is not initialized until its first prompt."} />}
         <box style={{ height: 1 }} />
@@ -2500,7 +2568,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={historyEntries[historyDetailIndex]!.text.slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
-        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "image" ? "Enter or click to toggle · disabled by default · /new activates changes · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {pluginSourceModalOpen && <box style={{ position: "absolute", left: "18%", right: "18%", top: "30%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.text} content="Add plugin from source" />

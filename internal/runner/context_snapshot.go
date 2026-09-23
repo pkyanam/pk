@@ -34,6 +34,7 @@ type ContextSnapshot struct {
 	MCPFingerprint          string `json:",omitempty"`
 	ProviderFingerprint     string `json:",omitempty"`
 	ProviderID              string `json:",omitempty"`
+	ImageGenFingerprint     string `json:",omitempty"`
 	OutputCompactionVersion int    `json:",omitempty"`
 }
 
@@ -75,6 +76,45 @@ func validateOutputCompactionMode(snapshot ContextSnapshot, enabled bool) error 
 	default:
 		return fmt.Errorf("unsupported captured-output compaction version %d", snapshot.OutputCompactionVersion)
 	}
+}
+
+func validateImageGenFingerprint(snapshot ContextSnapshot, current string) error {
+	hasImageGen := false
+	for _, definition := range snapshot.Tools {
+		if definition.Name == "ImageGen" {
+			hasImageGen = true
+			break
+		}
+	}
+	if !hasImageGen {
+		return nil
+	}
+	if snapshot.ImageGenFingerprint == current {
+		return nil
+	}
+	if snapshot.ImageGenFingerprint == "" {
+		return errors.New("the saved ImageGen tool has no driver fingerprint, so it cannot be resumed safely; start a new session")
+	}
+	return fmt.Errorf("ImageGen driver configuration changed since this session was created; restore driver %q or start a new session", snapshot.ImageGenFingerprint)
+}
+
+// LoadSavedImageGenFingerprint returns the exact ImageGen driver frozen into a
+// saved session snapshot. `saved` is false for legacy sessions without a sidecar.
+func LoadSavedImageGenFingerprint(ctx context.Context, sessionDir, sessionID, workspace string) (fingerprint string, saved bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return "", false, nil
+	}
+	snapshot, err := defaultContextSnapshotStore(sessionDir, workspace).LoadContext(ctx, session.ID(sessionID))
+	if err != nil {
+		if isMissingContextSnapshot(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return snapshot.ImageGenFingerprint, true, nil
 }
 
 type fileContextSnapshotStore struct{ directory string }

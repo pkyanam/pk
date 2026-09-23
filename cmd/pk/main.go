@@ -141,6 +141,7 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 		writeAttachmentSummary(stderr, loaded)
 	}
+	options.ImageGenFingerprint = imageDriver
 	client, providerSnapshot, err := prepareCLIAdapter(ctx, &options, useCodex, codexPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk run: %v\n", err)
@@ -480,6 +481,9 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	if !config.ValidEffort(options.Effort) {
 		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("unsupported reasoning effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)", options.Effort)
 	}
+	if !config.ValidImageGenDriver(imageDriver) {
+		return runner.Options{}, false, "", nil, nil, "", errors.New("invalid ImageGen driver; use a model ID without whitespace")
+	}
 	if (len(extensionPaths) > 0 || imageDriver != "") && options.SessionID != "" {
 		return runner.Options{}, false, "", nil, nil, "", errors.New("--extension and --image-driver cannot be combined with --session; tool schemas are fixed when a session starts")
 	}
@@ -579,7 +583,7 @@ func usage(out io.Writer) {
   pk web status|setup|configure|clear
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...
-  pk config [show|set model|set effort|set context-policy VALUE]
+  pk config [show|set model|set effort|set context-policy|image-driver VALUE]
   pk login
   pk logout
   pk status

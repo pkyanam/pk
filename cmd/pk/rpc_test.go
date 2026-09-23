@@ -23,6 +23,8 @@ import (
 	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/clipboard"
+	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -70,6 +72,61 @@ func TestRPCClipboardPasteReadsOnlyOnExplicitRequestAndReturnsSavedImage(t *test
 	saved, err := os.ReadFile(event.Payload.Files[0].Path)
 	if err != nil || !bytes.Equal(saved, imageBytes) {
 		t.Fatalf("saved image=%q err=%v", saved, err)
+	}
+}
+
+func TestRPCImageGenOptInPersistsAndAppearsInFreshToolCatalog(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_HOME", home)
+	workspace := t.TempDir()
+	var stdout bytes.Buffer
+	server := &rpcServer{
+		ctx: context.Background(), output: &stdout, diagnostics: io.Discard,
+		cfgPath: filepath.Join(home, "config.json"), sessionDir: filepath.Join(home, "sessions"),
+		started: true, opts: runner.Options{Workspace: workspace, SessionDir: filepath.Join(home, "sessions"), SkillsDirs: nil},
+		requestTypes: make(map[string]string),
+	}
+	server.handle(rpcMessage{Version: 1, ID: "enable-image", Type: "image_configure", Payload: json.RawMessage(`{"enabled":true}`)}, make(chan turnDone, 1))
+	var enabled struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Enabled         bool   `json:"enabled"`
+			Driver          string `json:"driver"`
+			NextSessionOnly bool   `json:"next_session_only"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &enabled); err != nil {
+		t.Fatalf("decode enable response: %v; output=%q", err, stdout.String())
+	}
+	if enabled.Type != "image_configured" || !enabled.Payload.Enabled || enabled.Payload.Driver != config.DefaultImageGenDriver || !enabled.Payload.NextSessionOnly {
+		t.Fatalf("enable response=%+v", enabled)
+	}
+	cfg, err := config.Load(server.cfgPath)
+	if err != nil || cfg.ImageGenDriver != config.DefaultImageGenDriver {
+		t.Fatalf("persisted config=%+v err=%v", cfg, err)
+	}
+	catalog, err := server.modelToolCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range catalog.Tools {
+		if item.Name == imagegen.ToolName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("configured ImageGen missing from fresh RPC tool preview: %#v", catalog.Tools)
+	}
+	stdout.Reset()
+	server.handle(rpcMessage{Version: 1, ID: "disable-image", Type: "image_configure", Payload: json.RawMessage(`{"enabled":false}`)}, make(chan turnDone, 1))
+	cfg, err = config.Load(server.cfgPath)
+	if err != nil || cfg.ImageGenDriver != "" {
+		t.Fatalf("disabled config=%+v err=%v", cfg, err)
 	}
 }
 
@@ -913,6 +970,9 @@ func TestConfigCommandPersistsSelectedDefaults(t *testing.T) {
 	if code := runConfigCommand([]string{"set", "context-policy", "compact"}, &out, &errOut); code != 0 {
 		t.Fatalf("set context policy exit=%d: %s", code, errOut.String())
 	}
+	if code := runConfigCommand([]string{"set", "image-driver", "gpt-6-astra"}, &out, &errOut); code != 0 {
+		t.Fatalf("set image driver exit=%d: %s", code, errOut.String())
+	}
 	options, _, _, err := parseRunArgs([]string{"-p", "hello", "--workspace", t.TempDir()}, &errOut)
 	if err != nil {
 		t.Fatal(err)
@@ -924,8 +984,15 @@ func TestConfigCommandPersistsSelectedDefaults(t *testing.T) {
 	if err != nil || options.CompactCapturedOutput {
 		t.Fatalf("explicit full policy options=%+v err=%v", options, err)
 	}
-	if code := runConfigCommand([]string{"show"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "context_policy = compact") {
+	if code := runConfigCommand([]string{"show"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "context_policy = compact") || !strings.Contains(out.String(), "image_driver = gpt-6-astra") {
 		t.Fatalf("show context policy exit=%d output=%q error=%q", code, out.String(), errOut.String())
+	}
+	if code := runConfigCommand([]string{"set", "image-driver", "off"}, &out, &errOut); code != 0 {
+		t.Fatalf("disable image driver exit=%d: %s", code, errOut.String())
+	}
+	cfg, err := config.Load(filepath.Join(pkHome(), "config.json"))
+	if err != nil || cfg.ImageGenDriver != "" {
+		t.Fatalf("disabled image driver config=%+v err=%v", cfg, err)
 	}
 }
 

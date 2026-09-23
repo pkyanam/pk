@@ -1,14 +1,19 @@
 # pk prompt and tool reference
 
-This reference describes a new OpenTUI conversation using the four built-in tools and the installed
-model-aware identity in backend checkpoint `c0c9952`. A fresh session created with `/new` gets the
-new prompt. Existing sessions keep their saved prompt and tools.
+This reference describes a new OpenTUI conversation using the core tools and model-aware identity.
+A fresh session created with `/new` gets the current prompt and tool schemas; existing sessions
+keep their saved prompt and tools.
 
 The examples use placeholders instead of reading or exposing local secrets. The actual prompt is
-assembled from the identity and operational preamble below, the workspace-specific instructions,
-and optional sections. The default foreground TUI tools are **Bash**, **ViewImage**, **SkillUse**,
-and **AskUser**. There is no separate `Parallel` tool: the Bash declaration permits independent
-tool calls in one model turn. Headless and detached sessions do not receive `AskUser`.
+assembled from the identity and operational preamble below, workspace instructions, discovered
+skills, and optional user instructions. The four core foreground TUI tools are **Bash**,
+**ViewImage**, **SkillUse**, and **AskUser**. Current parent runs also register the five
+**Subagent** tools described below. Configured MCP servers and enabled plugins can add tools; web
+search tools are available when a TinyFish credential or Monid CLI is configured. These
+declarations are session-specific and are frozen when a session starts. There is no separate
+`Parallel` tool: Bash
+permits independent tool calls in one model turn. Headless and detached sessions do not receive
+`AskUser`.
 
 ## System prompt for a new session
 
@@ -77,16 +82,21 @@ Conditional sections:
   </available_skills>
   ```
 
-The TUI and CLI normally discover skills under `~/.codex/skills` and `~/.agents/skills`; direct
-CLI runs can select other directories with `--skills-dir`. Skills and workspace instructions are
-snapshotted when a session begins. A later change to these inputs does not rewrite an existing
-session's prefix; use `/new` to start with updated instructions.
+The TUI and CLI discover user skills under `~/.codex/skills`, `~/.agents/skills`, and `~/.pk/skills`,
+and also register pk's bundled skills. Direct CLI runs can select other directories with
+`--skills-dir`. Skills and workspace instructions are snapshotted when a session begins. A later
+change to these inputs does not rewrite an existing session's prefix; use `/new` to start with
+updated instructions.
 
 ## Built-in tool declarations
 
-These are the default foreground TUI function schemas. Extension manifests and the optional
-ImageGen driver can add schemas to one-shot CLI runs separately; they are not part of this default
-four-tool set. The `Bash` output schema has a 40,000-character default and maximum 1,000,000.
+The JSON blocks below show the four core foreground TUI schemas. Parent runs additionally register
+the Subagent schemas summarized below. The active schema may also include configured MCP tools,
+enabled plugin tools, and web-search tools when a TinyFish credential or Monid CLI is configured.
+These are snapshotted for the session. `--extension` and `--image-driver` add tools to one-shot CLI
+runs. The TUI can also opt into ImageGen through its persisted image-driver setting; it is disabled
+by default and becomes available to new sessions after configuration. The `Bash` output schema has
+a 40,000-character default and maximum 1,000,000.
 
 ### Bash
 
@@ -187,6 +197,27 @@ not registered for detached or headless runs.
   }
 }
 ```
+
+### Subagent tools
+
+Parent runs add these schemas through the subagent registry. They are coordination tools, not an OS
+sandbox: children share the workspace and permissions. `SubagentStart` accepts required `task`
+(string) and `task_only` (boolean); optional `files` is an array of up to 64 workspace-relative
+paths, while `model` and `effort` override the child settings. `task_only: true` requires omitting
+`files` and is for work with no exclusive file ownership. Otherwise, declare at least one file.
+There are at most two active children and eight queued children, and children cannot spawn more
+children.
+
+The other four tools each take required `child_id` (string): `SubagentStatus` reports state,
+`SubagentWait` waits for a report, and `SubagentCancel` cancels the child. `SubagentSend` also
+requires `text` (string) and queues steering for a running child.
+
+Interactive sessions may also receive namespaced slash commands from enabled plugins. The `/plugins`
+browser previews source candidates and installs only after explicit user selection; browsing itself
+does not start plugin workers. A new session is required for changed plugin tool schemas. MCP tools
+are available only from explicitly configured servers. ImageGen is opt-in: use `/image` in the TUI
+or set `pk config set image-driver gpt-6-astra`; changes apply to new sessions. The driver remains
+separate from the chat model, whose default remains `gpt-6-luna`.
 
 ## Identity and saved sessions
 

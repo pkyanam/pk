@@ -102,6 +102,10 @@ type Options struct {
 	ProviderFingerprint string
 	// ProviderID is persisted to resolve the exact configured provider on attach.
 	ProviderID string
+	// ImageGenFingerprint freezes the separately configured ImageGen driver for
+	// sessions whose saved schema contains ImageGen. Empty keeps sessions without
+	// that opt-in compatible with the ordinary registry.
+	ImageGenFingerprint string
 }
 
 // Input is a steer/follow-up prompt submitted to the active coordinator.
@@ -301,6 +305,9 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 			if err := validateProviderSelection(snapshot, options.ProviderID); err != nil {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
 			}
+			if err := validateImageGenFingerprint(snapshot, options.ImageGenFingerprint); err != nil {
+				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
+			}
 			if err := validateOutputCompactionMode(snapshot, options.CompactCapturedOutput); err != nil {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
 			}
@@ -366,6 +373,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		snapshot.IdentityTemplate = defaultIdentityTemplate
 		snapshot.MCPFingerprint = options.MCPFingerprint
 		snapshot.ProviderFingerprint = options.ProviderFingerprint
+		snapshot.ImageGenFingerprint = options.ImageGenFingerprint
 		if options.CompactCapturedOutput {
 			snapshot.OutputCompactionVersion = outputDecisionVersion
 		}
@@ -1275,7 +1283,7 @@ func newContextSnapshot(options Options, registry tool.Registry, _ []tool.Skill)
 	return ContextSnapshot{
 		Version: contextSnapshotVersion, Workspace: options.Workspace,
 		SystemPrompt:         workspaceSystemPrompt(options.Workspace, options.SystemPrompt, options.Diagnostics),
-		ExplicitSystemPrompt: explicit, Tools: tools, MCPFingerprint: options.MCPFingerprint, ProviderFingerprint: options.ProviderFingerprint, ProviderID: options.ProviderID,
+		ExplicitSystemPrompt: explicit, Tools: tools, MCPFingerprint: options.MCPFingerprint, ProviderFingerprint: options.ProviderFingerprint, ProviderID: options.ProviderID, ImageGenFingerprint: options.ImageGenFingerprint,
 	}
 }
 

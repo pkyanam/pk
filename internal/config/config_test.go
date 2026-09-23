@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,29 @@ func TestContextPolicyValidationAndNormalization(t *testing.T) {
 	}
 	if err := Save(path, Config{ContextPolicy: "summarize-history"}); err == nil {
 		t.Fatal("unsupported context policy saved")
+	}
+}
+
+func TestImageGenDriverOptInRoundTripAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	got, err := Load(path)
+	if err != nil || got.ImageGenDriver != "" {
+		t.Fatalf("default config=%+v err=%v", got, err)
+	}
+	want := Defaults()
+	want.ImageGenDriver = "gpt-6-astra"
+	if err := Save(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err = Load(path)
+	if err != nil || got != want {
+		t.Fatalf("round-trip=%+v err=%v want=%+v", got, err, want)
+	}
+	for _, invalid := range []string{"model name", "line\nbreak", strings.Repeat("x", 201)} {
+		bad := want
+		bad.ImageGenDriver = invalid
+		if err := Save(path, bad); err == nil {
+			t.Errorf("Save accepted invalid image driver %q", invalid)
+		}
 	}
 }
