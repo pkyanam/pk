@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: |
+            go.sum
+            experiments/unreal-composition/go.sum
+      - name: Build, vet, and race-test pk
+        run: |
+          go build -trimpath ./...
+          go vet ./...
+          go test -race -count=1 -timeout 120s ./...
+      - name: Build, vet, and race-test public composition module
+        working-directory: experiments/unreal-composition
+        run: |
+          go build -trimpath ./...
+          go vet ./...
+          go test -race -count=1 -timeout 120s ./...
+
+  upstream-pinned-suite:
+    name: Unreal Agent v0.1.1 tests (UTC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: go.sum
+      - name: Download pinned Unreal Agent source
+        id: unreal
+        run: |
+          go mod download github.com/unreallabsai/unreal-agent@v0.1.1
+          echo "module_dir=$(go env GOMODCACHE)/github.com/unreallabsai/unreal-agent@v0.1.1" >> "$GITHUB_OUTPUT"
+      - name: Race-test pinned Unreal Agent module
+        working-directory: ${{ steps.unreal.outputs.module_dir }}
+        env:
+          TZ: UTC
+          OLLAMA_TEST_MODEL: ''
+        run: go test -race -count=1 -timeout 120s ./...
