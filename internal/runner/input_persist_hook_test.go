@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pkyanam/pk/internal/runner"
@@ -28,14 +29,17 @@ func TestBeforeInputPersistRunsBeforeDurableInputAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	hookRan := false
-	inputSawHook := false
-	store.AddObserver(func(_ session.ID, item sessionstore.Item) {
-		if item.Kind == sessionstore.ItemInput {
-			inputSawHook = hookRan
-		}
-	})
+	afterPersistRan := false
 	adapter := &finalAnswerAdapter{}
-	result, err := runner.Run(ctx, runner.Options{Prompt: "test prompt", PromptID: "prompt-1", Workspace: workspace, SessionDir: sessionDir, Store: store, Adapter: adapter, BeforeInputPersist: func(sessionID, inputID string) error {
+	result, err := runner.Run(ctx, runner.Options{Prompt: "test prompt", PromptID: "prompt-1", Workspace: workspace, SessionDir: sessionDir, Store: store, Adapter: adapter, AfterInputPersist: func(sessionID, inputID string) {
+		if sessionID == "" || inputID != "prompt-1" {
+			t.Errorf("after-persist IDs session=%q input=%q", sessionID, inputID)
+		}
+		if !hookRan {
+			t.Error("AfterInputPersist ran before BeforeInputPersist")
+		}
+		afterPersistRan = true
+	}, BeforeInputPersist: func(sessionID, inputID string) error {
 		if sessionID == "" || inputID != "prompt-1" {
 			t.Fatalf("hook IDs session=%q input=%q", sessionID, inputID)
 		}
@@ -45,8 +49,8 @@ func TestBeforeInputPersistRunsBeforeDurableInputAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hookRan || !inputSawHook || adapter.calls == 0 || result.SessionID == "" {
-		t.Fatalf("hook=%v input saw hook=%v adapter calls=%d result=%+v", hookRan, inputSawHook, adapter.calls, result)
+	if !hookRan || !afterPersistRan || adapter.calls == 0 || result.SessionID == "" {
+		t.Fatalf("hook=%v after=%v adapter calls=%d result=%+v", hookRan, afterPersistRan, adapter.calls, result)
 	}
 }
 
@@ -74,5 +78,37 @@ func TestBeforeInputPersistFailurePreventsInputAppend(t *testing.T) {
 		if item.Kind == sessionstore.ItemInput {
 			t.Fatalf("input persisted after hook failure: %+v", item)
 		}
+	}
+}
+
+func TestPreallocatedNewIDCreatesFreshSessionAndCollisionDoesNotModifyIt(t *testing.T) {
+	ctx := context.Background()
+	sessionDir, workspace := filepath.Join(t.TempDir(), "sessions"), t.TempDir()
+	store, err := localfile.New(sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &finalAnswerAdapter{}
+	first, err := runner.Run(ctx, runner.Options{Prompt: "original", Workspace: workspace, SessionDir: sessionDir, Store: store, Adapter: adapter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Items(ctx, session.ID(first.SessionID), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(ctx, runner.Options{Prompt: "must not append", PreallocatedNewID: first.SessionID, Workspace: workspace, SessionDir: sessionDir, Store: store, Adapter: adapter})
+	if err == nil || result.SessionID != "" {
+		t.Fatalf("collision result=%+v err=%v", result, err)
+	}
+	after, err := store.Items(ctx, session.ID(first.SessionID), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Items) != len(before.Items) {
+		t.Fatalf("collision changed session item count from %d to %d", len(before.Items), len(after.Items))
+	}
+	if _, err := runner.Run(ctx, runner.Options{Prompt: "bad resume", SessionID: first.SessionID, PreallocatedNewID: "0123456789abcdef0123456789abcdef", Workspace: workspace, SessionDir: sessionDir, Store: store, Adapter: adapter}); err == nil || !strings.Contains(err.Error(), "only when SessionID is empty") {
+		t.Fatalf("preallocated resume error=%v", err)
 	}
 }

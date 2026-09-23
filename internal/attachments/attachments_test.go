@@ -1,13 +1,19 @@
 package attachments
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadExplicitTextAndImage(t *testing.T) {
@@ -186,7 +192,7 @@ func TestLoadPDFTextAndPageBounds(t *testing.T) {
 		t.Fatalf("PDF text = %q", item.Text)
 	}
 	note := FormatPromptNote(got)
-	for _, want := range []string{"text only", "no OCR or page images", "truncated", "first page"} {
+	for _, want := range []string{"text extraction examined", "no OCR was performed", "truncated", "first page"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("PDF note missing %q: %s", want, note)
 		}
@@ -208,7 +214,7 @@ func TestLoadPDFTextBudgetMalformedAndScanned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[0].ScannedPages != 1 || got[0].Text != "" || !strings.Contains(FormatPromptNote(got), "no OCR was run") {
+	if got[0].ScannedPages != 1 || got[0].Text != "" || !strings.Contains(FormatPromptNote(got), "no OCR was performed") {
 		t.Fatalf("scanned PDF output = %#v; note=%s", got[0], FormatPromptNote(got))
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "long.pdf"), makePDF([]pdfPage{{text: "0123456789"}}), 0o600); err != nil {
@@ -221,6 +227,311 @@ func TestLoadPDFTextBudgetMalformedAndScanned(t *testing.T) {
 	if !got[0].Truncated || len(got[0].Text) > 5 {
 		t.Fatalf("PDF text limit not applied: %#v", got[0])
 	}
+}
+
+func TestScannedPDFFallbackRendersBoundedPrivatePagePreviews(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a small POSIX fake pdftoppm executable")
+	}
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "scan.pdf"), makePDF([]pdfPage{{image: true}, {image: true}, {image: true}, {image: true}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "text.pdf"), makePDF([]pdfPage{{text: "selectable text"}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir, artifactDir := t.TempDir(), privateTempDir(t)
+	configureFakePDFRenderer(t, binDir)
+	got, err := Load(context.Background(), workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].RenderedPDFPages) != 3 || !got[0].RenderedPagesTruncated || got[0].RenderNotice == "" {
+		t.Fatalf("attachment=%+v", got)
+	}
+	for i, page := range got[0].RenderedPDFPages {
+		if page.Page != i+1 {
+			t.Fatalf("page order=%+v", got[0].RenderedPDFPages)
+		}
+		info, err := os.Stat(page.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("page mode=%v want 0600", info.Mode().Perm())
+		}
+		if dirInfo, err := os.Stat(filepath.Dir(page.Path)); err != nil || dirInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("render directory mode=%v err=%v", dirInfo, err)
+		}
+	}
+	args, err := os.ReadFile(os.Getenv("PK_FAKE_PDF_ARGS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(args), "-f\n") != 3 || !strings.Contains(string(args), "-scale-to\n1600\n") {
+		t.Fatalf("renderer args do not enforce bounded dimensions/pages: %q", args)
+	}
+	note := FormatPromptNote(got)
+	for _, fragment := range []string{"No selectable text was extracted", "no OCR was performed", "3 of 4 PDF pages rendered", "some candidate pages were not rendered", "ViewImage"} {
+		if !strings.Contains(note, fragment) {
+			t.Errorf("prompt note missing %q: %s", fragment, note)
+		}
+	}
+	if strings.Contains(note, "full PDF") || strings.Contains(note, "all pages") {
+		t.Fatalf("overstates preview coverage: %s", note)
+	}
+	textAttachment, err := Load(context.Background(), workspace, []string{"text.pdf"}, Limits{PDFPageImageDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(textAttachment[0].RenderedPDFPages) != 0 || textAttachment[0].RenderNotice != "" {
+		t.Fatalf("selectable-text PDF unexpectedly rasterized: %+v", textAttachment[0])
+	}
+
+	if err := os.WriteFile(filepath.Join(workspace, "mixed.pdf"), makePDF([]pdfPage{{text: "cover"}, {image: true}, {text: "summary"}, {image: true}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("PK_FAKE_PDF_ARGS"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mixed, err := Load(context.Background(), workspace, []string{"mixed.pdf"}, Limits{PDFPageImageDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mixed[0].RenderedPDFPages) != 2 || mixed[0].RenderedPDFPages[0].Page != 2 || mixed[0].RenderedPDFPages[1].Page != 4 || !strings.Contains(mixed[0].Text, "cover") || !strings.Contains(mixed[0].Text, "summary") {
+		t.Fatalf("mixed PDF did not preserve text and render scanned pages: %+v", mixed[0])
+	}
+	mixedArgs, err := os.ReadFile(os.Getenv("PK_FAKE_PDF_ARGS"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(mixedArgs), "-f\n") != 2 || !strings.Contains(string(mixedArgs), "-f\n2\n") || !strings.Contains(string(mixedArgs), "-f\n4\n") {
+		t.Fatalf("mixed PDF renderer did not target scanned pages only: %q", mixedArgs)
+	}
+}
+
+func TestScannedPDFFallbackUnavailableRendererAndUnsafeDirectoryAreExplicit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses PATH to simulate missing pdftoppm")
+	}
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "scan.pdf"), makePDF([]pdfPage{{image: true}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := privateTempDir(t)
+	t.Setenv("PATH", t.TempDir())
+	got, err := Load(context.Background(), workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].RenderNotice == "" || len(got[0].RenderedPDFPages) != 0 {
+		t.Fatalf("missing-tool outcome=%+v", got[0])
+	}
+	if !strings.Contains(FormatPromptNote(got), "pdftoppm is unavailable") {
+		t.Fatalf("missing-tool notice: %s", FormatPromptNote(got))
+	}
+	binDir := t.TempDir()
+	configureFakePDFRenderer(t, binDir)
+	realDir, linkDir := privateTempDir(t), filepath.Join(t.TempDir(), "linked-pages")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	got, err = Load(context.Background(), workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: linkDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got[0].RenderNotice, "symlink") || len(got[0].RenderedPDFPages) != 0 {
+		t.Fatalf("symlink outcome=%+v", got[0])
+	}
+	entries, err := os.ReadDir(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("render wrote through symlink: %+v", entries)
+	}
+}
+
+func TestScannedPDFFallbackCleansFailedOutputAndHonorsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a small POSIX fake pdftoppm executable")
+	}
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "scan.pdf"), makePDF([]pdfPage{{image: true}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir, artifactDir := t.TempDir(), privateTempDir(t)
+	configureFakePDFRenderer(t, binDir)
+	oversize := DefaultLimits().MaxPDFPageImageBytes + 1
+	large := bytes.Repeat([]byte{'x'}, int(oversize))
+	if err := os.WriteFile(os.Getenv("PK_FAKE_PDF_PNG"), large, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(context.Background(), workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[0].RenderedPDFPages) != 0 || !strings.Contains(got[0].RenderNotice, "safety limits") {
+		t.Fatalf("oversize outcome=%+v", got[0])
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed rendering left artifacts: %+v", entries)
+	}
+	if err := os.WriteFile(os.Getenv("PK_FAKE_PDF_PNG"), tinyPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Load(ctx, workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: artifactDir}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled render err=%v", err)
+	}
+}
+
+func TestScannedPDFRenderedByteBudgetIsSharedAcrossAttachments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a small POSIX fake pdftoppm executable")
+	}
+	workspace, binDir, artifactDir := t.TempDir(), t.TempDir(), privateTempDir(t)
+	for _, name := range []string{"one.pdf", "two.pdf"} {
+		if err := os.WriteFile(filepath.Join(workspace, name), makePDF([]pdfPage{{image: true}}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configureFakePDFRenderer(t, binDir)
+	pngInfo, err := os.Stat(os.Getenv("PK_FAKE_PDF_PNG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := pngInfo.Size() + pngInfo.Size()/2
+	got, err := Load(context.Background(), workspace, []string{"one.pdf", "two.pdf"}, Limits{PDFPageImageDir: artifactDir, MaxTotalPDFRenderedBytes: budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || len(got[0].RenderedPDFPages) != 1 || len(got[1].RenderedPDFPages) != 0 || !strings.Contains(got[1].RenderNotice, "total rendered-image limit") {
+		t.Fatalf("attachments=%+v", got)
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only first PDF artifacts to remain: %+v", entries)
+	}
+}
+
+func TestScannedPDFFallbackRejectsOversizedRenderedDimensions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a small POSIX fake pdftoppm executable")
+	}
+	workspace, binDir, artifactDir := t.TempDir(), t.TempDir(), privateTempDir(t)
+	if err := os.WriteFile(filepath.Join(workspace, "scan.pdf"), makePDF([]pdfPage{{image: true}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configureFakePDFRenderer(t, binDir)
+	largePath := filepath.Join(t.TempDir(), "large.png")
+	if err := os.WriteFile(largePath, dimensionPNG(t, 11, 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_FAKE_PDF_PNG", largePath)
+	got, err := Load(context.Background(), workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: artifactDir, MaxPDFRenderedDimension: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[0].RenderedPDFPages) != 0 || !strings.Contains(got[0].RenderNotice, "dimension limits") {
+		t.Fatalf("dimension outcome=%+v", got[0])
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("oversized render left artifacts: %+v", entries)
+	}
+}
+
+func TestScannedPDFFallbackHasRenderDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a small POSIX fake pdftoppm executable")
+	}
+	workspace, binDir, artifactDir := t.TempDir(), t.TempDir(), privateTempDir(t)
+	if err := os.WriteFile(filepath.Join(workspace, "scan.pdf"), makePDF([]pdfPage{{image: true}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tool := filepath.Join(binDir, "pdftoppm")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nexec sleep 5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	started := time.Now()
+	got, err := Load(context.Background(), workspace, []string{"scan.pdf"}, Limits{PDFPageImageDir: artifactDir, PDFRenderTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("render timeout took %s", time.Since(started))
+	}
+	if len(got[0].RenderedPDFPages) != 0 || !strings.Contains(got[0].RenderNotice, "timed out") {
+		t.Fatalf("timeout outcome=%+v", got[0])
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("timeout left artifacts: %+v", entries)
+	}
+}
+
+func configureFakePDFRenderer(t *testing.T, binDir string) {
+	t.Helper()
+	pngPath := filepath.Join(t.TempDir(), "page.png")
+	if err := os.WriteFile(pngPath, tinyPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_FAKE_PDF_PNG", pngPath)
+	t.Setenv("PK_FAKE_PDF_ARGS", filepath.Join(t.TempDir(), "args"))
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$PK_FAKE_PDF_ARGS\"\nfor arg do prefix=\"$arg\"; done\ncp \"$PK_FAKE_PDF_PNG\" \"${prefix}.png\"\n"
+	tool := filepath.Join(binDir, "pdftoppm")
+	if err := os.WriteFile(tool, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func tinyPNG(t *testing.T) []byte {
+	return dimensionPNG(t, 1, 1)
+}
+
+func dimensionPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	imageValue := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			imageValue.Set(x, y, color.White)
+		}
+	}
+	if err := png.Encode(&out, imageValue); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func privateTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(resolved, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 type pdfPage struct {

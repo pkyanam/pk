@@ -20,6 +20,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/pkyanam/pk/internal/skillfrontmatter"
 )
 
 const (
@@ -557,35 +560,26 @@ func escapePath(p string) string {
 	return strings.Join(parts, "/")
 }
 func parseSkill(b []byte) (string, string, error) {
-	text := string(b)
-	if !strings.HasPrefix(text, "---\n") {
-		return "", "", errors.New("missing YAML frontmatter")
+	metadata, err := skillfrontmatter.Parse(b)
+	if err != nil {
+		return "", "", err
 	}
-	end := strings.Index(text[4:], "\n---")
-	if end < 0 {
-		return "", "", errors.New("unterminated frontmatter")
-	}
-	var name, desc string
-	for _, line := range strings.Split(text[4:4+end], "\n") {
-		k, v, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		v = strings.Trim(strings.TrimSpace(v), "\"'")
-		switch strings.TrimSpace(k) {
-		case "name":
-			name = v
-		case "description":
-			desc = v
-		}
-	}
+	name, desc := metadata.Name, metadata.Description
 	if !validName(name) || strings.TrimSpace(desc) == "" {
 		return "", "", errors.New("frontmatter requires safe name and description")
 	}
-	if len(desc) > 512 {
-		desc = desc[:512]
-	}
+	desc = truncateUTF8(desc, 512)
 	return name, desc, nil
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	for maxBytes > 0 && !utf8.ValidString(value[:maxBytes]) {
+		maxBytes--
+	}
+	return value[:maxBytes]
 }
 
 func boundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

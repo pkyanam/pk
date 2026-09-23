@@ -655,6 +655,8 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.broker = broker
 		opts := s.opts
 		opts.SessionID = sessionID
+		var promptID, pageDir string
+		var cleanupPages func()
 		if steeringEnabled {
 			opts.Inputs = inputStream
 			opts.QueueInputs = true
@@ -675,6 +677,22 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}()
 		go func() {
+			pagesPersisted := false
+			if len(files) > 0 {
+				var identityErr error
+				promptID, pageDir, cleanupPages, identityErr = prepareAttachmentIdentity(&opts)
+				if identityErr != nil {
+					finished <- turnDone{id: msg.ID, err: fmt.Errorf("prepare attachment storage: %w", identityErr)}
+					return
+				}
+				opts.PromptID = promptID
+				defer func() {
+					if !pagesPersisted {
+						cleanupPages()
+					}
+				}()
+				opts.AfterInputPersist = func(string, string) { pagesPersisted = true }
+			}
 			var loadedAttachments []attachments.Attachment
 			if err := ctx.Err(); err != nil {
 				finished <- turnDone{id: msg.ID, err: err}
@@ -686,11 +704,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 					finished <- turnDone{id: msg.ID, err: err}
 					return
 				}
-				loader := s.loadAttachments
-				if loader == nil {
-					loader = loadPromptAttachments
+				if loader := s.loadAttachments; loader != nil {
+					text, loadedAttachments, err = loader(ctx, workspace, text, resolved)
+				} else {
+					text, loadedAttachments, err = loadPromptAttachmentsWithPageDir(ctx, workspace, text, resolved, pageDir)
 				}
-				text, loadedAttachments, err = loader(ctx, workspace, text, resolved)
 				if err != nil {
 					finished <- turnDone{id: msg.ID, err: fmt.Errorf("load attachments: %w", err)}
 					return
@@ -699,9 +717,13 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 					finished <- turnDone{id: msg.ID, err: err}
 					return
 				}
+				if cleanupPages != nil && !hasRenderedPDFPages(loadedAttachments) {
+					cleanupPages()
+					pagesPersisted = true
+				}
 				summaries := make([]map[string]any, 0, len(loadedAttachments))
 				for _, item := range loadedAttachments {
-					summaries = append(summaries, map[string]any{"path": item.Path, "kind": item.Kind, "content_type": item.ContentType, "truncated": item.Truncated, "pages_extracted": item.PagesExtracted, "pages_total": item.PagesTotal})
+					summaries = append(summaries, map[string]any{"path": item.Path, "kind": item.Kind, "content_type": item.ContentType, "truncated": item.Truncated, "pages_extracted": item.PagesExtracted, "pages_total": item.PagesTotal, "rendered_pages": len(item.RenderedPDFPages), "render_notice": item.RenderNotice})
 				}
 				_ = s.emit(msg.ID, "attachments_loaded", map[string]any{"files": summaries})
 			}
@@ -769,13 +791,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			out := &rpcRunnerOutput{server: s, id: msg.ID}
 			opts.Prompt = text
 			if len(loadedAttachments) > 0 {
-				promptID, idErr := newPresentationPromptID()
-				if idErr != nil {
-					fmt.Fprintf(s.diagnostics, "pk: could not assign attachment presentation ID: %v\n", idErr)
-				} else if record, recordErr := presentation.NewRecord(originalUserText, text, loadedAttachments); recordErr != nil {
+				if record, recordErr := presentation.NewRecord(originalUserText, text, loadedAttachments); recordErr != nil {
 					fmt.Fprintf(s.diagnostics, "pk: could not describe attachment history: %v\n", recordErr)
 				} else {
-					opts.PromptID = promptID
 					opts.BeforeInputPersist = func(sessionID, inputID string) error {
 						if inputID != promptID {
 							fmt.Fprintln(s.diagnostics, "pk: attachment presentation input ID mismatch; full prompt will be retained")

@@ -104,6 +104,21 @@ func TestGitHubTreeSourceSelectsSkillPathAndRef(t *testing.T) {
 	}
 }
 
+func TestParseSkillFrontmatterSupportsStandardScalarStyles(t *testing.T) {
+	name, description, err := parseSkill([]byte("---\nname: \"gws-gmail\"\ndescription: >-\n  Manage Gmail messages, threads, and\n  labels: safely.\n---\n" + strings.Repeat("body ", 20_000)))
+	if err != nil || name != "gws-gmail" || description != "Manage Gmail messages, threads, and labels: safely." {
+		t.Fatalf("parseSkill() = %q, %q, %v", name, description, err)
+	}
+	_, description, err = parseSkill([]byte("---\nname: literal\ndescription: |\n  First line.\n  Second line.\n---\n"))
+	if err != nil || description != "First line.\nSecond line." {
+		t.Fatalf("literal description = %q, %v", description, err)
+	}
+	_, description, err = parseSkill([]byte("---\nname: quoted\ndescription: \"A colon: and a continued\n  quoted value.\"\n---\n"))
+	if err != nil || description != "A colon: and a continued quoted value." {
+		t.Fatalf("quoted description = %q, %v", description, err)
+	}
+}
+
 func TestGitHubTreeURLSelectsExactDuplicateFolderPath(t *testing.T) {
 	requested := "https://github.com/owner/repo/tree/main/path1/foo"
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

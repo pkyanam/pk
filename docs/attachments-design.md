@@ -18,8 +18,10 @@ ChatGPT Codex endpoint accepts an equivalent file-input payload through this ada
 pk therefore uses only paths the user explicitly selects. Text files and PDFs are read into the
 current user input. Images are represented by their validated path and inspected through the
 existing `ViewImage` operation; its result returns image content to the model. The loader never
-copies image bytes into the prompt or session history, and it does not search for neighboring files.
-For now, PDFs use local text extraction only, not native file upload, page images, or OCR.
+copies source image bytes into the prompt or session history, and it does not search for neighboring
+files. PDFs are not uploaded as native PDF inputs and no OCR is performed. In addition to text
+extraction, pk can optionally render a small number of image-only/scanned PDF pages to local PNGs
+for the existing `ViewImage` operation.
 
 ## Limits and path behavior
 
@@ -33,15 +35,28 @@ the process.
 
 PDF input is capped at 8 MiB, 20 pages, 64 KiB extracted text, 4 MiB decompressed stream, 50,000
 content operators per page, and 20,000 glyphs per page. Extraction is synchronous and receives the
-caller context for cancellation. A page/text cap is reported as truncated. The note explicitly says
-that extraction is text-only; pages containing images without selectable text are identified as
-scanned, and no OCR is implied.
+caller context for cancellation. A page/text cap is reported as truncated. Pages containing images
+without selectable text are identified as scanned, and no OCR is implied.
 
-The PDF fallback pins [`github.com/giraffesyo/pdf` v0.6.0](https://github.com/giraffesyo/pdf/tree/v0.6.0),
+When `pdftoppm` (from Poppler) is available, scanned/image-only pages may also be previewed. At most
+three candidate pages are rendered, each scaled to at most 1600 pixels, with a 4 MiB per-image and
+12 MiB per-prompt total image limit and a shared 20-second render deadline. For mixed PDFs, only the
+pages identified as scanned are rendered; text-bearing pages are not rasterized. If the renderer is
+missing or fails a resource/safety check, text extraction remains available and the attachment note
+reports that no preview was made. `pdftoppm` is an optional local fallback, not a bundled dependency.
+
+The PDF text extractor pins [`github.com/giraffesyo/pdf` v0.6.0](https://github.com/giraffesyo/pdf/tree/v0.6.0),
 a zero-external-dependency MIT package with context-aware page extraction and parser resource
 limits. It is a young project; keep the version pinned, preserve the malformed/oversize/cancellation
-tests, and review maturity/security before upgrading. The fallback is a bounded text extractor, not
-a promise of faithful layout, embedded-image understanding, or scan recognition.
+tests, and review maturity/security before upgrading. The extractor is bounded and does not promise
+faithful layout or scan recognition. Raster previews use the separately installed Poppler `pdftoppm`
+tool only for page images; it does not add native PDF upload or OCR.
+
+Rendered PNGs live under a private per-session, per-input directory in the session store. The paths
+are stable for the saved input so `ViewImage` can inspect them after attach/reload. Session archive
+and restore carry those artifacts with the session; permanent purge removes them. Failed prompt
+setup cleans up previews that were not persisted. The session manager validates the managed paths
+before archive or deletion.
 
 ## Host integration
 
@@ -83,9 +98,13 @@ drop behavior has not been verified and is not promised.
 
 A live 80×24 PTY smoke attached `marker.pdf` with `/file`, submitted the prompt, received the loaded
 notice, and got the exact expected PDF text marker from Luna; the composer was empty afterward.
-Earlier CLI smokes also confirmed one-page PDF text extraction and an explicitly selected external
-PNG inspected through `ViewImage`. These checks validate the exercised routes, not broad format
-coverage. The TUI path is explicit text entry, not a native picker.
+Unit fixtures cover bounded rendering of scanned pages, selecting only image-only pages in a mixed
+PDF, private output modes, renderer absence/failure, timeout, and session archive/restore/purge.
+A real-Poppler local smoke also preserved selectable cover text, rendered scanned page 2 into a
+decodable PNG, and verified resume, archive, restore, and purge without a model request. Installation
+is pending. Earlier CLI smokes confirmed selectable-text PDF extraction and an explicitly selected external PNG inspected
+through `ViewImage`. These checks validate exercised routes, not broad format coverage. The TUI path
+is explicit text entry, not a native picker.
 
 ## Native Cmux checks (2026-09-23)
 

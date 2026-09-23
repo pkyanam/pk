@@ -38,6 +38,9 @@ import (
 // non-empty ID resumes that durable session and appends Prompt as a new input.
 type Options struct {
 	Prompt string
+	// PreallocatedNewID reserves the identity of a fresh session before the
+	// first input is prepared. It is never interpreted as a resume ID.
+	PreallocatedNewID string
 	// PromptID is a caller-owned stable ID for the initial prompt. It lets a
 	// task host retry a worker after a crash without appending the prompt twice.
 	PromptID string
@@ -45,20 +48,23 @@ type Options struct {
 	// before the initial external input is appended to the durable store.
 	// Callers may persist presentation-only metadata associated with those IDs.
 	BeforeInputPersist func(sessionID, inputID string) error
-	SessionID          string
-	SessionDir         string
-	Workspace          string
-	Model              string
-	Effort             string
-	SystemPrompt       string
-	SkillsDirs         []string
-	JSONL              bool
-	ToolEvents         bool
-	Output             io.Writer
-	Diagnostics        io.Writer
-	OnSession          func(string)
-	Store              sessionstore.Store
-	Adapter            llm.Adapter
+	// AfterInputPersist runs only after the initial external input is durably
+	// appended. Callers may use it to retain input-owned artifacts.
+	AfterInputPersist func(sessionID, inputID string)
+	SessionID         string
+	SessionDir        string
+	Workspace         string
+	Model             string
+	Effort            string
+	SystemPrompt      string
+	SkillsDirs        []string
+	JSONL             bool
+	ToolEvents        bool
+	Output            io.Writer
+	Diagnostics       io.Writer
+	OnSession         func(string)
+	Store             sessionstore.Store
+	Adapter           llm.Adapter
 	// Inputs, when non-nil, keeps the coordinator alive and submits each prompt
 	// until the channel is closed. This is useful for task hosts that need to
 	// steer a running session without rebuilding its coordinator.
@@ -148,6 +154,9 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	if options.Adapter == nil {
 		return RunResult{}, errors.New("LLM adapter is required")
 	}
+	if options.PreallocatedNewID != "" && options.SessionID != "" {
+		return RunResult{}, errors.New("preallocated new-session ID is valid only when SessionID is empty")
+	}
 	if options.Model == "" {
 		options.Model = "gpt-6-luna"
 	}
@@ -203,14 +212,27 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 
 	var id session.ID
 	var restored sessionstore.ResumeState
-	if options.SessionID == "" {
-		newID, err := newID()
-		if err != nil {
-			return RunResult{}, err
+	newSession := options.SessionID == ""
+	if newSession {
+		if options.PreallocatedNewID != "" {
+			if !validPreallocatedSessionID(options.PreallocatedNewID) {
+				return RunResult{}, errors.New("invalid preallocated new-session ID")
+			}
+			id = session.ID(options.PreallocatedNewID)
+		} else {
+			newID, err := newID()
+			if err != nil {
+				return RunResult{}, err
+			}
+			id = session.ID(newID)
 		}
-		id = session.ID(newID)
 	} else {
 		id = session.ID(options.SessionID)
+	}
+	if newSession && options.PreallocatedNewID != "" {
+		if err := checkPreallocatedSessionCollision(ctx, store, options.SessionDir, id); err != nil {
+			return RunResult{}, err
+		}
 	}
 	lockDir := options.SessionDir
 	if lockDir == "" {
@@ -225,7 +247,12 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 			fmt.Fprintf(options.Diagnostics, "pk: release session lease: %v\n", err)
 		}
 	}()
-	if options.SessionID == "" {
+	if newSession {
+		if options.PreallocatedNewID != "" {
+			if err := checkPreallocatedSessionCollision(ctx, store, options.SessionDir, id); err != nil {
+				return RunResult{}, err
+			}
+		}
 		if _, err := store.Create(ctx, id); err != nil {
 			return RunResult{}, fmt.Errorf("create session: %w", err)
 		}
@@ -236,7 +263,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 			return RunResult{}, fmt.Errorf("resume session %q: %w", id, err)
 		}
 	}
-	if options.SessionID == "" {
+	if newSession {
 		var err error
 		restored, err = store.Resume(ctx, id)
 		if err != nil {
@@ -284,7 +311,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	}
 	var snapshot ContextSnapshot
 	loadedSnapshot := false
-	if options.SessionID != "" {
+	if !newSession {
 		loaded, snapshotErr := contextStore.LoadContext(ctx, id)
 		if snapshotErr != nil {
 			if !isMissingContextSnapshot(snapshotErr) {
@@ -321,19 +348,33 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		}
 	}
 	registryFactory := options.RegistryFactory
-	if registryFactory == nil {
-		registryFactory = defaultRegistryFactory
-	}
 	registryOptions := ToolRegistryOptions{Workspace: options.Workspace, OperationDir: operationDir}
+	var skillDiscoveryWarnings []error
 	if loadedSnapshot {
 		registryOptions.Skills, registryOptions.SkillsSet = snapshotSkills(snapshot), true
+	} else if registryFactory == nil {
+		// Unreal v0.1.1's path discovery is useful, but its frontmatter parser
+		// treats YAML block scalars as literal markers. Decode metadata before
+		// registration so SkillUse and contextbuilder share the same names.
+		discovered, warnings, discoverErr := discoverCatalogSkills(ctx, options.SkillsDirs)
+		if discoverErr != nil {
+			return RunResult{SessionID: string(id)}, fmt.Errorf("discover skills: %w", discoverErr)
+		}
+		registryOptions.Skills, registryOptions.SkillsSet = discovered, true
+		for _, warning := range warnings {
+			skillDiscoveryWarnings = append(skillDiscoveryWarnings, errors.New(warning))
+		}
 	} else {
 		registryOptions.SkillsDirs = options.SkillsDirs
+	}
+	if registryFactory == nil {
+		registryFactory = defaultRegistryFactory
 	}
 	registry, skills, warnings := registryFactory(registryOptions)
 	if registry == nil {
 		return RunResult{SessionID: string(id)}, errors.New("tool registry factory returned nil")
 	}
+	warnings = append(skillDiscoveryWarnings, warnings...)
 	if options.DecorateRegistry != nil {
 		registry = options.DecorateRegistry(registry)
 		if registry == nil {
@@ -490,6 +531,9 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		<-done
 		return RunResult{}, fmt.Errorf("submit prompt: %w", err)
 	}
+	if options.AfterInputPersist != nil {
+		options.AfterInputPersist(string(id), inputID)
+	}
 	if options.Inputs != nil {
 		go pumpInputs(runCtx, inputs, options.Inputs, interactiveInputs, inputGate, builder, store, id, stopRun, inputAcks, inputAcked, &inputAckMu, recordOutputErr)
 	}
@@ -529,6 +573,20 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		return RunResult{SessionID: string(id), Text: text}, fmt.Errorf("write output: %w", err)
 	}
 	return RunResult{SessionID: string(id), Text: text}, nil
+}
+
+func checkPreallocatedSessionCollision(ctx context.Context, store sessionstore.Store, sessionDir string, id session.ID) error {
+	if sessionDir != "" {
+		if _, statErr := os.Lstat(filepath.Join(sessionDir, string(id)+".session.jsonl")); statErr == nil {
+			return fmt.Errorf("preallocated new-session ID %q already exists", id)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("check preallocated session ID: %w", statErr)
+		}
+	}
+	if _, resumeErr := store.Resume(ctx, id); resumeErr == nil {
+		return fmt.Errorf("preallocated new-session ID %q already exists", id)
+	}
+	return nil
 }
 
 func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, recordOutputErr func(error)) sessionstore.Observer {
@@ -1304,4 +1362,20 @@ func newID() (string, error) {
 		return "", fmt.Errorf("generate ID: %w", err)
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+// NewSessionID allocates a collision-resistant ID for a session that has not
+// yet been created. Passing it as PreallocatedNewID does not resume a session.
+func NewSessionID() (string, error) { return newID() }
+
+func validPreallocatedSessionID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }

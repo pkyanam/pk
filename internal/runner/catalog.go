@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pkyanam/pk/internal/skillfrontmatter"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
@@ -165,6 +166,13 @@ func discoverCatalogSkills(ctx context.Context, dirs []string) ([]tool.Skill, []
 			warnings = append(warnings, err.Error())
 		}
 		for _, skill := range discovered {
+			metadata, metadataErr := loadSkillMetadata(skill.Path)
+			if metadataErr != nil {
+				warnings = append(warnings, fmt.Sprintf("read skill metadata %q: %v; ignored", skill.Path, metadataErr))
+				continue
+			}
+			skill.Name = metadata.Name
+			skill.Description = metadata.Description
 			path := canonicalSkillPath(skill.Path)
 			if _, exists := seenPaths[path]; exists {
 				continue
@@ -179,6 +187,19 @@ func discoverCatalogSkills(ctx context.Context, dirs []string) ([]tool.Skill, []
 		}
 	}
 	return skills, warnings, nil
+}
+
+func loadSkillMetadata(path string) (skillfrontmatter.Metadata, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return skillfrontmatter.Metadata{}, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, skillfrontmatter.MaxBytes+1))
+	if err != nil {
+		return skillfrontmatter.Metadata{}, err
+	}
+	return skillfrontmatter.Parse(data)
 }
 
 func catalogEntry(name, description, path string, saved bool, sessionDir string) SkillCatalogEntry {

@@ -17,6 +17,7 @@ import (
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/modelstream"
+	"github.com/pkyanam/pk/internal/presentation"
 	"github.com/pkyanam/pk/internal/runner"
 	pkbuiltins "github.com/pkyanam/pk/skills"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -133,11 +134,37 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 2
 	}
 	if len(files) > 0 {
+		originalPrompt := options.Prompt
+		promptID, pageDir, cleanup, identityErr := prepareAttachmentIdentity(&options)
+		if identityErr != nil {
+			fmt.Fprintf(stderr, "pk run: prepare attachment storage: %v\n", identityErr)
+			return 2
+		}
+		persisted := false
+		defer func() {
+			if !persisted {
+				cleanup()
+			}
+		}()
+		options.PromptID = promptID
+		options.AfterInputPersist = func(string, string) { persisted = true }
 		var loaded []attachments.Attachment
-		options.Prompt, loaded, err = loadPromptAttachments(ctx, options.Workspace, options.Prompt, files)
+		options.Prompt, loaded, err = loadPromptAttachmentsWithPageDir(ctx, options.Workspace, options.Prompt, files, pageDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "pk run: load attachments: %v\n", err)
 			return 2
+		}
+		if record, recordErr := presentation.NewRecord(originalPrompt, options.Prompt, loaded); recordErr == nil {
+			options.BeforeInputPersist = func(sessionID, inputID string) error {
+				if inputID == promptID {
+					saveHistoryPresentation(options.SessionDir, sessionID, inputID, record, stderr)
+				}
+				return nil
+			}
+		}
+		if !hasRenderedPDFPages(loaded) {
+			cleanup()
+			persisted = true
 		}
 		writeAttachmentSummary(stderr, loaded)
 	}

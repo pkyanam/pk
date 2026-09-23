@@ -52,6 +52,14 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if err := os.WriteFile(contextPath, []byte(`{"Version":1,"Workspace":"/workspace/example","SystemPrompt":"stable"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	pageDir := attachments.PromptPDFPageDir(sessionDir, id, "input-with-pdf")
+	if err := os.MkdirAll(pageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pagePath := filepath.Join(pageDir, "page-1.png")
+	if err := os.WriteFile(pagePath, []byte("rendered page"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	presentationRecord, err := presentation.NewRecord("review report", "review report\nattached extracted text", []attachments.Attachment{{Path: "report.txt", Kind: attachments.Text, ContentType: "text/plain"}})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +93,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if len(result) != 1 || !result[0].OK {
 		t.Fatalf("archive result: %+v", result)
 	}
-	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, compactionPath, capture} {
+	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, compactionPath, capture, pagePath} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Errorf("live artifact still exists at %s (err=%v)", path, err)
 		}
@@ -107,6 +115,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 		contextPath:    "stable",
 		compactionPath: "summary",
 		capture:        "complete output",
+		pagePath:       "rendered page",
 	} {
 		if path == filepath.Join(sessionDir, id+".session.jsonl") {
 			if _, err := os.Stat(path); err != nil {
@@ -163,6 +172,14 @@ func TestPurgeRequiresExplicitTrashIDAndDoesNotFollowSymlinks(t *testing.T) {
 	if err := presentation.Save(sessionDir, "session-purge", "input-1", record); err != nil {
 		t.Fatal(err)
 	}
+	pageDir := attachments.PromptPDFPageDir(sessionDir, "session-purge", "input-1")
+	if err := os.MkdirAll(pageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pagePath := filepath.Join(pageDir, "page-1.png")
+	if err := os.WriteFile(pagePath, []byte("rendered page"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	archived := manager.Archive(context.Background(), []string{"session-purge"}, nil)
 	if len(archived) != 1 || !archived[0].OK {
 		t.Fatalf("archive: %+v", archived)
@@ -197,6 +214,9 @@ func TestPurgeRequiresExplicitTrashIDAndDoesNotFollowSymlinks(t *testing.T) {
 	}
 	if _, err := os.Stat(entryDir); !os.IsNotExist(err) {
 		t.Fatalf("trash entry remains after purge, err=%v", err)
+	}
+	if _, err := os.Stat(pagePath); !os.IsNotExist(err) {
+		t.Fatalf("rendered page remains after purge, err=%v", err)
 	}
 	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve me" {
 		t.Fatalf("purge changed unrelated file: %q err=%v", got, err)
