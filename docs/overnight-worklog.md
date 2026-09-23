@@ -674,3 +674,10 @@ gates or imply that every backlog item is complete.
 - Ran one baseline-first paired Luna/low trial, bounded to 120 seconds per arm. Both arms completed two children with complete input/output accounting and passed both pristine holdouts.
 - Combined input: baseline 26,171, dispatcher 20,239; cached input: 9,216 vs 3,072; output: 1,573 vs 1,385; elapsed: 38.587 vs 29.649 seconds. Uncached input was slightly higher for dispatcher (17,167 vs 16,955), so no cost-saving claim or production promotion.
 - Results, source identity, sanitized traces and generated implementations: benchmarks/results/subagent-schema-pilot-20260923a/. Next evidence needed: reverse-order repetitions and lifecycle operations beyond start/wait.
+
+### 09:45 EDT — compact MCP mouse controls installed
+
+- Installed clean 1fbd1cd as 20260923T134349.857906000Z-cc4d08d2b46c-9a9c6998 after managed Go/UI validation and artifact build gates. Existing user sessions were left running.
+- Connection and authentication selectors now have explicit previous/next mouse buttons using the same behavior as arrow keys. Eleven renderer tests cover navigation and an 80×24 longest-auth form with visible Save/Cancel and ignored right-click.
+- Updated clipboard help to describe the native copy path, and removed stale current-release labels from the checklist.
+- A bounded Luna audit found no additional clipboard/modal/turn-completion focus bug. The original native freeze remains unconfirmed; this installment does not claim to fix it.
