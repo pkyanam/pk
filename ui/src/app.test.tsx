@@ -64,6 +64,99 @@ describe("OpenTUI application", () => {
     expect(frame.split("\n")).toHaveLength(height + 1)
   })
 
+  test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("shows token usage with partial and unavailable coverage at $width × $height", async ({ width, height }) => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "session-usage-1" } }))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const request = fake.sent.find((item) => item.type === "session_usage")!
+    expect(request.payload?.session_id).toBe("session-usage-1")
+    expect(setup.captureCharFrame()).toContain("Loading recorded usage")
+    expect(setup.captureCharFrame()).toContain("Ready · cache —")
+    act(() => fake.emit({ version: 1, id: request.id, type: "session_usage", payload: {
+      session_id: "session-usage-1", response_count: 3, input_tokens: 300, output_tokens: null,
+      cached_input_tokens: 120, uncached_input_tokens: 180,
+      coverage: { input_responses: 2, output_responses: 0, cached_input_responses: 1, uncached_input_responses: 1 },
+    } }))
+    const frame = await setup.waitForFrame((value) => value.includes("2/3 responses"))
+    expect(frame).toContain("3 recorded responses")
+    expect(frame).toContain("Input tokens")
+    expect(frame).toContain("300 · 2/3 responses")
+    expect(frame).toContain("Output tokens")
+    expect(frame).toContain("Unavailable · 0/3 responses")
+    expect(frame).toContain("Cached input")
+    expect(frame).toContain("120 · 1/3 responses")
+    expect(frame).not.toContain("$")
+  })
+
+  test("keeps /usage honest for fresh sessions and ignores results after session changes or close", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    let frame = await setup.waitForFrame((value) => value.includes("No session yet"))
+    expect(fake.sent.some((item) => item.type === "session_usage")).toBe(false)
+    await act(async () => { await setup.mockInput.pressEscape() })
+    await setup.waitForFrame((value) => !value.includes("Session token usage"))
+
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "session-old" } }))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const stale = fake.sent.filter((item) => item.type === "session_usage").at(-1)!
+    expect(stale.payload?.session_id).toBe("session-old")
+    act(() => fake.emit({ version: 1, id: "new-session", type: "session", payload: { session_id: "session-new" } }))
+    act(() => fake.emit({ version: 1, id: stale.id, type: "session_usage", payload: {
+      session_id: "session-old", response_count: 1, input_tokens: 999, output_tokens: 10,
+      coverage: { input_responses: 1, output_responses: 1, cached_input_responses: 0, uncached_input_responses: 0 },
+    } }))
+    frame = await setup.waitForFrame((value) => value.includes("Session changed; reopen /usage"))
+    expect(frame).not.toContain("999")
+  })
+
+  test("usage errors clear loading and allow a retry", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="session-retry" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const first = fake.sent.find((item) => item.type === "session_usage")!
+    act(() => fake.emit({ version: 1, id: first.id, type: "error", payload: { message: "usage unavailable" } }))
+    let frame = await setup.waitForFrame((value) => value.includes("usage unavailable"))
+    expect(frame).not.toContain("Loading recorded usage")
+    const closeRow = frame.split("\n").findIndex((line) => line.includes("Close · Esc"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[closeRow]!.indexOf("Close · Esc"), closeRow, 0))
+    await setup.waitForFrame((value) => !value.includes("Session token usage"))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.filter((item) => item.type === "session_usage")).toHaveLength(2)
+  })
+
+  test("closing /usage while loading cancels its read operation", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="session-loading" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const usageRequest = fake.sent.find((item) => item.type === "session_usage")!
+    expect(setup.captureCharFrame()).toContain("Loading recorded usage")
+    await act(async () => { await setup.mockInput.pressKeys(["ESCAPE"], 100) })
+    await setup.waitForFrame((frame) => !frame.includes("Session token usage"))
+    const cancel = fake.sent.find((item) => item.type === "session_usage_cancel")!
+    expect(cancel.payload?.request_id).toBe(usageRequest.id)
+  })
+
   test("empty-session command shortcuts remain visible and first prompt works", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })

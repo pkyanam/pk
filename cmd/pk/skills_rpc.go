@@ -47,6 +47,7 @@ func (s *rpcServer) startSkillOperation(requestID, operationName, startedEvent, 
 	s.skillOperationCancel = cancel
 	s.skillOperationDone = done
 	s.skillOperationKind = operationName
+	s.skillOperationRequestID = requestID
 	s.mu.Unlock()
 	_ = s.emit(requestID, startedEvent, startedPayload)
 	go func() {
@@ -57,6 +58,7 @@ func (s *rpcServer) startSkillOperation(requestID, operationName, startedEvent, 
 		s.skillOperationActive = false
 		s.skillOperationCancel = nil
 		s.skillOperationKind = ""
+		s.skillOperationRequestID = ""
 		s.mu.Unlock()
 		if err != nil {
 			_ = s.emit(requestID, "error", map[string]any{"message": fmt.Sprintf("%s operation failed: %v", operationName, err), "recoverable": true, "cancelled": canceled})
@@ -73,9 +75,20 @@ func (s *rpcServer) startSkillOperation(requestID, operationName, startedEvent, 
 }
 
 func (s *rpcServer) cancelRPCOperation(requestID, kindPrefix, event string) {
+	s.cancelRPCOperationMatching(requestID, "", kindPrefix, event)
+}
+
+func (s *rpcServer) cancelRPCOperationByID(requestID, targetRequestID, kindPrefix, event string) {
+	s.cancelRPCOperationMatching(requestID, targetRequestID, kindPrefix, event)
+}
+
+func (s *rpcServer) cancelRPCOperationMatching(requestID, targetRequestID, kindPrefix, event string) {
 	s.mu.Lock()
 	cancel, kind := s.skillOperationCancel, s.skillOperationKind
 	active := s.skillOperationActive && cancel != nil && strings.HasPrefix(kind, kindPrefix)
+	if targetRequestID != "" && targetRequestID != s.skillOperationRequestID {
+		active = false
+	}
 	s.mu.Unlock()
 	if !active {
 		_ = s.emit(requestID, "error", map[string]any{"message": "no matching background operation is running", "recoverable": true})

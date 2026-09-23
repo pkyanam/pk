@@ -66,48 +66,49 @@ func rpcMain(ctx context.Context, input io.Reader, output, diagnostics io.Writer
 }
 
 type rpcServer struct {
-	ctx                  context.Context
-	input                io.Reader
-	output, diagnostics  io.Writer
-	cfgPath, sessionDir  string
-	mu                   sync.Mutex
-	opts                 runner.Options
-	adapter              *codexAdapter
-	useCodex             bool
-	codexPath            string
-	started              bool
-	steeringEnabled      bool
-	session              string
-	providerID           string
-	activeCancel         context.CancelFunc
-	releaseCancel        context.CancelFunc
-	releaseDone          chan struct{}
-	releaseActive        bool
-	pluginCommandCancel  context.CancelFunc
-	pluginCommandDone    chan struct{}
-	pluginCommandActive  bool
-	skillOperationCancel context.CancelFunc
-	skillOperationDone   chan struct{}
-	skillOperationActive bool
-	skillOperationKind   string
-	reloadPrepared       bool
-	activeInputs         chan runner.Input
-	pendingSteers        map[string]func(error)
-	active               bool
-	quit                 bool
-	attachedTask         string
-	taskFollowRequest    string
-	taskFollowCancel     context.CancelFunc
-	pluginPaths          []string
-	pluginIssues         []string
-	requestTypes         map[string]string
-	skillManagerFactory  func() skillinstall.Manager
-	broker               *interaction.Broker
-	loadAttachments      func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
-	prepareAdapter       func(context.Context, bool, string) (*codexAdapter, error)
-	clipboardProvider    clipboard.Provider
-	clipboardWriter      clipboard.TextWriter
-	runReleaseCommand    func(context.Context, []string, io.Writer, io.Writer) int
+	ctx                     context.Context
+	input                   io.Reader
+	output, diagnostics     io.Writer
+	cfgPath, sessionDir     string
+	mu                      sync.Mutex
+	opts                    runner.Options
+	adapter                 *codexAdapter
+	useCodex                bool
+	codexPath               string
+	started                 bool
+	steeringEnabled         bool
+	session                 string
+	providerID              string
+	activeCancel            context.CancelFunc
+	releaseCancel           context.CancelFunc
+	releaseDone             chan struct{}
+	releaseActive           bool
+	pluginCommandCancel     context.CancelFunc
+	pluginCommandDone       chan struct{}
+	pluginCommandActive     bool
+	skillOperationCancel    context.CancelFunc
+	skillOperationDone      chan struct{}
+	skillOperationActive    bool
+	skillOperationKind      string
+	skillOperationRequestID string
+	reloadPrepared          bool
+	activeInputs            chan runner.Input
+	pendingSteers           map[string]func(error)
+	active                  bool
+	quit                    bool
+	attachedTask            string
+	taskFollowRequest       string
+	taskFollowCancel        context.CancelFunc
+	pluginPaths             []string
+	pluginIssues            []string
+	requestTypes            map[string]string
+	skillManagerFactory     func() skillinstall.Manager
+	broker                  *interaction.Broker
+	loadAttachments         func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
+	prepareAdapter          func(context.Context, bool, string) (*codexAdapter, error)
+	clipboardProvider       clipboard.Provider
+	clipboardWriter         clipboard.TextWriter
+	runReleaseCommand       func(context.Context, []string, io.Writer, io.Writer) int
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -1239,6 +1240,36 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		})
 	case "history_cancel":
 		s.cancelRPCOperation(msg.ID, "history page", "history_cancel_requested")
+	case "session_usage_cancel":
+		var request struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil || strings.TrimSpace(request.RequestID) == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "session_usage_cancel requires request_id", "recoverable": true})
+			return
+		}
+		s.cancelRPCOperationByID(msg.ID, request.RequestID, "session usage", "session_usage_cancel_requested")
+	case "session_usage":
+		var request struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil || strings.TrimSpace(request.SessionID) == "" {
+			if err == nil {
+				err = errors.New("session_id is required")
+			}
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid session usage request: " + err.Error(), "recoverable": true})
+			return
+		}
+		s.mu.Lock()
+		sessionDir := s.sessionDir
+		s.mu.Unlock()
+		s.startSkillOperation(msg.ID, "session usage", "session_usage_started", "session_usage", map[string]any{"session_id": request.SessionID}, func(ctx context.Context) (any, error) {
+			store, err := localfile.New(sessionDir)
+			if err != nil {
+				return nil, err
+			}
+			return readSessionUsage(ctx, store, request.SessionID)
+		})
 	case "plugins_list":
 		payload, err := listRPCPlugins(userPluginService())
 		if err != nil {

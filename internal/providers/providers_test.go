@@ -177,6 +177,29 @@ func TestChatCompletionsStreamsTextToolsUsageAndModels(t *testing.T) {
 	if response.Usage.InputTokens != 12 || response.Usage.OutputTokens != 6 || response.Usage.CachedInputTokens != 3 || response.Usage.ReasoningTokens != 2 {
 		t.Fatalf("usage=%+v", response.Usage)
 	}
+	if len(response.Usage.Raw) == 0 || !strings.Contains(string(response.Usage.Raw), `"prompt_tokens":12`) {
+		t.Fatalf("normalized usage lost provider field-presence metadata: %s", response.Usage.Raw)
+	}
+}
+
+func TestChatCompletionsPreserveExplicitZeroAndMissingUsageFields(t *testing.T) {
+	for _, test := range []struct {
+		name, usage string
+	}{
+		{"zero", `{"prompt_tokens":0,"completion_tokens":0,"prompt_tokens_details":{"cached_tokens":0}}`},
+		{"missing", `{}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := "data: {\"id\":\"" + test.name + "\",\"choices\":[],\"usage\":" + test.usage + "}\n\n" + "data: [DONE]\n\n"
+			response, err := decodeChatStream(context.Background(), strings.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(response.Usage.Raw) != test.usage {
+				t.Fatalf("Raw=%s want %s", response.Usage.Raw, test.usage)
+			}
+		})
+	}
 }
 
 func TestChatContentFilterIsRefusal(t *testing.T) {

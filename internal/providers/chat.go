@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -265,16 +266,7 @@ type chatChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		PromptDetails    struct {
-			CachedTokens int64 `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionDetails struct {
-			ReasoningTokens int64 `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-	} `json:"usage"`
+	Usage json.RawMessage `json:"usage"`
 }
 
 type assembledToolCall struct {
@@ -320,11 +312,33 @@ func decodeChatStream(ctx context.Context, source io.Reader) (llm.Response, erro
 		if response.ID == "" && chunk.ID != "" {
 			response.ID = chunk.ID
 		}
-		if chunk.Usage != nil {
-			response.Usage.InputTokens = chunk.Usage.PromptTokens
-			response.Usage.OutputTokens = chunk.Usage.CompletionTokens
-			response.Usage.CachedInputTokens = chunk.Usage.PromptDetails.CachedTokens
-			response.Usage.ReasoningTokens = chunk.Usage.CompletionDetails.ReasoningTokens
+		if len(chunk.Usage) > 0 && string(chunk.Usage) != "null" {
+			var usage struct {
+				PromptTokens     *int64 `json:"prompt_tokens"`
+				CompletionTokens *int64 `json:"completion_tokens"`
+				PromptDetails    *struct {
+					CachedTokens *int64 `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+				CompletionDetails *struct {
+					ReasoningTokens *int64 `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
+			}
+			if err := json.Unmarshal(chunk.Usage, &usage); err != nil {
+				return llm.Response{}, fmt.Errorf("decode chat completion usage: %w", err)
+			}
+			if usage.PromptTokens != nil {
+				response.Usage.InputTokens = *usage.PromptTokens
+			}
+			if usage.CompletionTokens != nil {
+				response.Usage.OutputTokens = *usage.CompletionTokens
+			}
+			if usage.PromptDetails != nil && usage.PromptDetails.CachedTokens != nil {
+				response.Usage.CachedInputTokens = *usage.PromptDetails.CachedTokens
+			}
+			if usage.CompletionDetails != nil && usage.CompletionDetails.ReasoningTokens != nil {
+				response.Usage.ReasoningTokens = *usage.CompletionDetails.ReasoningTokens
+			}
+			response.Usage.Raw = jsontext.Value(append([]byte(nil), chunk.Usage...))
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
