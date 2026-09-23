@@ -1,6 +1,6 @@
 import { useKeyboard, usePaste, useRenderer, useSelectionHandler } from "@opentui/react"
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
-import { useEffect, useRef, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 
@@ -12,10 +12,13 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
+type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string }
+type MCPToolOption = { server_id: string; server_tool_name: string; name: string; description: string; input_schema?: Record<string, unknown> }
+type ModelToolOption = { name: string; description: string; source?: string }
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -30,6 +33,8 @@ const slashCommands: SlashCommand[] = [
   { name: "/skills", description: "Browse available skills and insert one into your prompt", action: "skills" },
   { name: "/plugins", description: "Inspect installed plugins and their state", action: "plugins" },
   { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
+  { name: "/mcp", description: "List, add, or remove MCP servers · configuration only changes new sessions", action: "mcp" },
+  { name: "/tools", description: "Inspect the tools available to the active model session", action: "tools" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
   { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
   { name: "/reload", description: "Restart pk and resume this session", action: "reload" },
@@ -217,7 +222,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | null>(null)
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
@@ -229,6 +234,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [tasks, setTasks] = useState<Array<{ session_id: string; updated_at?: string; title?: string }>>([])
   const [skills, setSkills] = useState<SkillOption[]>([])
   const [plugins, setPlugins] = useState<PluginOption[]>([])
+  const [mcpServers, setMcpServers] = useState<MCPServerOption[]>([])
+  const [mcpTools, setMcpTools] = useState<MCPToolOption[]>([])
+  const [modelTools, setModelTools] = useState<ModelToolOption[]>([])
+  const [mcpSavedTools, setMcpSavedTools] = useState(false)
+  const [modelToolsSaved, setModelToolsSaved] = useState(false)
   const [maintenance, setMaintenance] = useState<Maintenance | null>(null)
   const [reloadPending, setReloadPending] = useState(false)
   const [copyNotice, setCopyNotice] = useState("")
@@ -731,6 +741,37 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (!available.length) addEntry("system", "No plugins are installed.")
         break
       }
+      case "mcp_catalog":
+      case "mcp_updated": {
+        const servers = Array.isArray(data.servers) ? data.servers.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
+          id: String(item.id), command: String(item.command ?? ""), arguments_count: Number(item.arguments_count ?? 0),
+          environment_keys: Array.isArray(item.environment_keys) ? item.environment_keys.map(String) : [],
+          working_directory: typeof item.working_directory === "string" ? item.working_directory : undefined,
+        })) : []
+        const tools = Array.isArray(data.tools) ? data.tools.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({
+          server_id: String(item.server_id ?? ""), server_tool_name: String(item.server_tool_name ?? ""),
+          name: String(item.name), description: String(item.description ?? ""),
+        })) : []
+        setMcpServers(servers)
+        setMcpTools(tools)
+        setMcpSavedTools(data.saved_session_tools === true)
+        if (selector !== "mcp") setSelectionIndex(0)
+        setSelector("mcp")
+        if (event.type === "mcp_updated" && data.next_session_only) addEntry("system", "MCP configuration saved · applies to new sessions. Use /new to start one.")
+        if (!servers.length) addEntry("system", 'No MCP servers configured. Use /mcp add --id ID --command PATH to add one.')
+        break
+      }
+      case "tool_catalog": {
+        const available = Array.isArray(data.tools) ? data.tools.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({
+          name: String(item.name), description: String(item.description ?? ""), source: typeof item.source === "string" ? item.source : undefined,
+        })) : []
+        setModelTools(available)
+        setModelToolsSaved(data.saved === true)
+        setSelectionIndex(0)
+        setSelector("tools")
+        if (!available.length) addEntry("system", "No model tools are available in this session.")
+        break
+      }
       case "clipboard_written": {
         if (event.id && pendingClipboardWrites.current.delete(event.id)) showCopyNotice("Copied to clipboard")
         break
@@ -1096,6 +1137,36 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "tasks": transport.send("task_list"); break
       case "skills": transport.send("skills" as any); break
       case "plugins": transport.send("plugins_list" as any); break
+      case "mcp": {
+        const [operation, ...options] = args
+        if (!operation || operation === "list") transport.send("mcp_list" as any)
+        else if (operation === "remove" && options[0]) transport.send("mcp_remove" as any, { id: options[0] })
+        else if (operation === "add") {
+          const server: { id?: string; command?: string; args: string[]; env: Record<string, string>; working_directory?: string } = { args: [], env: {} }
+          let invalid = ""
+          for (let index = 0; index < options.length; index++) {
+            const option = options[index]!
+            const value = options[++index]
+            if (value === undefined) { invalid = `Missing value after ${option}.`; break }
+            if (option === "--id") server.id = value
+            else if (option === "--command") server.command = value
+            else if (option === "--arg") server.args.push(value)
+            else if (option === "--cwd") server.working_directory = value
+            else if (option === "--env") {
+              const separator = value.indexOf("=")
+              const key = separator > 0 ? value.slice(0, separator) : ""
+              if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) { invalid = "Environment entries must use KEY=VALUE with a valid key."; break }
+              if (Object.hasOwn(server.env, key)) { invalid = `Environment key ${key} was supplied more than once.`; break }
+              server.env[key] = value.slice(separator + 1)
+            } else { invalid = `Unknown MCP option: ${option}.`; break }
+          }
+          if (!server.id || !server.command) invalid ||= 'Usage: /mcp add --id ID --command PATH [--arg ARG] [--env KEY=VALUE] [--cwd DIR]'
+          if (invalid) addEntry("system", invalid)
+          else transport.send("mcp_add" as any, { server })
+        } else addEntry("system", 'Usage: /mcp · /mcp add --id ID --command PATH [--arg ARG] [--env KEY=VALUE] [--cwd DIR] · /mcp remove ID')
+        break
+      }
+      case "tools": transport.send("tools" as any); break
       case "plugin": {
         const operation = (args[0] ?? "").toLowerCase()
         const target = args.slice(1).join(" ")
@@ -1219,7 +1290,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /tools · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -1268,6 +1339,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else if (plugin.manifest_path) transport.send("plugins_enable" as any, { manifest_path: plugin.manifest_path })
         else addEntry("system", `Cannot enable ${plugin.id}: its manifest path is unavailable.`)
       }
+    } else if (selector === "mcp") {
+      const server = mcpServers[index]
+      if (server) addEntry("system", `MCP ${server.id} · ${server.command} · ${server.arguments_count} args · environment keys: ${server.environment_keys.join(", ") || "none"} · ${server.working_directory || "default working directory"}. Use /mcp remove ${server.id} to remove it; changes apply to new sessions.`)
+    } else if (selector === "tools") {
+      const tool = modelTools[index]
+      if (tool) addEntry("system", `${tool.name}${tool.source ? ` · ${tool.source}` : ""}${tool.description ? ` · ${tool.description}` : ""}`)
     } else commitSelector(index)
   }
 
@@ -1346,7 +1423,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : plugins.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : modelTools.length
       if (isEscape) { setSelector(null); textarea.current?.focus(); return }
       if (key.name === "up") { setSelectionIndex((index) => (index - 1 + count) % count); return }
       if (key.name === "down") { setSelectionIndex((index) => (index + 1) % count); return }
@@ -1435,10 +1512,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
       : selector === "tasks" ? tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}`, state: "" }))
         : selector === "skills" ? skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
-          : plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
+        : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
+          : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: "configured" }))
+            : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
   const selectorPageSize = selector === "skills"
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
-    : selector === "plugins" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
+    : selector === "plugins" || selector === "mcp" || selector === "tools" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
   const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
   const filteredCommands = slashCommands.filter((item) => item.name.startsWith(draft.trim().split(/\s/)[0] || "/"))
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
@@ -1517,23 +1596,25 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : "Installed plugins"} />
+      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : "Model-visible tools"} />
+        {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
+        {selector === "tools" && <text fg={palette.dim} content={modelToolsSaved ? "Saved snapshot for this session" : "Current available tool registry"} />}
         <box style={{ height: 1 }} />
-        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : "Nothing to show"} />}
+        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? "No model tools available" : "Nothing to show"} />}
         {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
           const index = selectorWindowStart + localIndex
           return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
             <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
               <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
               <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
-              <text fg={selector === "plugins" && option.state === "enabled" ? palette.accent : palette.dim} content={option.state} />
+              <text fg={(selector === "plugins" && option.state === "enabled") || (selector === "mcp" && option.state === "configured") ? palette.accent : palette.dim} content={option.state} />
             </box>
             {option.description && <text fg={palette.dim} content={option.description} />}
           </box>
         })}
         <box style={{ height: 1 }} />
-        <text fg={palette.dim} content={selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        <text fg={palette.dim} content={selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
@@ -1548,7 +1629,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   )
 }
 
-function ToolTranscriptGroup({ entries, clock, expanded, onToggle }: { entries: Entry[]; clock: number; expanded: boolean; onToggle: () => void }) {
+const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clock, expanded, onToggle }: { entries: Entry[]; clock: number; expanded: boolean; onToggle: () => void }) {
   const renderer = useRenderer()
   const first = entries[0]!
   const failed = entries.some((entry) => entry.toolState === "failed")
@@ -1584,9 +1665,14 @@ function ToolTranscriptGroup({ entries, clock, expanded, onToggle }: { entries: 
       {entry.text && entry.text !== entry.detail && <text fg={palette.red} content={entry.text} />}
     </box>)}
   </box>
-}
+}, (previous, next) => {
+  if (previous.expanded !== next.expanded || previous.entries.length !== next.entries.length) return false
+  for (let index = 0; index < previous.entries.length; index++) if (previous.entries[index] !== next.entries[index]) return false
+  const elapsedIsLive = previous.entries.some((entry) => entry.startedAt !== undefined && entry.elapsedMs === undefined && !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase()))
+  return !elapsedIsLive || previous.clock === next.clock
+})
 
-function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
+const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { entry: Entry; clock: number }) {
   if (entry.role === "system") return <box style={{ paddingLeft: 2, paddingBottom: 1 }}><text fg={palette.dim} content={entry.text} /></box>
   if (entry.role === "tool") return <box style={{ flexDirection: "column", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: entry.toolState === "failed" ? palette.red : palette.accent }}>
     <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
@@ -1606,4 +1692,4 @@ function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
       : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
     {entry.deliveryMessage && <text fg={entry.delivery === "rejected" ? palette.red : palette.dim} content={entry.deliveryMessage} />}
   </box>
-}
+}, (previous, next) => previous.entry === next.entry && (previous.entry.role !== "tool" || previous.clock === next.clock))

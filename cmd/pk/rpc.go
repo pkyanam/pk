@@ -20,6 +20,7 @@ import (
 	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/interaction"
+	"github.com/pkyanam/pk/internal/mcpclient"
 	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/tasks"
@@ -618,7 +619,20 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				finished <- turnDone{id: msg.ID, err: err}
 				return
 			}
+			mcpHost, err := configureCLIMCP(broker.Context(), &opts, s.diagnostics)
+			if err != nil {
+				if host != nil {
+					_ = host.Close()
+				}
+				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load configured MCP servers: %w", err)}
+				return
+			}
 			result, err := runner.Run(broker.Context(), opts)
+			if mcpHost != nil {
+				if closeErr := mcpHost.Close(); err == nil && closeErr != nil {
+					err = closeErr
+				}
+			}
 			if host != nil {
 				if closeErr := host.Close(); err == nil && closeErr != nil {
 					err = closeErr
@@ -927,6 +941,49 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "plugins_updated", payload)
+	case "mcp_list":
+		payload, err := s.mcpCatalog(s.ctx)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "mcp_catalog", payload)
+	case "mcp_add":
+		var request struct {
+			Server mcpclient.ServerConfig `json:"server"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil || request.Server.ID == "" {
+			if err == nil {
+				err = errors.New("server.id is required")
+			}
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid MCP server configuration: " + err.Error(), "recoverable": true})
+			return
+		}
+		payload, err := s.mcpAdd(s.ctx, request.Server)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "mcp_updated", payload)
+	case "mcp_remove":
+		id := get("id")
+		if id == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "server id is required", "recoverable": true})
+			return
+		}
+		payload, err := s.mcpRemove(s.ctx, id)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "mcp_updated", payload)
+	case "tools":
+		payload, err := s.modelToolCatalog(s.ctx)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "tool_catalog", payload)
 	case "skills":
 		catalog, err := s.skillCatalog(s.ctx)
 		if err != nil {

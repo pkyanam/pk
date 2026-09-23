@@ -1096,4 +1096,54 @@ describe("OpenTUI application", () => {
     expect(setup.captureCharFrame()).toContain("Copy this βeta text")
   })
 
+  test("configures MCP servers without exposing environment values and lists model-visible tools", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText('/mcp add --id files --command "/path/server with space" --arg "serve mode" --env TOKEN=supersecret --cwd "/tmp/work dir"') })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const add = fake.sent.find((item) => item.type === "mcp_add")
+    expect(add?.payload?.server).toEqual({ id: "files", command: "/path/server with space", args: ["serve mode"], env: { TOKEN: "supersecret" }, working_directory: "/tmp/work dir" })
+    act(() => fake.emit({ version: 1, id: add!.id, type: "mcp_updated", payload: {
+      next_session_only: true, saved_session_tools: true,
+      servers: [{ id: "files", command: "/path/server with space", arguments_count: 1, environment_keys: ["TOKEN"], working_directory: "/tmp/work dir" }],
+      tools: [{ server_id: "files", server_tool_name: "read_file", name: "mcp_files_read_file_12345678", description: "Read a workspace file", input_schema: { properties: { path: { type: "string" } } } }],
+    } }))
+    const mcpFrame = await setup.waitForFrame((frame) => frame.includes("MCP servers · safe configuration summary"))
+    expect(mcpFrame).toContain("/path/server with space")
+    expect(mcpFrame).toContain("TOKEN")
+    expect(mcpFrame).not.toContain("supersecret")
+    await act(async () => {
+      setup.mockInput.pressEscape()
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    })
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("MCP configuration saved · applies to new sessions")
+    await act(async () => { await setup.mockInput.typeText("/mcp remove files") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "mcp_remove" && item.payload?.id === "files")).toBe(true)
+  })
+
+  test("/tools displays the saved model-visible catalog without starting a server", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/tools") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const request = fake.sent.find((item) => item.type === "tools")
+    expect(request).toBeDefined()
+    act(() => fake.emit({ version: 1, id: request!.id, type: "tool_catalog", payload: { saved: true, tools: [{ name: "Bash", source: "built-in", description: "Run a command in the workspace" }] } }))
+    const frame = await setup.waitForFrame((value) => value.includes("Model-visible tools"))
+    expect(frame).toContain("Bash")
+    expect(frame).toContain("Run a command in the workspace")
+    expect(frame).toContain("Saved snapshot for this session")
+    expect(fake.sent.some((item) => item.type === "mcp_add" || item.type === "mcp_remove")).toBe(false)
+  })
+
 })
