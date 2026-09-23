@@ -535,3 +535,10 @@ gates or imply that every backlog item is complete.
 
 - Clean GitHub revision `8d2217d` activated as `20260923T104825.645608000Z-f78554af8afa-93f7a64a`, including OAuth logout invalidation, the subagent race fix, and static-transcript clock optimization. Full Go suite, affected race tests, and all 124 UI tests passed.
 - A further native Finder-to-Cmux automated drag attempt did not produce a queued file. This is not proof of a parser failure because cross-window drop delivery was not observed. Keep native drag/drop unverified and recommend the verified paste or `/file` routes.
+
+### 07:05 EDT — MCP form and session-list checkpoint
+
+- MCP form choices use arrows; Enter advances to the next control and only saves when Save is focused. Save and Cancel are keyboard-focusable and clickable, with contextual hints. OAuth result notices survive catalog refresh. Focused keyboard/mouse tests pass.
+- Session-list summaries now have a bounded in-memory cache with log/context identity checks before and after reading; active status stays fresh. Root measured 9.83 ms/op including the first miss and 1.90 ms/op warmed over five iterations on Apple M3; the earlier uncached baseline was 28.64 ms/op. These are local fixture timings, not token savings.
+- AgentMail opaque identifiers are preserved exactly within declared limits; oversize identifiers return explicit errors instead of unusable truncated IDs. Fixture tests and affected race suites pass; no private email bodies were read.
+- Lifecycle observers remain uncommitted while a process-worker timeout isolation issue is fixed and tested. They are excluded from this installation.
