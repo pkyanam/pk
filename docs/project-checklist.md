@@ -38,6 +38,8 @@ Updated 2026-09-23. This checklist consolidates the user's project requests from
 
 ## Research and evidence
 
+- [ ] Add OMP to the comparison research requested in the updated overnight goal; verify the intended public project identity and primary sources before making comparisons.
+
 - [x] Study Unreal, OpenCode V2, Grok Build, Codex, Hermes Agent, Claude Code, and the verified DeepSeek Harness. Source-backed scope and caveats are in `docs/research/overnight-harness-landscape.md` and related research documents.
 - [x] Research structured ask-user and confirmation flows, mouse-aware terminal behavior, long-task controls, and context efficiency; distinguish public source evidence from product claims or nonpublic implementations.
 - [~] Establish honest, comparable efficiency and task-success benchmarks against Unreal, Codex, and other harnesses. The one-repetition pilot at `benchmarks/results/pilot-20260923T033523Z/` passed all six independent correctness checks, but pk generally used more tokens than Unreal Agent v0.1.1 in this pilot. This is preliminary evidence, not a comparative performance conclusion or a gain claim; repeat matched trials before drawing conclusions. The two-repetition CLI outer bound was fixed; Unix child process groups now receive TERM then KILL on cancellation, and a regression test covers child-held pipes. Repeat trials before drawing conclusions.

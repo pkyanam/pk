@@ -259,3 +259,11 @@ will do.
 - AgentMail worker has read-only authenticated smoke evidence from its owner; root requested stricter output bounds and corrected TUI instructions before commit. No mail mutations.
 - Updater staging correctly refused a release while the new steering-boundary regression failed. Both implementations remain in flight and are excluded from this installed checkpoint.
 - Next: complete steering integration and updater/restart, integrate MCP/ACP, revalidate native input and long-session stability, then record/edit the truthful Cmux/Cap demo. Benchmark superiority remains unproven.
+
+### 2026-09-23 01:27 EDT — paired release updater installed
+
+- Source `f608b9e` is now installed through the stable launcher; active release `20260923T052617.096650000Z-9f99d1106e9f-048f9d19`. `pk update --source DIR`, `pk rollback`, and `pk version` are available. This is CLI update support; in-app restart remains in progress.
+- The updater built an isolated committed source archive, ran all Go tests, UI typecheck/tests/build, staged dependencies, health-checked and activated the release. Separate isolated real rollback/restoration also passed. The full committed Go race suite/vet passed before staging. Launcher pins binary and UI to one resolved release and preserves custom install paths; update cancellation kills Unix build process groups.
+- AgentMail read-only example and documentation are committed in `ec725ee`; fixture tests and agent-reported authenticated count-only smoke passed. No email mutations or social posts.
+- Luna workers briefly stopped on usage limits; the user reset usage and requested continued token-conscious Luna delegation. Existing agents resumed their files; no duplicate implementation was started.
+- Steering's exact tool-result boundary and error handling passed focused runner tests. RPC/UI, MCP, ACP, and reload remain uncommitted integration work. OMP was added to the research checklist.
