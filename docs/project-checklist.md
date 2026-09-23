@@ -4,6 +4,18 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 
 ## Product and implementation
 
+### Follow-up review of external product advice
+
+- [~] Group CLI help around user tasks and distinguish TUI commands from plain mode. Preserve supported automation interfaces without making internal worker commands part of onboarding.
+- [~] Make Ctrl+C cancel an active TUI turn without exiting; preserve text selections, drafts, attachments, and safe update/reload behavior.
+- [~] Start tool-only extension workers on first invocation, while keeping hook observers eager. Measure process overhead separately from tool-schema/context overhead; lazy processes do not remove schemas from requests.
+- [x] Provide complete reproducible native request bodies for two user turns, including a tool follow-up: see `docs/context-payload.md`. The synthetic provider fixture exercises the actual serializer; it is not a paid-provider transcript.
+- [ ] Evaluate structured file read/patch/search tools against shell-based workflows using matched correctness and token measurements before expanding the always-present tool catalog.
+- [ ] Design durable task questions with persisted waiting state and attach-time answers; foreground AskUser alone does not establish detached-task support.
+- [ ] Evaluate opt-in operation approvals and a diagnostic/first-run experience. Neither AskUser nor workspace selection is a sandbox.
+
+External advice is input, not a binding feature list. Retain the user's compact composer-adjacent status design. `pk web` configures web search, not a browser UI; task creation already defaults to the working directory; binary GitHub releases already replace routine source builds. Do not merge skills, providers, and executable tools into an ambiguous automatic installer or claim additional tools inherently save tokens.
+
 - [x] Create the public GitHub repository at [github.com/pkyanam/pk](https://github.com/pkyanam/pk) and use it as the canonical public project.
 - [x] Build pk as a low-level, resource-conscious Go coding harness on the Unreal Agent foundation; explore deeper harness behavior and preserve extensible seams. Initial foundation and upstream research are in the commit history and `docs/research/`.
 - [~] Keep Go as the preferred implementation language and pursue low CPU/memory overhead as an explicit design goal. The current runtime is Go; measure resource use before claiming it is more efficient than alternatives.
