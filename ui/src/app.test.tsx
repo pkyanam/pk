@@ -937,6 +937,55 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("/history older")
   })
 
+  test("restores and browses compact saved tool rows without executing them", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const entries = [
+      { role: "user", text: "Run the test suite", sequence: 1 },
+      { role: "tool", name: "Bash", state: "completed", tool_call_id: "call-7", text: "Ran bun test · exit code 0", sequence: 2 },
+      { role: "tool", name: "Bash", state: "completed", tool_call_id: "call-8", text: "Ran bun test --watch · exit code 0", sequence: 3 },
+      { role: "assistant", text: "All tests passed.", sequence: 4 },
+    ]
+    act(() => fake.emit({ version: 1, type: "history", payload: { session_id: "tool-history", entries, has_earlier: false, before_sequence: 1 } }))
+    let frame = await setup.waitForFrame((value) => value.includes("Bash · Ran 2 commands"))
+    expect(frame).toContain("All tests passed.")
+    expect(frame).not.toContain("Ran bun test · exit code 0")
+    act(() => setup.mockInput.pressKey("o", { ctrl: true }))
+    frame = await setup.waitForFrame((value) => value.includes("Ran bun test · exit code 0") && value.includes("Ran bun test --watch · exit code 0"))
+    expect(fake.sent.some((item) => item.type === "prompt" || item.type === "task_create")).toBe(false)
+    await act(async () => { await setup.mockInput.typeText("/history") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const request = fake.sent.find((item) => item.type === "history_before")!
+    act(() => fake.emit({ version: 1, id: request.id, type: "history_page", payload: { session_id: "tool-history", entries, has_earlier: false, before_sequence: 1 } }))
+    frame = await setup.waitForFrame((value) => value.includes("Saved conversation"))
+    expect(frame).toContain("Tool · Bash · completed")
+    act(() => setup.mockInput.pressKey("ARROW_DOWN"))
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    frame = await setup.waitForFrame((value) => value.includes("Ran bun test · exit code 0"))
+    expect(frame).toContain("Tool · Bash · completed")
+    expect(fake.sent.filter((item) => item.type === "prompt" || item.type === "task_create")).toHaveLength(0)
+  })
+
+  test("saved running tool history is shown as historical without a live spinner", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "history", payload: {
+      session_id: "stale-tool-history", entries: [{ role: "tool", name: "Bash", state: "running", tool_call_id: "stale-call", text: "Ran bun test · output was incomplete", sequence: 8 }],
+    } }))
+    const frame = await setup.waitForFrame((value) => value.includes("Bash · was running"))
+    expect(frame).toContain("· Bash · was running")
+    expect(frame).not.toContain("◌")
+    expect(frame).not.toContain("✓ Bash")
+    expect(frame).not.toContain("Running 1 tool")
+    expect(frame).not.toContain("0s")
+  })
+
   test("browses earlier saved conversation pages without evicting live transcript rows", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })

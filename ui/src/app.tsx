@@ -7,7 +7,7 @@ import { SessionManager, type ManagedSession } from "./session-manager"
 import { MCPManager } from "./mcp-manager"
 
 type Role = "user" | "assistant" | "system" | "tool"
-type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
+type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
 const MAX_TRANSCRIPT_ENTRIES = 300
 const OMITTED_TRANSCRIPT_ENTRY: Entry = { id: -1, role: "system", text: "Earlier activity omitted from this view · transcript is bounded for responsiveness." }
 function appendTranscriptEntries(current: Entry[], incoming: Entry | Entry[]): Entry[] {
@@ -38,7 +38,23 @@ type MCPToolOption = { server_id: string; server_tool_name: string; name: string
 type ModelToolOption = { name: string; description: string; source?: string }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
 type ProviderModelOption = { id: string; object?: string; owned_by?: string }
-type SavedHistoryEntry = { role: "user" | "assistant"; text: string; sequence: number }
+type SavedHistoryEntry = { role: "user" | "assistant" | "tool"; text: string; sequence: number; toolName?: string; toolState?: string; toolCallID?: string }
+
+function parseSavedHistoryEntries(items: unknown): SavedHistoryEntry[] {
+  if (!Array.isArray(items)) return []
+  return items.flatMap((item: any) => {
+    const role = item?.role === "user" || item?.role === "assistant" || item?.role === "tool" ? item.role : null
+    const text = typeof item?.text === "string" ? item.text : ""
+    const sequence = Number(item?.sequence)
+    if (!role || !text.trim() || !Number.isFinite(sequence)) return []
+    return [{
+      role, text, sequence,
+      ...(typeof item?.name === "string" ? { toolName: item.name } : {}),
+      ...(typeof item?.state === "string" ? { toolState: item.state } : {}),
+      ...(typeof item?.tool_call_id === "string" ? { toolCallID: item.tool_call_id } : {}),
+    }]
+  })
+}
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -717,25 +733,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "history": {
         historySessionID.current = String(data.session_id ?? "")
-        const saved = Array.isArray(data.entries)
-          ? data.entries.flatMap((item: any) => {
-              const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
-              const text = typeof item?.text === "string" ? item.text : ""
-              const sequence = Number(item?.sequence)
-              return role && text.trim() && Number.isFinite(sequence) ? [{ role, text, sequence } as SavedHistoryEntry] : []
-            })
-          : []
+        const saved = parseSavedHistoryEntries(data.entries)
         setHistoryEntries(saved)
         setHistoryHasEarlier(data.has_earlier === true)
         setHistoryBeforeSequence(Number(data.before_sequence ?? saved[0]?.sequence ?? 0))
-        const restored = Array.isArray(data.entries)
-          ? data.entries.flatMap((item: any) => {
-              const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
-              const text = typeof item?.text === "string" ? item.text : ""
-              const sequence = Number(item?.sequence)
-              return role && text.trim() ? [{ id: entryId.current++, role, text, ...(Number.isFinite(sequence) ? { historySequence: sequence } : {}) } as Entry] : []
-            })
-          : []
+        const restored = saved.map((item) => ({
+          id: entryId.current++, role: item.role, text: item.role === "tool" ? "" : item.text,
+          ...(item.role === "tool" ? { toolName: item.toolName ?? "tool", toolState: item.toolState ?? "completed", historySummary: `${item.toolName ?? "tool"} · ${["running", "working"].includes((item.toolState ?? "").toLowerCase()) ? "was running" : item.toolState ?? "completed"}`, historical: true, callId: item.toolCallID ?? `history-${item.sequence}`, detail: item.text } : {}),
+          historySequence: item.sequence,
+        } as Entry))
         const notices: Entry[] = data.has_earlier ? [{ id: entryId.current++, role: "system", text: "Showing recent conversation history; use /history older to browse earlier saved entries." }] : data.truncated ? [{ id: entryId.current++, role: "system", text: "Some saved conversation text was shortened to fit the replay limit." }] : []
         setEntries([...notices, ...restored].slice(-300))
         sessionHasPrompt.current = restored.some((entry) => entry.role === "user")
@@ -753,14 +759,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           historySessionID.current = String(data.session_id)
           setSessionId(String(data.session_id))
         }
-        const page = Array.isArray(data.entries)
-          ? data.entries.flatMap((item: any) => {
-              const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
-              const text = typeof item?.text === "string" ? item.text : ""
-              const sequence = Number(item?.sequence)
-              return role && text.trim() && Number.isFinite(sequence) ? [{ role, text, sequence } as SavedHistoryEntry] : []
-            })
-          : []
+        const page = parseSavedHistoryEntries(data.entries)
         setHistoryEntries(page)
         setHistoryHasEarlier(data.has_earlier === true)
         setHistoryBeforeSequence(Number(data.before_sequence ?? page[0]?.sequence ?? 0))
@@ -2421,7 +2420,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const selectedOptions = selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
     : selector === "history" ? [
-      ...historyEntries.map((item) => ({ label: `${item.role === "user" ? "You" : "pk"} · #${item.sequence}`, value: `entry-${item.sequence}`, description: item.text.slice(0, 240), state: "saved" })),
+      ...historyEntries.map((item) => ({ label: `${item.role === "user" ? "You" : item.role === "tool" ? `Tool · ${item.toolName ?? "tool"}${item.toolState ? ` · ${item.toolState}` : ""}` : "pk"} · #${item.sequence}`, value: `entry-${item.sequence}`, description: item.text.slice(0, 240), state: "saved" })),
       ...(historyHasEarlier ? [{ label: "Load earlier entries…", value: "history-older", description: `Browse entries before #${historyBeforeSequence}`, state: historyLoading ? "loading" : "more" }] : []),
     ]
     : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" }))]
@@ -2530,7 +2529,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
         {selector === "plugin_candidates" && <text fg={pluginSourceOperation ? palette.accent : palette.dim} content={pluginSourceOperation || (pluginCandidateReview ? `${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands · source reviewed before install` : `Source · ${pluginCandidateSource}${pluginCandidateRevision ? ` · revision ${pluginCandidateRevision.slice(0, 12)}` : ""} · review a candidate before installation`)} />}
-        {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
+        {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user, assistant, and tool entries · before #${historyBeforeSequence}`} />}
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
         {selector === "providers" && <text fg={palette.dim} content="Enter selects for this session · /provider use ID persists only through pk provider use ID" />}
         {selector === "image" && <text fg={imageConfigPending ? palette.accent : palette.dim} content={imageConfigPending ? "Saving ImageGen preference…" : "Uses a separate Astra image worker with your ChatGPT login. Your chat model stays unchanged. Start a new session with /new to apply."} />}
@@ -2625,12 +2624,14 @@ const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clo
   const first = entries[0]!
   const failed = entries.some((entry) => entry.toolState === "failed")
   const interrupted = entries.some((entry) => entry.toolState === "interrupted")
-  const running = entries.some((entry) => !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase()))
+  const running = entries.some((entry) => !entry.historical && !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase()))
+  const historicallyUnfinished = entries.some((entry) => entry.historical && ["running", "working"].includes((entry.toolState ?? "").toLowerCase()))
+  const hasElapsed = entries.some((entry) => entry.elapsedMs !== undefined || entry.startedAt !== undefined)
   const elapsed = entries.reduce((total, entry) => total + (entry.elapsedMs ?? (entry.startedAt ? Math.max(0, clock - entry.startedAt) : 0)), 0)
   const summary = entries.length > 1
     ? `${first.toolName ?? "tool"} · Ran ${entries.length} ${first.toolName === "Bash" ? "commands" : "calls"}`
-    : `${first.toolName ?? "tool"} · ${first.commandPreview || "operation"}`
-  const color = failed ? palette.red : interrupted ? palette.amber : running ? palette.accent : palette.green
+    : first.historySummary ?? `${first.toolName ?? "tool"} · ${first.commandPreview || "operation"}`
+  const color = failed ? palette.red : interrupted || historicallyUnfinished ? palette.amber : running ? palette.accent : palette.green
   const available = Math.max(24, Math.min(112, renderer.width - 24))
   const compactSummary = summary.length > available ? `${summary.slice(0, available - 1)}…` : summary
   return <box focusable onMouseDown={(event) => {
@@ -2645,9 +2646,9 @@ const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clo
     }
   }} style={{ flexDirection: "column", width: "100%", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: failed ? palette.red : palette.accent }}>
     <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
-      <text fg={color} content={running ? "◌" : failed ? "!" : interrupted ? "↯" : "✓"} />
+      <text fg={color} content={running ? "◌" : failed ? "!" : interrupted ? "↯" : historicallyUnfinished ? "·" : "✓"} />
       <text fg={palette.text} content={compactSummary} />
-      <text fg={palette.dim} content={shortTime(elapsed)} />
+      <text fg={palette.dim} content={hasElapsed ? shortTime(elapsed) : ""} />
       <text fg={palette.dim} content={expanded ? "▾" : "›"} />
     </box>
     {expanded && entries.map((entry) => <box key={entry.callId} style={{ flexDirection: "column", paddingLeft: 2, paddingBottom: 1 }}>
@@ -2686,7 +2687,7 @@ const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { en
   if (entry.role === "system") return <box style={{ paddingLeft: 2, paddingBottom: 1 }}><text fg={palette.dim} content={entry.text} /></box>
   if (entry.role === "tool") return <box style={{ flexDirection: "column", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: entry.toolState === "failed" ? palette.red : palette.accent }}>
     <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
-      <text fg={entry.toolState === "failed" ? palette.red : palette.accent} content={entry.toolState === "running" || entry.toolState === "working" ? "◌" : "›"} />
+      <text fg={entry.toolState === "failed" ? palette.red : palette.accent} content={!entry.historical && (entry.toolState === "running" || entry.toolState === "working") ? "◌" : "›"} />
       <text fg={palette.text} content={`${entry.toolName ?? "tool"} · ${entry.toolState ?? "working"}`} />
       <text fg={palette.dim} content={entry.elapsedMs !== undefined ? shortTime(entry.elapsedMs) : entry.startedAt ? shortTime(clock - entry.startedAt) : ""} />
     </box>
