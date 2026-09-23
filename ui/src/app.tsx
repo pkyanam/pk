@@ -634,7 +634,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [contextBudgetFieldIndex, setContextBudgetFieldIndex] = useState(0)
   const contextBudgetInputValues = useRef({ context: "", input: "", output: "", operational: "", reserve: "", margin: "" })
   const [contextBudgetSaving, setContextBudgetSaving] = useState(false)
-  const [contextCompaction, setContextCompaction] = useState<{ id: string; phase: string; event?: ContextCompaction } | null>(null)
+  const [contextCompaction, setContextCompaction] = useState<{ id: string; phase: string; startedAt: number; active: boolean; source: "manual" | "automatic"; event?: ContextCompaction } | null>(null)
   const [sessionUsageLoading, setSessionUsageLoading] = useState(false)
   const [sessionUsageError, setSessionUsageError] = useState("")
   const [compactionUsageExpanded, setCompactionUsageExpanded] = useState(false)
@@ -1004,7 +1004,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       addEntry("system", "Could not request context compaction while pk is disconnected.")
       return
     }
-    setContextCompaction({ id, phase: "Starting" })
+    setContextCompaction({ id, phase: "Starting", startedAt: Date.now(), active: true, source: "manual" })
     addEntry("system", "Context compaction requested…")
   }
 
@@ -1750,6 +1750,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         finishPendingSteers("The turn ended before this message was accepted.")
         clearStreamDraft()
         clearProviderReasoning()
+        setContextCompaction((current) => current?.source === "automatic" && current.id === event.id && current.active
+          ? { ...current, active: false, phase: current.phase === "Compaction failed" ? current.phase : "Completed" }
+          : current)
         toolProgress.current.clear()
         setBusy(false)
         setActivityStartedAt(null)
@@ -1800,23 +1803,42 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setContextBudgetError("")
         break
       }
-      case "compact_started":
-        if (!pendingCompactRequest.current || event.id !== pendingCompactRequest.current) break
-        setContextCompaction({ id: event.id, phase: "Preparing compacted context" })
+      case "compact_started": {
+        const requestID = String(event.id ?? "")
+        if (!pendingCompactRequest.current || requestID !== pendingCompactRequest.current) break
+        setContextCompaction((current) => ({ id: requestID, phase: "Preparing compacted context", startedAt: current?.id === requestID ? current.startedAt : Date.now(), active: true, source: "manual" }))
         break
+      }
       case "compact_progress": {
-        if (!pendingCompactRequest.current || event.id !== pendingCompactRequest.current) break
+        const requestID = String(event.id ?? "")
+        if (!pendingCompactRequest.current || requestID !== pendingCompactRequest.current) break
         const telemetry = data.context_compaction && typeof data.context_compaction === "object" ? data.context_compaction as ContextCompaction : undefined
-        setContextCompaction({ id: event.id, phase: compactionPhaseLabel(telemetry?.phase ?? String(data.phase ?? "Working")), event: telemetry })
+        setContextCompaction((current) => ({ id: requestID, phase: compactionPhaseLabel(telemetry?.phase ?? String(data.phase ?? "Working")), startedAt: current?.id === requestID ? current.startedAt : Date.now(), active: true, source: "manual", event: telemetry }))
+        break
+      }
+      case "context_compaction": {
+        const turnID = String(data.turn_id ?? "")
+        const telemetry = data.context_compaction && typeof data.context_compaction === "object" ? data.context_compaction as ContextCompaction : undefined
+        if (!turnID || event.id !== turnID || turnID !== promptCommandId.current || !telemetry) break
+        const terminal = telemetry.phase === "checkpointed" || telemetry.phase === "checkpoint_saved" || telemetry.phase === "failed"
+        setContextCompaction((current) => ({
+          id: turnID,
+          phase: compactionPhaseLabel(telemetry.phase),
+          startedAt: current?.id === turnID && current.source === "automatic" ? current.startedAt : Date.now(),
+          active: !terminal,
+          source: "automatic",
+          event: telemetry,
+        }))
         break
       }
       case "compact_finished":
       case "compact_failed": {
-        if (!pendingCompactRequest.current || event.id !== pendingCompactRequest.current) break
+        const requestID = String(event.id ?? "")
+        if (!pendingCompactRequest.current || requestID !== pendingCompactRequest.current) break
         pendingCompactRequest.current = ""
         const success = event.type === "compact_finished" && data.success !== false
         const telemetry = data.context_compaction && typeof data.context_compaction === "object" ? data.context_compaction as ContextCompaction : undefined
-        const finished = { id: event.id, phase: success ? "Checkpoint saved" : "Compaction failed", event: telemetry }
+        const finished = { id: requestID, phase: success ? "Checkpoint saved" : "Compaction failed", startedAt: contextCompaction?.id === requestID ? contextCompaction.startedAt : Date.now(), active: false, source: "manual" as const, event: telemetry }
         setContextCompaction(finished)
         addEntry("system", success ? "Context compaction checkpoint saved." : `Context compaction failed · ${String(data.reason ?? telemetry?.error_code ?? "try again later")}`)
         if (selector === "usage") {
@@ -2386,6 +2408,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        const errorID = String(event.id ?? "")
         if (event.id && pendingUsageCancels.current.delete(event.id)) break
         if (event.id && pendingClipboardRequests.current.has(event.id)) pendingClipboardRequests.current.delete(event.id)
         if (event.id && event.id === pendingContextBudgetRequest.current) {
@@ -2400,11 +2423,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setContextBudgetError(String(data.message ?? "Could not save context budget."))
           break
         }
-        if (event.id && event.id === pendingCompactRequest.current) {
+        if (errorID && errorID === pendingCompactRequest.current) {
           pendingCompactRequest.current = ""
-          setContextCompaction({ id: event.id, phase: "Compaction failed" })
+          setContextCompaction((current) => ({ id: errorID, phase: "Compaction failed", startedAt: current?.id === errorID ? current.startedAt : Date.now(), active: false, source: "manual" }))
           addEntry("system", `Context compaction failed · ${String(data.message ?? "try again later")}`)
           break
+        }
+        if (errorID && contextCompaction?.source === "automatic" && contextCompaction.id === errorID) {
+          setContextCompaction((current) => current?.id === errorID ? { ...current, active: false, phase: "Compaction failed" } : current)
         }
         const pendingTaskQuestion = taskQuestionRef.current
         if (pendingTaskQuestion?.answerRequestID && event.id === pendingTaskQuestion.answerRequestID) {
@@ -2604,7 +2630,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         pendingCompactRequest.current = ""
         setContextBudgetLoading(false)
         setContextBudgetSaving(false)
-        if (contextCompaction) setContextCompaction({ ...contextCompaction, phase: "Connection closed" })
+        if (contextCompaction) setContextCompaction({ ...contextCompaction, active: false, phase: "Connection closed" })
         setActiveTaskId("")
         addEntry("system", "Agent connection closed. Relaunch pk to reconnect.")
         break
@@ -3808,15 +3834,21 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       ? `${maintenance.kind === "update" ? "Updating pk" : "Rolling back"} · ${maintenance.progress}`
       : reloadPending
         ? "Saving session for reload"
-        : contextCompaction && pendingCompactRequest.current === contextCompaction.id
+        : contextCompaction?.active
           ? `Compacting context · ${contextCompaction.phase}`
     : busy
       ? tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : streamProgressStatus(streamProgress, clock) ?? "Waiting for model"
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
   const phaseTime = phaseStartedAt === null || (!busy && !maintenance) ? "" : ` · ${shortTime(clock - phaseStartedAt)}`
+  const compactionRunning = Boolean(contextCompaction?.active)
+  const compactionShortPhase = contextCompaction?.phase.includes("Summarizing") ? "summarizing"
+    : contextCompaction?.phase.includes("Checking") ? "checking"
+      : contextCompaction?.phase.includes("Retrying") ? "retrying"
+        : contextCompaction?.phase.includes("Preparing") ? "preparing" : "compacting"
+  const compactionTrack = Array.from({ length: 10 }, (_, index) => index === Math.floor(clock / 450) % 10 ? "●" : "─").join("")
   const activityTime = activityStartedAt !== null ? ` · ${shortTime(clock - activityStartedAt)} total` : maintenance ? ` · ${shortTime(clock - maintenance.startedAt)} total` : pluginCommandRun ? ` · ${shortTime(clock - pluginCommandRun.startedAt)} total` : ""
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
-  const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending || Boolean(contextCompaction && pendingCompactRequest.current === contextCompaction.id)
+  const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending || compactionRunning
   const usagePart = (label: string, count: number | undefined, available: boolean) => `${label} ${available && count !== undefined ? count.toLocaleString() : "—"}`
   const throughputLabel = usage?.tokensPerSecond !== undefined ? ` · ${usage.tokensPerSecond.toFixed(1)} tps avg` : ""
   const cacheLabel = (usage
@@ -3843,7 +3875,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           ? <WelcomeEntry onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
           : <TranscriptTimeline groups={transcriptGroups} clock={clock} hasLiveTool={transcriptHasLiveTool} expandedToolGroups={expandedToolGroups} onToggle={toggleToolGroup} />}
       </scrollbox>
-      <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
+      <box style={{ border: compactionRunning ? undefined : ["top"], borderColor: compactionRunning ? palette.accent : palette.line, paddingTop: 0, flexShrink: 0 }}>
+        {compactionRunning && <box style={{ flexDirection: "row", height: 1 }}>
+          <text selectable={false} fg={palette.accent} content={`COMPACTING · ${compactionShortPhase} · ${shortTime(clock - contextCompaction!.startedAt)}  ${compactionTrack}`} />
+        </box>}
         {queuedFiles.length > 0 && <box style={{ flexDirection: "row", gap: 1, height: 1, flexShrink: 0, paddingLeft: 1 }}>
           <text fg={palette.muted} content={`Files ${queuedFiles.length}/8`} />
           {queuedFiles.slice(0, visibleFileCount).map((path, index) => {
@@ -3931,7 +3966,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             </box>
           </box>}
           {!contextBudgetEditing && contextCompaction && <box style={{ flexDirection: "column", paddingTop: 1 }}>
-            <text fg={pendingCompactRequest.current === contextCompaction.id ? palette.accent : palette.muted} content={`Manual compaction · ${contextCompaction.phase}${contextCompaction.event?.reason ? ` · ${contextCompaction.event.reason}` : ""}`} />
+            <text fg={contextCompaction.active ? palette.accent : palette.muted} content={`${contextCompaction.source === "automatic" ? "Automatic" : "Manual"} compaction · ${contextCompaction.phase}${contextCompaction.event?.reason ? ` · ${contextCompaction.event.reason}` : ""}`} />
             {contextCompaction.event?.before_estimate_tokens !== undefined && <text fg={palette.dim} content={`Estimated input before · ${formatTokenCount(contextCompaction.event.before_estimate_tokens)} tokens · ${contextCompaction.event.estimate?.method ?? "method unavailable"} · ${contextCompaction.event.estimate?.confidence ?? "confidence unavailable"}`} />}
             {contextCompaction.event?.after_estimate_tokens !== undefined && <text fg={palette.dim} content={`Estimated input after · ${formatTokenCount(contextCompaction.event.after_estimate_tokens)} tokens`} />}
             {(contextCompaction.event?.summary_input_tokens !== undefined || contextCompaction.event?.summary_output_tokens !== undefined) && <text fg={palette.dim} content={`Summary usage · input ${formatTokenCount(contextCompaction.event.summary_input_tokens)} · output ${formatTokenCount(contextCompaction.event.summary_output_tokens)} tokens`} />}

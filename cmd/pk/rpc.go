@@ -794,7 +794,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			opts.QueueInputs = true
 		}
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "turn_started", map[string]any{"session_id": sessionID})
+		_ = s.emit(msg.ID, "turn_started", map[string]any{"session_id": sessionID, "turn_id": msg.ID})
 		go func() {
 			for {
 				select {
@@ -943,6 +943,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			opts.Output = out
 			opts.JSONL = true
 			opts.Diagnostics = s.diagnostics
+			opts.OnContextCompaction = func(event runner.ContextCompactionEvent) {
+				if ctx.Err() != nil {
+					return
+				}
+				_ = s.emit(msg.ID, "context_compaction", map[string]any{
+					"turn_id": msg.ID, "context_compaction": event,
+				})
+			}
 			opts.Adapter = modelProgressAdapter{inner: client, observe: func(progress modelstream.Event) {
 				if ctx.Err() != nil {
 					return

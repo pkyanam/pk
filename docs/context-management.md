@@ -33,6 +33,10 @@ the complete provider wire payload.
 
 ## Automatic and manual compaction
 
+A slim mint activity bar above the composer shows the phase and elapsed time
+during manual or automatic compaction. It is indeterminate while waiting for
+the provider; no completion percentage is inferred.
+
 History compaction is enabled by default. It triggers when the estimated
 projected request reaches 80% of the usable budget and aims for 65%. Defaults
 reserve 5,000 tokens for summary work, use a 12,000-token summary-input
