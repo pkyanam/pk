@@ -475,3 +475,7 @@ gates or imply that every backlog item is complete.
 - GitHub-source updater activated clean `0069ac3`, release `20260923T093828.901078000Z-4db46f2885f4-ee1e45e0`, including the failed-stream timer fix. Running user sessions were not interrupted.
 - Current live comparative cohort is owned by Luna reviewer, exec `53227`, output `benchmarks/results/pk-unreal-clamp-intervals-low-2rep-20260923`. Do not restart it or create a duplicate. Parent flagged overlap with updater validation as a wall-time confound; fixed engine ordering also needs disclosure.
 - Luna extension agent is implementing additive negotiated tool-progress notifications with bounded per-call output; RPC/UI wiring remains to be reviewed. Do not mark progress streaming delivered until integration tests pass.
+
+### 2026-09-23 — completed matched baseline
+- Luna-owned exec53227 completed once: 16 phases, eight passing holdouts, 2m15s overall. Result committed `3cac34d`; root independently verified all 331 preserved source-file hashes. pk input 43,889 (28,017 uncached), output 1,752; Unreal input 20,011, output 1,333; both 22 responses. No general savings or speed claim. Shared-machine checks and fixed ordering confound wall time.
+- Prompt/tool overhead analysis is now assigned to Luna using local captures only. Extension progress package, RPC bridge, and TUI are under integration; do not mark released yet.
