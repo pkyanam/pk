@@ -39,6 +39,7 @@ Read [benchmark findings](benchmark-findings.md), [prompt overhead](research/pro
 ## Launch material
 
 - [README](../README.md), with a real coding-session screenshot and concise setup.
+- [Launch artwork gallery](../output/launch/README.md).
 - [Draft X posts](launch-copy.md), not published.
 - [Demo editing source](../scripts/demo-edit/README.md).
 - Local 44-second edited coding demo: `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`.
