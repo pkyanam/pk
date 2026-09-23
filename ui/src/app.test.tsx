@@ -2277,7 +2277,105 @@ describe("OpenTUI application", () => {
     })
     await setup.flush()
     const copied = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)?.payload?.text
-    expect(copied).toBe("pick up here; Unicode 😀 makes a wide cell, then bold visible words\nand enough extra words to force this assistant paragraph to wrap over\nseveral screen rows before its ending; inline code **stars")
+    expect(copied).toBe("pick up here; Unicode 😀 makes a wide cell, then bold visible\nwords and enough extra words to force this assistant paragraph to wrap\nover several screen rows before its ending; inline code **stars")
+  })
+
+  test("copies every wrapped line and Markdown list item in a narrow conversation selection", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 90, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const answer = "A few things stand out in this pk session:\n\n- **Work directly in your local workspace**: inspect and edit files, run commands, and verify changes.\n- **Work with longer-running tasks**: start durable background tasks, then check their status, attach, resume, or cancel them.\n- **Use skills when relevant**: load task-specific guidance on demand; this session includes skills for Hugging Face, Monid, React/Next.js, arithmetic, and pk workflows.\n- **Search and fetch the web** when those tools are configured for the session.\n- **Ask you focused questions** when a key choice or missing detail matters.\n\nThe pk CLI also supports plugins, MCP configuration, image-generation options, and other workflows, but those aren’t automatically active abilities in this chat. Right now I can use shell commands, web search/fetch, image generation, and the listed skills."
+    act(() => fake.emit({ version: 1, id: "full-copy-answer", type: "assistant", payload: { text: answer } }))
+    await setup.flush()
+    act(() => {
+      fake.emit({ version: 1, id: "copy-followup", type: "task_output", payload: { role: "user", text: "What about editing tools?" } })
+      fake.emit({ version: 1, id: "copy-followup-answer", type: "task_output", payload: { role: "assistant", text: ("Dedicated editing tools can reduce quoting overhead, but matched evaluation is needed.\n\n").repeat(8) + "End selection sentinel." } })
+    })
+    await setup.flush()
+    const transcript = (setup.renderer.root as any).findDescendantById("transcript")
+    for (let index = 0; index < 80; index++) {
+      await act(async () => setup.mockMouse.scroll(10, 8, "up"))
+    }
+    await setup.flush()
+    const frame = setup.captureCharFrame()
+    const lines = frame.split("\n")
+    const firstRow = lines.findIndex((line) => line.includes("A few things stand out"))
+    expect(firstRow).toBeGreaterThanOrEqual(0)
+    const firstStart = lines[firstRow]!.indexOf("A few things stand out")
+    await act(async () => {
+      await setup.mockMouse.pressDown(firstStart, firstRow)
+      await setup.mockMouse.moveTo(80, transcript.y + transcript.height - 1)
+    })
+    await act(async () => { transcript.scrollTo(9999) })
+    await setup.flush()
+    const endFrame = setup.captureCharFrame()
+    const endLines = endFrame.split("\n")
+    const lastRow = endLines.findLastIndex((line) => line.includes("End selection sentinel."))
+    expect(lastRow).toBeGreaterThanOrEqual(0)
+    const lastEnd = endLines[lastRow]!.indexOf("End selection sentinel.") + "End selection sentinel.".length - 1
+    await act(async () => {
+      await setup.mockMouse.moveTo(lastEnd, lastRow)
+      await setup.mockMouse.release(lastEnd, lastRow)
+    })
+    await setup.flush()
+    const copied = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)?.payload?.text as string
+    const visibleText = (value: string) => value.replace(/\s+/g, " ").trim()
+    expect(visibleText(copied)).toContain(visibleText("Work directly in your local workspace: inspect and edit files, run commands, and verify changes."))
+    expect(visibleText(copied)).toContain(visibleText("Work with longer-running tasks: start durable background tasks"))
+    expect(visibleText(copied)).toContain(visibleText("then check their status, attach, resume, or cancel them."))
+    expect(visibleText(copied)).toContain(visibleText("Use skills when relevant: load task-specific guidance"))
+    expect(visibleText(copied)).toContain(visibleText("arithmetic, and pk workflows."))
+    expect(visibleText(copied)).toContain(visibleText("Search and fetch the web when those tools are configured"))
+    expect(visibleText(copied)).toContain(visibleText("Ask you focused questions when a key choice"))
+    expect(visibleText(copied)).toContain(visibleText("End selection sentinel."))
+
+    await act(async () => setup.mockInput.pressKey("y", { ctrl: true }))
+    await setup.flush()
+    const shortcutCopy = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)?.payload?.text as string
+    expect(visibleText(shortcutCopy)).toContain(visibleText("End selection sentinel."))
+
+    const currentFrame = setup.captureCharFrame()
+    const currentLines = currentFrame.split("\n")
+    const sentinelRow = currentLines.findIndex((line) => line.includes("End selection sentinel."))
+    const sentinelEnd = currentLines[sentinelRow]!.indexOf("End selection sentinel.") + "End selection sentinel.".length - 1
+    await act(async () => setup.mockMouse.pressDown(sentinelEnd, sentinelRow))
+    await act(async () => { transcript.scrollTo(0) })
+    await setup.flush()
+    const startFrame = setup.captureCharFrame()
+    const startLines = startFrame.split("\n")
+    const headingRow = startLines.findIndex((line) => line.includes("A few things stand out"))
+    const headingStart = startLines[headingRow]!.indexOf("A few things stand out")
+    await act(async () => {
+      await setup.mockMouse.moveTo(headingStart, headingRow)
+      await setup.mockMouse.release(headingStart, headingRow)
+    })
+    await setup.flush()
+    const reverseCopy = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)?.payload?.text as string
+    expect(visibleText(reverseCopy)).toContain(visibleText("Work with longer-running tasks: start durable background tasks, then check their status, attach, resume, or cancel them."))
+    expect(visibleText(reverseCopy)).toContain(visibleText("End selection sentinel."))
+  })
+
+  test("renders the full final sentence of a long Markdown paragraph without scrollbar clipping", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 44 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const text = ("Earlier context line with enough content to fill another terminal row.\n\n").repeat(20) + "The **pk CLI** also supports plugins, MCP configuration, image-generation options, and other workflows, but those aren’t automatically active abilities in this chat. Right now I can use shell commands, web search/fetch, image generation, and the listed skills."
+    // Warm the async Markdown highlighter before measuring transcript geometry;
+    // otherwise scrollTo can run against the initial, shorter plain-text layout.
+    await getTreeSitterClient().highlightOnce(text, "markdown")
+    act(() => fake.emit({ version: 1, id: "right-edge-answer", type: "assistant", payload: { text } }))
+    await setup.waitForFrame((frame) => frame.includes("listed skills."))
+    await setup.flush()
+    const transcript = (setup.renderer.root as any).findDescendantById("transcript")
+    await act(async () => transcript.scrollTo(9999))
+    const frame = await setup.waitForFrame((value) => value.includes("listed skills."))
+    const rendered = frame.replace(/█/g, "").replace(/\s+/g, " ").replace(/\s*\/\s*/g, "/")
+    expect(rendered).toContain("this chat. Right now I can use shell commands, web search/fetch, image generation, and the listed skills.")
+    const searchLine = frame.split("\n").find((line) => line.includes("web search/"))!
+    const scrollbarColumn = searchLine.indexOf("█")
+    expect(scrollbarColumn < 0 || /\s/.test(searchLine[scrollbarColumn - 1] ?? " ")).toBe(true)
   })
 
   test("only the latest clipboard selection can change copy feedback or trigger fallback", async () => {
@@ -2727,6 +2825,58 @@ describe("OpenTUI application", () => {
     const fresh = fake.sent.find((item) => item.type === "provider_select")!
     expect(fresh.payload).toEqual({ provider_id: "anthropic", model: "claude-haiku" })
     expect(setup.captureCharFrame()).not.toContain(secret)
+  })
+
+  test("the /providers alias guides Workers AI setup and discovers callable model names", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 32 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => setup.mockInput.typeText("/providers"))
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const catalog = fake.sent.find((item) => item.type === "provider_presets_list")!
+    act(() => fake.emit({ version: 1, id: catalog.id, type: "provider_presets", payload: { presets: [
+      { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", protocol: "cloudflare_workers_ai", api_style: "openai_compatible", base_url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", requires_account_id: true, compatibility_note: "Direct Workers AI · tool calling varies by model" },
+    ] } }))
+    await setup.waitForFrame((frame) => frame.includes("Cloudflare Workers AI"))
+    act(() => setup.mockInput.pressEnter())
+    await setup.waitForFrame((frame) => frame.includes("Connect Cloudflare Workers AI"))
+    await setup.flush()
+    const accountID = "0123456789abcdef0123456789abcdef"
+    const token = "cf-token-must-never-render"
+    const accountFrame = setup.captureCharFrame()
+    const accountRow = accountFrame.split("\n").findIndex((line) => line.includes("Paste Cloudflare account ID"))
+    await act(async () => setup.mockMouse.click(accountFrame.split("\n")[accountRow]!.indexOf("Paste Cloudflare account ID"), accountRow))
+    await act(async () => setup.mockInput.pasteBracketedText(accountID))
+    await act(async () => setup.mockInput.pressTab())
+    await act(async () => setup.mockInput.pasteBracketedText(token))
+    await setup.flush()
+    const masked = setup.captureCharFrame()
+    expect(masked).toContain(accountID)
+    expect(masked).not.toContain(token)
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+    await act(async () => setup.mockInput.pressEnter())
+    await setup.flush()
+    const add = fake.sent.find((item) => item.type === "provider_preset_add")!
+    expect(add.payload).toEqual({ preset_id: "cloudflare-workers-ai", account_id: accountID, api_key: token })
+    expect(setup.captureCharFrame()).not.toContain(token)
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+
+    act(() => fake.emit({ version: 1, id: add.id, type: "providers_updated", payload: {
+      added_provider_id: "cloudflare-workers-ai",
+      providers: [{ id: "cloudflare-workers-ai", protocol: "cloudflare_workers_ai", api_key_configured: true, supports_reasoning_effort: false }],
+    } }))
+    const models = fake.sent.filter((item) => item.type === "provider_models").at(-1)!
+    expect(models.payload?.provider_id).toBe("cloudflare-workers-ai")
+    act(() => fake.emit({ version: 1, id: models.id, type: "provider_models", payload: { provider_id: "cloudflare-workers-ai", models: [
+      { id: "@cf/meta/llama-3.1-8b-instruct", task: "Text Generation", capabilities: ["function_calling"] },
+      { id: "@cf/meta/other-model", task: "Text Generation" },
+    ] } }))
+    await setup.waitForFrame((frame) => frame.includes("@cf/meta/llama-3.1-8b-instruct"))
+    expect(setup.captureCharFrame()).toContain("tool calling")
+    expect(setup.captureCharFrame()).not.toContain(token)
   })
 
   test("a failed new-session request preserves the old transcript and clears a staged provider model", async () => {

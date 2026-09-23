@@ -8,6 +8,7 @@ import { MCPManager } from "./mcp-manager"
 import { Wordmark } from "./wordmark"
 import { SecretInput } from "./secret-input"
 import { ContextUsage, type ContextUsageSnapshot } from "./context-usage"
+import { WorkersAISetup, type SetupKey } from "./workers-ai-setup"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type HistoryAttachment = { name: string; kind: string; contentType?: string; truncated?: boolean; pagesExtracted?: number; pagesTotal?: number }
@@ -59,8 +60,8 @@ type MCPServerOption = { id: string; command: string; arguments_count: number; e
 type MCPToolOption = { server_id: string; server_tool_name: string; name: string; description: string; input_schema?: Record<string, unknown> }
 type ModelToolOption = { name: string; description: string; source?: string }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
-type ProviderPreset = { id: string; label: string; base_url: string; protocol: string; api_style: string; api_key_env: string; default_effort: string; supports_reasoning_effort: boolean; docs_url: string; compatibility_note: string }
-type ProviderModelOption = { id: string; object?: string; owned_by?: string }
+type ProviderPreset = { id: string; label: string; base_url: string; protocol: string; api_style: string; api_key_env: string; default_effort: string; supports_reasoning_effort: boolean; requires_account_id?: boolean; docs_url: string; compatibility_note: string }
+type ProviderModelOption = { id: string; object?: string; owned_by?: string; task?: string; description?: string; capabilities?: string[] }
 type SavedHistoryEntry = { role: "user" | "assistant" | "tool"; text: string; sequence: number; toolName?: string; toolState?: string; toolCallID?: string; attachments?: HistoryAttachment[] }
 
 function parseHistoryAttachments(value: unknown): HistoryAttachment[] {
@@ -161,6 +162,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/usage", description: "Inspect token totals, context budget, and compaction", action: "usage" },
   { name: "/compact", description: "Compact saved conversation context while idle", action: "compact" },
   { name: "/provider", description: "Connect a named provider, inspect models, or select one for a new session", action: "provider" },
+  { name: "/providers", description: "Open the provider connection and setup menu", action: "provider" },
   { name: "/image", description: "Opt in to ImageGen for new sessions · disabled by default", action: "image" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
   { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
@@ -380,6 +382,9 @@ function selectedCopyText(
   transcriptClip?: { x: number; y: number; width: number; height: number },
 ): string {
   if (!selection) return ""
+  const anchor = selection.anchor
+  const focus = selection.focus
+  if (!anchor || !focus) return ""
   const isWithin = (renderable: any, id: string) => {
     let node = renderable
     while (node) {
@@ -392,13 +397,33 @@ function selectedCopyText(
   const transcript = selected.filter((item: any) => isWithin(item, "transcript"))
   const composer = selected.filter((item: any) => isWithin(item, "composer"))
   const scoped = transcript.length ? transcript : composer
-  const lines = new Map<number, Array<{ x: number; text: string }>>()
-  const anchor = selection.anchor
-  const focus = selection.focus
-  if (!anchor || !focus) return ""
+  const transcriptBottom = transcriptClip ? transcriptClip.y + transcriptClip.height : Number.POSITIVE_INFINITY
   const forward = focus.y > anchor.y || (focus.y === anchor.y && focus.x >= anchor.x)
   const first = forward ? anchor : focus
   const last = forward ? focus : anchor
+  const selectionOutsideViewport = transcriptClip && (first.y < transcriptClip.y || last.y >= transcriptBottom)
+  if (transcript.length && selectionOutsideViewport) {
+    // The viewport may have scrolled between drag endpoints. Ask OpenTUI's
+    // selected renderables for Markdown-aware text so rows outside the current
+    // screen buffer are retained without copying composer/footer UI.
+    const selectedLines = new Map<number, Array<{ x: number; text: string }>>()
+    for (const renderable of [...transcript].sort((a: any, b: any) => a.y - b.y || a.x - b.x)) {
+      if (renderable.isDestroyed || typeof renderable.getSelectedText !== "function") continue
+      const text = renderable.getSelectedText()
+      if (!text) continue
+      for (const [index, lineText] of text.split("\n").entries()) {
+        const y = renderable.y + index
+        const line = selectedLines.get(y) ?? []
+        line.push({ x: renderable.x, text: lineText })
+        selectedLines.set(y, line)
+      }
+    }
+    const semantic = [...selectedLines.entries()].sort(([a], [b]) => a - b)
+      .map(([, segments]) => segments.sort((a, b) => a.x - b.x).map((segment) => segment.text).join(""))
+      .join("\n")
+    if (semantic) return semantic.replace(/[ \t]+(?=\n|$)/g, "")
+  }
+  const lines = new Map<number, Array<{ x: number; text: string }>>()
   const screenLines = screenBuffer?.getSpanLines()
   if (!screenLines) return ""
   for (const renderable of scoped as any[]) {
@@ -638,6 +663,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [providerPresetLoading, setProviderPresetLoading] = useState(false)
   const [providerPresetSaving, setProviderPresetSaving] = useState(false)
   const [providerPresetError, setProviderPresetError] = useState("")
+  const [workersAISetupOpen, setWorkersAISetupOpen] = useState(false)
   const [providerSetupModelID, setProviderSetupModelID] = useState("")
   const [providerModelQuery, setProviderModelQuery] = useState("")
   const [providerModels, setProviderModels] = useState<ProviderModelOption[]>([])
@@ -694,6 +720,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingProviderPresetsRequest = useRef("")
   const pendingProviderPresetAddRequest = useRef("")
   const pendingProviderPresetID = useRef("")
+  const workersAIPasteHandler = useRef<((text: string) => void) | null>(null)
+  const workersAIKeyHandler = useRef<((key: SetupKey) => void) | null>(null)
   const pendingProviderChoice = useRef<{ providerID: string; model: string } | null>(null)
   const pendingImageConfigRequest = useRef("")
   const sessionIdentity = useRef(initialSession || "")
@@ -776,10 +804,33 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setProviderPresetError("")
   }
 
+  const submitWorkersAISetup = (accountID: string, apiToken: string): boolean => {
+    if (providerPresetSaving) return false
+    const requestID = transport.send("provider_preset_add", {
+      preset_id: "cloudflare-workers-ai",
+      account_id: accountID,
+      api_key: apiToken,
+    }) ?? ""
+    if (!requestID) {
+      setProviderPresetError("Could not connect this provider. Check the token and try again.")
+      return false
+    }
+    pendingProviderPresetAddRequest.current = requestID
+    pendingProviderPresetID.current = "cloudflare-workers-ai"
+    setProviderPresetSaving(true)
+    setProviderPresetError("")
+    return true
+  }
+
   const chooseProviderPreset = (preset: ProviderPreset) => {
     setProviderPresetSelected(preset)
     setProviderPresetKey("")
     setProviderPresetError("")
+    if (preset.requires_account_id) {
+      textarea.current?.blur()
+      setWorkersAISetupOpen(true)
+      return
+    }
     setProviderSetupMode("key")
   }
 
@@ -964,23 +1015,55 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const selectionCopyText = (selection: any) => {
     const transcript = (renderer.root as any).findDescendantById("transcript")
-    const clip = transcript ? { x: transcript.x, y: transcript.y, width: transcript.width, height: transcript.height } : undefined
+    const selectedTranscript = selection?.selectedRenderables?.some((item: any) => {
+      let node = item
+      while (node) {
+        if (node === transcript) return true
+        node = node.parent
+      }
+      return false
+    })
+    if (transcript && selectedTranscript) {
+      const focus = selection.focus
+      // The core grows its selection container by one parent per pointer move.
+      // A fast drag can cross several nested Markdown nodes in one event; widen
+      // the native selection to the transcript before reading its text.
+      for (let depth = 0; depth < 24; depth++) {
+        const container = renderer.getSelectionContainer()
+        if (!container || container === transcript) break
+        let node: any = container
+        let insideTranscript = false
+        while (node) {
+          if (node === transcript) { insideTranscript = true; break }
+          node = node.parent
+        }
+        if (!insideTranscript) break
+        renderer.updateSelection(undefined, focus.x, focus.y)
+      }
+    }
+    const viewport = transcript?.viewport ?? transcript
+    const clip = viewport ? { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height } : undefined
     return selectedCopyText(selection, renderer.currentRenderBuffer, clip)
   }
 
   useSelectionHandler((selection) => {
     if (selection.isDragging) return
-    // OpenTUI's global selection can include renderables below the scrollbox
-    // viewport. Prefer transcript text whenever the drag touched the transcript;
-    // composer selections still work when they are the only selected region.
-    const selected = selectionCopyText(selection)
-    if (!selected.trim()) {
-      copiedSelection.current = ""
-      return
-    }
-    if (selected === copiedSelection.current) return
-    copiedSelection.current = selected
-    copyToClipboard(selected)
+    // OpenTUI emits `selection` before it refreshes selectedRenderables. Read
+    // after the event stack so the final pointer position is included.
+    queueMicrotask(() => {
+      const current = renderer.getSelection()
+      if (current !== selection || current.isDragging) return
+      // Prefer transcript text whenever the drag touched it; composer selection
+      // remains supported when it is the only selected region.
+      const selected = selectionCopyText(current)
+      if (!selected.trim()) {
+        copiedSelection.current = ""
+        return
+      }
+      if (selected === copiedSelection.current) return
+      copiedSelection.current = selected
+      copyToClipboard(selected)
+    })
   })
 
   const enterPhase = (phase: string) => {
@@ -1955,6 +2038,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setProviderPresetKey("")
           const provider = String(data.added_provider_id ?? pendingProviderPresetID.current)
         pendingProviderPresetID.current = ""
+          setWorkersAISetupOpen(false)
           setProviderSetupMode(null)
           setProviderPresetSelected(null)
           setProviderPresetQuery("")
@@ -1987,6 +2071,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           id: String(item.id).slice(0, 80), label: String(item.label).slice(0, 100), base_url: safeProviderURL(String(item.base_url ?? "")),
           protocol: String(item.protocol ?? "chat_completions"), api_style: String(item.api_style ?? "openai_compatible"), api_key_env: String(item.api_key_env ?? "API_KEY"),
           default_effort: String(item.default_effort ?? "medium"), supports_reasoning_effort: item.supports_reasoning_effort === true,
+          requires_account_id: item.requires_account_id === true,
           docs_url: safeProviderURL(String(item.docs_url ?? "")), compatibility_note: String(item.compatibility_note ?? "").slice(0, 220),
         })) : []
         setProviderPresets(presets)
@@ -2007,6 +2092,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setProviderModelsLoading(false)
         const available = Array.isArray(data.models) ? data.models.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
           id: String(item.id), object: typeof item.object === "string" ? item.object : undefined, owned_by: typeof item.owned_by === "string" ? item.owned_by : undefined,
+          task: typeof item.task === "string" ? item.task : undefined,
+          description: typeof item.description === "string" ? item.description : undefined,
+          capabilities: Array.isArray(item.capabilities) ? item.capabilities.filter((value: unknown): value is string => typeof value === "string").slice(0, 24) : undefined,
         })) : []
         setProviderModels(available)
         setProviderModelQuery("")
@@ -2496,6 +2584,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     // keyboard focus. Only reinterpret file paths while the chat composer is
     // the active input; AskUser answers and modal fields should receive the
     // original paste bytes as text.
+    if (workersAISetupOpen) {
+      const mime = event.metadata?.mimeType?.toLowerCase() ?? ""
+      if (event.metadata?.kind === "binary" || mime.includes("uri-list") || (mime && !mime.startsWith("text/plain"))) return
+      const text = new TextDecoder().decode(event.bytes.subarray(0, 16 * 1024))
+      if (!text) return
+      event.preventDefault()
+      event.stopPropagation()
+      workersAIPasteHandler.current?.(text)
+      return
+    }
     if (question || !composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) return
     const pasted = new TextDecoder().decode(event.bytes)
     const parsed = parsePastedPaths(pasted, event.metadata?.mimeType ?? "")
@@ -2812,7 +2910,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "provider": {
         const [operation, ...rest] = args
         const target = rest.join(" ")
-        if (operation === "setup" || operation === "connect") openProviderPresets()
+        if (head === "/providers" || operation === "setup" || operation === "connect") openProviderPresets()
         else if (!operation || operation === "list") transport.send("providers_list" as any)
         else if (operation === "models" && target) {
           setProviderSetupModelID(target)
@@ -3210,6 +3308,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   useKeyboard((key) => {
     if (sessionManagerOpen || mcpManagerOpen) return
+    if (workersAISetupOpen) {
+      workersAIKeyHandler.current?.(key)
+      return
+    }
     if (selector === "provider_presets" && providerSetupMode) {
       const name = key.name.toLowerCase()
       const commandModifier = key.super === true || key.meta === true
@@ -3564,7 +3666,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }, [providerPresets, providerPresetQuery])
   const filteredProviderModels = useMemo(() => {
     const query = providerModelQuery.trim().toLowerCase()
-    return providerModels.filter((item) => !query || `${item.id} ${item.owned_by ?? ""} ${item.object ?? ""}`.toLowerCase().includes(query))
+    return providerModels.filter((item) => !query || `${item.id} ${item.owned_by ?? ""} ${item.object ?? ""} ${item.task ?? ""} ${item.description ?? ""} ${item.capabilities?.join(" ") ?? ""}`.toLowerCase().includes(query))
   }, [providerModels, providerModelQuery])
   const selectedOptions = selector === "usage" || selector === "provider_presets" ? []
     : selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
@@ -3575,7 +3677,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider · ChatGPT login", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" })), { label: "Connect a provider…", value: "__provider_setup__", description: "Search supported providers and add a private API key", state: "setup" }]
     : selector === "image" ? [{ label: imagegenEnabled ? "Disable ImageGen" : "Enable ImageGen", value: imagegenEnabled ? "disable" : "enable", description: imageConfigPending ? "Saving configuration…" : imagegenEnabled ? `Enabled · ${imagegenDriver || "gpt-6-astra"}` : "Off by default · uses your ChatGPT login", state: imagegenEnabled ? "enabled" : "disabled" }]
       : selector === "extension_commands" ? extensionCommands.map((item) => ({ label: item.name, value: item.name, description: item.description || `Plugin command · ${item.extension_id}`, state: "available" }))
-    : selector === "provider_models" ? filteredProviderModels.map((item) => ({ label: item.id, value: item.id, description: [item.object, item.owned_by].filter(Boolean).join(" · "), state: "model" }))
+    : selector === "provider_models" ? filteredProviderModels.map((item) => ({ label: item.id, value: item.id, description: [item.task, item.capabilities?.includes("function_calling") ? "tool calling" : "", item.description, item.object, item.owned_by].filter(Boolean).join(" · "), state: item.capabilities?.includes("function_calling") ? "tool calling" : "model" }))
       : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
       : selector === "tasks" ? tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}`, state: "" }))
         : selector === "skills" ? skillsView === "results" ? skillSearchResults.map((skill) => ({ label: skill.name, value: skill.id, description: `${skill.source} · ${skill.installs.toLocaleString()} installs · Enter to inspect source`, state: "search result" }))
@@ -3637,7 +3739,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
         <text selectable={false} fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
       </box>
-      <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
+      <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingRight: 1, paddingBottom: 0 }}>
         {welcomeVisible
           ? <WelcomeEntry onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
           : <TranscriptTimeline groups={transcriptGroups} clock={clock} hasLiveTool={transcriptHasLiveTool} expandedToolGroups={expandedToolGroups} onToggle={toggleToolGroup} />}
@@ -3827,7 +3929,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <box onMouseDown={(event) => leftMouseDown(event, () => { setPluginSourceModalOpen(false); textarea.current?.focus() })} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.muted} content="Cancel · Esc" /></box>
         </box>
       </box>}
-      {selector === "provider_presets" && providerSetupMode && <box style={{ position: "absolute", left: "8%", right: "8%", top: "8%", bottom: "8%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 1, flexDirection: "column", gap: 1 }}>
+      {selector === "provider_presets" && providerSetupMode && !workersAISetupOpen && <box style={{ position: "absolute", left: "8%", right: "8%", top: "8%", bottom: "8%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 1, flexDirection: "column", gap: 1 }}>
         <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
           <text fg={palette.text} content={providerSetupMode === "browse" ? "Connect a provider" : `Connect ${providerPresetSelected?.label ?? "provider"}`} />
           <text fg={palette.dim} content="Esc close" />
@@ -3877,6 +3979,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>)}
         <text fg={palette.dim} content={visibleQuestion.answering ? "Sending answer…" : visibleQuestion.taskID ? visibleQuestion.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc hide · /task cancel stops task" : "Type an answer · Enter submit · Esc hide · /task cancel stops task" : visibleQuestion.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
       </box>}
+      <WorkersAISetup
+        open={workersAISetupOpen}
+        saving={providerPresetSaving}
+        error={providerPresetError}
+        onClose={() => {
+          setWorkersAISetupOpen(false)
+          setProviderPresetSaving(false)
+          setProviderPresetError("")
+          textarea.current?.focus()
+        }}
+        onSubmit={submitWorkersAISetup}
+        onRegisterPasteHandler={(handler) => { workersAIPasteHandler.current = handler }}
+        onRegisterKeyHandler={(handler) => { workersAIKeyHandler.current = handler }}
+      />
       <SessionManager
         open={sessionManagerOpen}
         onClose={() => setSessionManagerOpen(false)}
