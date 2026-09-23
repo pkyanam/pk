@@ -179,6 +179,19 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		defer closer.Close()
 	}
 	options.Adapter = client
+	budgetConfig, err := config.Load(filepath.Join(pkHome(), "config.json"))
+	if err != nil {
+		fmt.Fprintf(stderr, "pk run: load context budget config: %v\n", err)
+		return 1
+	}
+	providerBaseURL := ""
+	if providerSnapshot != nil {
+		providerBaseURL = providerSnapshot.BaseURL
+	}
+	if err := applyConfiguredContextManagement(&options, budgetConfig, providerBaseURL); err != nil {
+		fmt.Fprintf(stderr, "pk run: resolve context budget: %v\n", err)
+		return 1
+	}
 	var imageExtension []cliRegistryExtension
 	if imageDriver != "" {
 		imageConfig := imagegen.Config{Driver: imageDriver, Effort: "low", CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME"))}
@@ -220,6 +233,7 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	subagentManager, err := configureSubagents(ctx, &options, subagentRuntimeConfig{
 		Workspace: options.Workspace, SessionDir: options.SessionDir, SkillsDirs: options.SkillsDirs,
 		Effort: options.Effort, CompactCapturedOutput: options.CompactCapturedOutput,
+		ContextBudgetConfig: budgetConfig.ContextBudget, HistoryCompactionConfig: budgetConfig.HistoryCompaction,
 		PluginManifests: extensionPaths, MCPServers: mcpServers,
 		InheritPlugins: len(extensionPaths) > 0, InheritMCP: len(mcpServers) > 0,
 		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
@@ -267,6 +281,19 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 		defer closer.Close()
 	}
 	options.Adapter = client
+	budgetConfig, err := config.Load(filepath.Join(pkHome(), "config.json"))
+	if err != nil {
+		fmt.Fprintf(stderr, "pk: load context budget config: %v\n", err)
+		return 1
+	}
+	providerBaseURL := ""
+	if providerSnapshot != nil {
+		providerBaseURL = providerSnapshot.BaseURL
+	}
+	if err := applyConfiguredContextManagement(&options, budgetConfig, providerBaseURL); err != nil {
+		fmt.Fprintf(stderr, "pk: resolve context budget: %v\n", err)
+		return 1
+	}
 	options.Output = synchronizedJSONLOutput(stdout)
 	options.Diagnostics = stderr
 	options.ToolEvents = true
@@ -294,6 +321,7 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 	subagentManager, err := configureSubagents(ctx, &options, subagentRuntimeConfig{
 		Workspace: options.Workspace, SessionDir: options.SessionDir, SkillsDirs: options.SkillsDirs,
 		Effort: options.Effort, CompactCapturedOutput: options.CompactCapturedOutput,
+		ContextBudgetConfig: budgetConfig.ContextBudget, HistoryCompactionConfig: budgetConfig.HistoryCompaction,
 		MCPServers: mcpServers, InheritMCP: len(mcpServers) > 0,
 		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
 		Events: subagentJSONLForwarder(options.Output, options.JSONL),
@@ -610,7 +638,7 @@ Start work:
 
 Setup:
   pk login | logout | status    manage ChatGPT login
-  pk config [show|set ...]      view or change model, effort, context policy, image driver
+  pk config [show|set ...]      view or change model, effort, context policy, image driver, context budget
   pk provider list|add|use ...  configure and select an OpenAI-compatible provider
 
 Tools and integrations:

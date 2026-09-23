@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pkyanam/pk/internal/contextbudget"
+	"github.com/pkyanam/pk/internal/runner"
 )
 
 func TestDetachedWorkerFollowAndSteer(t *testing.T) {
@@ -22,6 +25,9 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 			if mode == "steer" {
 				if options.ContextPolicy != "compact" {
 					return errors.New("context policy was not preserved by task worker")
+				}
+				if options.ContextBudget.InputTokens == nil || *options.ContextBudget.InputTokens != 123456 || !options.HistoryCompaction.Enabled {
+					return errors.New("context budget and history compaction were not preserved by task worker")
 				}
 				if _, err := io.WriteString(out, "worker-ready\n"); err != nil {
 					return err
@@ -67,6 +73,7 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	}
 	t.Setenv("TASK_TEST_BINARY", helper)
 	t.Setenv("PK_TASK_TEST_MODE", "steer")
+	inputLimit := int64(123456)
 	script := filepath.Join(root, "worker.sh")
 	body := "#!/bin/sh\nPK_TASK_ID=\"$2\" exec \"$TASK_TEST_BINARY\" -test.run=^TestDetachedWorkerFollowAndSteer$\n"
 	if err = os.WriteFile(script, []byte(body), 0o700); err != nil {
@@ -74,7 +81,7 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	}
 
 	store := Store{Root: filepath.Join(root, "tasks")}
-	task, err := store.Start(context.Background(), StartOptions{ID: "detached-check", Prompt: "do a task", Workspace: workspace, ProviderID: "test-provider", ContextPolicy: "compact", Executable: script})
+	task, err := store.Start(context.Background(), StartOptions{ID: "detached-check", Prompt: "do a task", Workspace: workspace, ProviderID: "test-provider", ContextPolicy: "compact", ContextBudget: contextbudget.Budget{ProviderID: "test-provider", ModelID: "test-model", InputTokens: &inputLimit, OperationalInputBudgetTokens: inputLimit}, HistoryCompaction: runner.DefaultHistoryCompactionOptions(), Executable: script})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +95,7 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loadedTask.ProviderID != "test-provider" || loadedTask.Options.ProviderID != "test-provider" || loadedTask.Options.ContextPolicy != "compact" {
+	if loadedTask.ProviderID != "test-provider" || loadedTask.Options.ProviderID != "test-provider" || loadedTask.Options.ContextPolicy != "compact" || loadedTask.Options.ContextBudget.InputTokens == nil || *loadedTask.Options.ContextBudget.InputTokens != inputLimit || !loadedTask.Options.HistoryCompaction.Enabled {
 		t.Fatalf("task did not persist provider/context policy: task=%q options=%+v", loadedTask.ProviderID, loadedTask.Options)
 	}
 	if _, err = store.Resume(context.Background(), task.ID); !errors.Is(err, ErrAlreadyRunning) {

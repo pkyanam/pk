@@ -54,6 +54,12 @@ func (s *rpcServer) launchProviderModelsLocked(request providerModelsRequest) {
 func (s *rpcServer) runProviderModels(ctx context.Context, cancel context.CancelFunc, request providerModelsRequest) {
 	defer cancel()
 	models, err := request.Provider.Models(ctx)
+	var catalogWarning string
+	if err == nil && ctx.Err() == nil {
+		if cacheErr := (providers.Store{Home: pkHome()}).SaveModelCatalog(request.Provider.ID, request.Provider.BaseURL, models, time.Now().UTC()); cacheErr != nil {
+			catalogWarning = "model metadata could not be cached"
+		}
+	}
 	s.mu.Lock()
 	if s.providerModelsRequestID != request.RequestID {
 		s.mu.Unlock()
@@ -72,7 +78,11 @@ func (s *rpcServer) runProviderModels(ctx context.Context, cancel context.Cancel
 		if err != nil {
 			_ = s.emit(request.RequestID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 		} else {
-			_ = s.emit(request.RequestID, "provider_models", map[string]any{"provider_id": request.Provider.ID, "models": models})
+			payload := map[string]any{"provider_id": request.Provider.ID, "models": models}
+			if catalogWarning != "" {
+				payload["catalog_warning"] = catalogWarning
+			}
+			_ = s.emit(request.RequestID, "provider_models", payload)
 		}
 	}
 }

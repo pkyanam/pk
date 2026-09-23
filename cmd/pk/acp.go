@@ -84,6 +84,10 @@ func runACPCommandWithRunnerAdapter(ctx context.Context, args []string, input io
 	})
 	selected := runner.Options{Model: *model, Effort: *effort}
 	applyProviderDefaults(&selected, provider, modelSet, effortSet)
+	providerBaseURL := ""
+	if provider != nil {
+		providerBaseURL = provider.BaseURL
+	}
 	sessionDir := filepathJoin(pkHome(), "sessions")
 	server, err := acp.NewServer(input, output, acp.Config{Model: selected.Model, Effort: selected.Effort,
 		NewSession: func(sessionCtx context.Context, id, _ string) error {
@@ -118,6 +122,9 @@ func runACPCommandWithRunnerAdapter(ctx context.Context, args []string, input io
 					afterPersist(sessionID, inputID)
 				}
 			}}
+			if err := applyConfiguredContextManagement(&options, defaults, providerBaseURL); err != nil {
+				return acp.TurnResult{}, fmt.Errorf("resolve context budget: %w", err)
+			}
 			client, err := prepare(turnCtx, &options)
 			if err != nil {
 				return acp.TurnResult{}, err

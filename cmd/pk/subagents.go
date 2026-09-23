@@ -21,26 +21,28 @@ import (
 // subagentRuntimeConfig captures only explicitly inherited parent capabilities.
 // Child runs never call configureSubagents, so they cannot create nested agents.
 type subagentRuntimeConfig struct {
-	Workspace             string
-	SessionDir            string
-	Model                 string
-	Effort                string
-	CompactCapturedOutput bool
-	ProviderID            string
-	ProviderConfig        *providers.Provider
-	SkillsDirs            []string
-	SystemPrompt          string
-	PluginManifests       []string
-	MCPServers            []mcpclient.ServerConfig
-	InheritPlugins        bool
-	InheritMCP            bool
-	UseCodex              bool
-	CodexPath             string
-	Diagnostics           io.Writer
-	Events                func(subagents.Event)
-	AdapterFactory        func(context.Context, bool, string) (llm.Adapter, error)
-	Run                   func(context.Context, runner.Options) (runner.RunResult, error)
-	MaxConcurrent         int
+	Workspace               string
+	SessionDir              string
+	Model                   string
+	Effort                  string
+	CompactCapturedOutput   bool
+	ContextBudgetConfig     config.ContextBudgetConfig
+	HistoryCompactionConfig config.HistoryCompactionConfig
+	ProviderID              string
+	ProviderConfig          *providers.Provider
+	SkillsDirs              []string
+	SystemPrompt            string
+	PluginManifests         []string
+	MCPServers              []mcpclient.ServerConfig
+	InheritPlugins          bool
+	InheritMCP              bool
+	UseCodex                bool
+	CodexPath               string
+	Diagnostics             io.Writer
+	Events                  func(subagents.Event)
+	AdapterFactory          func(context.Context, bool, string) (llm.Adapter, error)
+	Run                     func(context.Context, runner.Options) (runner.RunResult, error)
+	MaxConcurrent           int
 }
 
 // configureSubagents installs a parent-only subagent tool surface. The caller
@@ -166,6 +168,13 @@ func runSubagent(ctx context.Context, child runner.Options, cfg subagentRuntimeC
 		}()
 	}
 	child.Adapter = adapter
+	providerBaseURL := ""
+	if cfg.ProviderConfig != nil {
+		providerBaseURL = cfg.ProviderConfig.BaseURL
+	}
+	if err := applyConfiguredContextManagement(&child, config.Config{ContextBudget: cfg.ContextBudgetConfig, HistoryCompaction: cfg.HistoryCompactionConfig}, providerBaseURL); err != nil {
+		return runner.RunResult{}, fmt.Errorf("resolve subagent context budget: %w", err)
+	}
 	child.ToolEvents = true
 	child.JSONL = true
 	child.Diagnostics = cfg.Diagnostics

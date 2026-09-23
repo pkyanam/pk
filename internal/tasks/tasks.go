@@ -19,6 +19,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/contextbudget"
+	"github.com/pkyanam/pk/internal/runner"
 )
 
 const defaultModel = "gpt-6-luna"
@@ -42,22 +46,26 @@ const (
 )
 
 type StartOptions struct {
-	ID            string   `json:"id,omitempty"`
-	PromptID      string   `json:"prompt_id,omitempty"`
-	Prompt        string   `json:"prompt"`
-	Workspace     string   `json:"workspace"`
-	Model         string   `json:"model,omitempty"`
-	Effort        string   `json:"effort,omitempty"`
-	ContextPolicy string   `json:"context_policy,omitempty"`
-	ProviderID    string   `json:"provider_id,omitempty"`
-	SystemPrompt  string   `json:"system_prompt,omitempty"`
-	SessionDir    string   `json:"session_dir,omitempty"`
-	SkillsDirs    []string `json:"skills_dirs,omitempty"`
-	JSONL         bool     `json:"jsonl,omitempty"`
-	ToolEvents    bool     `json:"tool_events,omitempty"`
-	UseCodex      bool     `json:"use_codex,omitempty"`
-	CodexPath     string   `json:"codex_path,omitempty"`
-	Executable    string   `json:"executable,omitempty"`
+	ID                      string                          `json:"id,omitempty"`
+	PromptID                string                          `json:"prompt_id,omitempty"`
+	Prompt                  string                          `json:"prompt"`
+	Workspace               string                          `json:"workspace"`
+	Model                   string                          `json:"model,omitempty"`
+	Effort                  string                          `json:"effort,omitempty"`
+	ContextPolicy           string                          `json:"context_policy,omitempty"`
+	ProviderID              string                          `json:"provider_id,omitempty"`
+	ContextBudget           contextbudget.Budget            `json:"context_budget,omitempty"`
+	HistoryCompaction       runner.HistoryCompactionOptions `json:"history_compaction,omitempty"`
+	ContextBudgetConfig     config.ContextBudgetConfig      `json:"context_budget_config,omitempty"`
+	HistoryCompactionConfig config.HistoryCompactionConfig  `json:"history_compaction_config,omitempty"`
+	SystemPrompt            string                          `json:"system_prompt,omitempty"`
+	SessionDir              string                          `json:"session_dir,omitempty"`
+	SkillsDirs              []string                        `json:"skills_dirs,omitempty"`
+	JSONL                   bool                            `json:"jsonl,omitempty"`
+	ToolEvents              bool                            `json:"tool_events,omitempty"`
+	UseCodex                bool                            `json:"use_codex,omitempty"`
+	CodexPath               string                          `json:"codex_path,omitempty"`
+	Executable              string                          `json:"executable,omitempty"`
 }
 
 // WorkerOptions is the persisted runner input plus runtime-only callbacks.

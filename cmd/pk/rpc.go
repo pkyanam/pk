@@ -73,6 +73,8 @@ type rpcServer struct {
 	cfgPath, sessionDir     string
 	mu                      sync.Mutex
 	opts                    runner.Options
+	contextBudgetConfig     config.ContextBudgetConfig
+	historyCompactionConfig config.HistoryCompactionConfig
 	adapter                 *codexAdapter
 	useCodex                bool
 	codexPath               string
@@ -676,7 +678,13 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
 		}
 		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, ImageGenFingerprint: imageGenDriver, CompactCapturedOutput: cfg.ContextPolicy == config.ContextPolicyCompact, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
+		if err := applyConfiguredContextManagement(&s.opts, cfg, provider.BaseURL); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve context budget: " + err.Error(), "recoverable": true})
+			return
+		}
 		s.providerID = providerID
+		s.contextBudgetConfig = cfg.ContextBudget
+		s.historyCompactionConfig = cfg.HistoryCompaction
 		s.session = sessionID
 		s.opts.SessionID = s.session
 		s.pluginPaths = pluginPaths
@@ -738,6 +746,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		workspace, sessionID, providerID := s.opts.Workspace, s.session, s.providerID
+		contextConfig, historyConfig := s.contextBudgetConfig, s.historyCompactionConfig
 		pluginPaths := append([]string(nil), s.pluginPaths...)
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
@@ -997,6 +1006,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				PluginManifests: pluginPaths, MCPServers: mcpServers,
 				InheritPlugins: len(pluginPaths) > 0, InheritMCP: len(mcpServers) > 0,
 				ProviderID: providerID, ProviderConfig: selectedProvider,
+				ContextBudgetConfig: contextConfig, HistoryCompactionConfig: historyConfig,
 				UseCodex: s.useCodex, CodexPath: s.codexPath, Diagnostics: s.diagnostics,
 				AdapterFactory: func(adapterCtx context.Context, useCodex bool, codexPath string) (llm.Adapter, error) {
 					if selectedProvider != nil {
@@ -1604,6 +1614,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "provider_models_cancelled", map[string]any{"request_id": get("request_id")})
+	case "context_budget_status":
+		s.handleContextBudgetStatus(msg.ID)
+	case "context_budget_configure":
+		s.handleContextBudgetConfigure(msg.ID, msg.Payload)
+	case "compact":
+		s.startManualContextCompaction(msg.ID)
 	case "provider_presets_list":
 		_ = s.emit(msg.ID, "provider_presets", map[string]any{"presets": rpcProviderPresets()})
 	case "provider_preset_add":
@@ -1707,7 +1723,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		_ = s.emit(msg.ID, "providers_updated", updated)
 	case "provider_select":
-		providerID := get("provider_id")
+		providerID := strings.TrimSpace(get("provider_id"))
+		if strings.EqualFold(providerID, "native") {
+			providerID = ""
+		}
 		s.mu.Lock()
 		if !s.started {
 			s.mu.Unlock()
@@ -1744,6 +1763,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 			model = modelOverride
 		}
+		selectedOptions := runner.Options{ProviderID: providerID, Model: model, Effort: effort}
+		if err := applyConfiguredContextManagement(&selectedOptions, cfg, selected.BaseURL); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve context budget: " + err.Error(), "recoverable": true})
+			return
+		}
 		s.mu.Lock()
 		if s.active || s.session != "" || s.attachedTask != "" {
 			s.mu.Unlock()
@@ -1751,6 +1775,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		s.providerID, s.opts.ProviderID, s.opts.Model, s.opts.Effort = providerID, providerID, model, effort
+		s.opts.ContextBudget = selectedOptions.ContextBudget
+		s.opts.HistoryCompaction = selectedOptions.HistoryCompaction
+		s.contextBudgetConfig, s.historyCompactionConfig = cfg.ContextBudget, cfg.HistoryCompaction
 		s.mu.Unlock()
 		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort})
 	case "plugins_enable":
@@ -2106,7 +2133,21 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			workspace = filepath.Join(s.opts.Workspace, "pk-work", fmt.Sprintf("task-%d", time.Now().UnixNano()))
 		}
 		executable, _ := os.Executable()
-		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ContextPolicy: cfg.ContextPolicy, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
+		budgetProviderBaseURL := ""
+		if providerID != "" {
+			provider, providerErr := resolveRPCProvider(providerID)
+			if providerErr != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": providerErr.Error(), "recoverable": true})
+				return
+			}
+			budgetProviderBaseURL = provider.BaseURL
+		}
+		taskOptions := runner.Options{ProviderID: providerID, Model: model, Effort: effort}
+		if err := applyConfiguredContextManagement(&taskOptions, cfg, budgetProviderBaseURL); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve task context budget: " + err.Error(), "recoverable": true})
+			return
+		}
+		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ContextPolicy: cfg.ContextPolicy, ProviderID: providerID, ContextBudget: taskOptions.ContextBudget, HistoryCompaction: taskOptions.HistoryCompaction, ContextBudgetConfig: cfg.ContextBudget, HistoryCompactionConfig: cfg.HistoryCompaction, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
@@ -2293,16 +2334,29 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		_ = s.emit(msg.ID, "detached", map[string]any{"session_id": sessionID})
 	case "set_model":
-		model, effort := get("model"), get("effort")
+		requestedModel, requestedEffort := strings.TrimSpace(get("model")), strings.TrimSpace(get("effort"))
 		s.mu.Lock()
-		if model != "" {
-			s.opts.Model = model
-		}
-		if effort != "" {
-			s.opts.Effort = effort
-		}
+		busy := s.active || s.skillOperationActive || s.pluginCommandActive || s.releaseActive || s.attachedTask != ""
 		model, effort, sessionID, providerID := s.opts.Model, s.opts.Effort, s.session, s.providerID
 		s.mu.Unlock()
+		if busy {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "model settings can only be changed while the session is idle", "recoverable": true})
+			return
+		}
+		if requestedModel != "" {
+			if len(requestedModel) > 256 || strings.ContainsAny(requestedModel, "\r\n\x00") {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "model ID must be at most 256 bytes and contain no control characters", "recoverable": true})
+				return
+			}
+			model = requestedModel
+		}
+		if requestedEffort != "" {
+			if !config.ValidEffort(requestedEffort) {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "unsupported reasoning effort " + requestedEffort, "recoverable": true})
+				return
+			}
+			effort = strings.ToLower(requestedEffort)
+		}
 		if model != "" && effort != "" {
 			cfg, err := config.Load(s.cfgPath)
 			if err != nil {
@@ -2310,10 +2364,21 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				return
 			}
 			cfg.Model, cfg.Effort = model, effort
+			providerBaseURL := rpcContextBudgetBaseURL(providerID)
+			selectedOptions := runner.Options{ProviderID: providerID, Model: model, Effort: effort}
+			if err := applyConfiguredContextManagement(&selectedOptions, cfg, providerBaseURL); err != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve context budget: " + err.Error(), "recoverable": true})
+				return
+			}
 			if err := config.Save(s.cfgPath, cfg); err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save model defaults: " + err.Error(), "recoverable": true})
 				return
 			}
+			s.mu.Lock()
+			s.opts.Model, s.opts.Effort = model, effort
+			s.opts.ContextBudget, s.opts.HistoryCompaction = selectedOptions.ContextBudget, selectedOptions.HistoryCompaction
+			s.contextBudgetConfig, s.historyCompactionConfig = cfg.ContextBudget, cfg.HistoryCompaction
+			s.mu.Unlock()
 		}
 		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID})
 	case "shutdown":

@@ -98,12 +98,20 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			return 2
 		}
 		effort = strings.ToLower(effort)
+		providerBaseURL := ""
+		if provider != nil {
+			providerBaseURL = provider.BaseURL
+		}
+		if err := applyConfiguredContextManagement(&options, cfg, providerBaseURL); err != nil {
+			fmt.Fprintf(errOut, "pk task create: resolve context budget: %v\n", err)
+			return 1
+		}
 		executable, err := os.Executable()
 		if err != nil {
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
 		}
-		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ContextPolicy: strings.ToLower(cfg.ContextPolicy), ProviderID: options.ProviderID, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
+		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ContextPolicy: strings.ToLower(cfg.ContextPolicy), ProviderID: options.ProviderID, ContextBudget: options.ContextBudget, HistoryCompaction: options.HistoryCompaction, ContextBudgetConfig: cfg.ContextBudget, HistoryCompactionConfig: cfg.HistoryCompaction, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
 		if err != nil {
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
@@ -292,7 +300,7 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 				}
 			}
 		}()
-		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: onSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, ContextBudget: taskOptions.ContextBudget, HistoryCompaction: taskOptions.HistoryCompaction, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: onSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
 		client, providerSnapshot, err := prepareCLIAdapter(ctx, &o, taskOptions.UseCodex, taskOptions.CodexPath)
 		if err != nil {
 			return err
@@ -301,6 +309,19 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 			defer closer.Close()
 		}
 		o.Adapter = client
+		if o.ContextBudget.ProviderID == "" {
+			cfg, cfgErr := config.Load(filepath.Join(pkHome(), "config.json"))
+			if cfgErr != nil {
+				return fmt.Errorf("load context budget config: %w", cfgErr)
+			}
+			baseURL := ""
+			if providerSnapshot != nil {
+				baseURL = providerSnapshot.BaseURL
+			}
+			if err := applyConfiguredContextManagement(&o, cfg, baseURL); err != nil {
+				return err
+			}
+		}
 		if _, err := configureCLIExtensions(ctx, &o, nil, nil, diagnostics,
 			cliRegistryExtension{Decorate: func(base tool.Registry) tool.Registry {
 				return interaction.DecorateRegistry(base, broker)
@@ -321,6 +342,7 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 		subagentManager, err := configureSubagents(ctx, &o, subagentRuntimeConfig{
 			Workspace: o.Workspace, SessionDir: o.SessionDir, SkillsDirs: o.SkillsDirs,
 			ProviderID: o.ProviderID, ProviderConfig: providerSnapshot, Effort: o.Effort,
+			ContextBudgetConfig: taskOptions.ContextBudgetConfig, HistoryCompactionConfig: taskOptions.HistoryCompactionConfig,
 			MCPServers: mcpServers, InheritMCP: len(mcpServers) > 0,
 			UseCodex: taskOptions.UseCodex, CodexPath: taskOptions.CodexPath, Diagnostics: diagnostics,
 		})
