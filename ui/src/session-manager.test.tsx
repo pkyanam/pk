@@ -196,6 +196,90 @@ describe("SessionManager", () => {
     expect(setup.captureCharFrame()).toContain("This cannot be undone")
   })
 
+  test("long multiline previews stay single-line and a 63-session list scrolls back to the top", async () => {
+    const setup = await setupPanel(100, 32)
+    const list = sent.find((item) => item.type === "sessions_list")!
+    const sessions = Array.from({ length: 63 }, (_, index) => ({
+      ...sampleSession,
+      id: `session-${index + 1}`,
+      title: `Session ${String(index + 1).padStart(2, "0")}`,
+      preview: `First line ${index}\n${"very long preview text ".repeat(10)}\nthird line`,
+    }))
+    emit(list.id, "sessions", { sessions })
+    let frame = await setup.waitForFrame((value) => value.includes("Session 01"))
+    expect(frame).not.toContain("First line 0\n")
+    for (let index = 0; index < 62; index++) {
+      await act(async () => setup.mockInput.pressKey("ARROW_DOWN"))
+    }
+    frame = await setup.waitForFrame((value) => value.includes("Session 63"))
+    expect(frame).toContain("of 63")
+    expect(frame).toContain("[ ] Session 63")
+    for (let index = 0; index < 62; index++) {
+      await act(async () => setup.mockInput.pressKey("ARROW_UP"))
+    }
+    frame = await setup.waitForFrame((value) => value.includes("Session 01"))
+    expect(frame).toContain("Showing 1–")
+    expect(frame).not.toContain("First line 0\n")
+  })
+
+  test("select all and clear work from keyboard and mouse; P explains archive-first", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    const sessions = Array.from({ length: 4 }, (_, index) => ({
+      ...sampleSession,
+      id: `session-${index + 1}`,
+      title: `Session ${index + 1}`,
+    }))
+    emit(list.id, "sessions", { sessions })
+    let frame = await setup.waitForFrame((value) => value.includes("Session 3"))
+    await act(async () => setup.mockInput.pressKey("s"))
+    frame = await setup.waitForFrame((value) => value.includes("Clear selection · S"))
+    expect(frame).toContain("[x] Session 1")
+    expect(frame).toContain("Clear selection · S")
+    await act(async () => setup.mockInput.pressKey("s"))
+    frame = await setup.waitForFrame((value) => value.includes("Select all · S"))
+    expect(frame).toContain("[ ] Session 1")
+    expect(frame).toContain("Select all · S")
+
+    const selectAllRow = frame.split("\n").findIndex((line) => line.includes("Select all · S"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[selectAllRow]!.indexOf("Select all"), selectAllRow))
+    frame = await setup.waitForFrame((value) => value.includes("Clear selection · S"))
+    await act(async () => setup.mockInput.pressKey("p"))
+    frame = await setup.waitForFrame((value) => value.includes("Purge is only available in Trash"))
+    expect(sent.some((item) => item.type === "sessions_purge")).toBe(false)
+    await act(async () => setup.mockInput.pressKey("a"))
+    expect(sent.find((item) => item.type === "sessions_archive")?.payload?.session_ids).toEqual(sessions.map((session) => session.id))
+  })
+
+  test("long Unicode titles, workspaces, and previews stay within an 80-column frame", async () => {
+    const setup = await setupPanel(80, 24)
+    const list = sent.find((item) => item.type === "sessions_list")!
+    const wide = { ...sampleSession, title: "界🙂é".repeat(32), workspace: `/tmp/${"界🙂".repeat(30)}`, preview: `Preview ${"🙂界".repeat(60)}` }
+    emit(list.id, "sessions", { sessions: [wide] })
+    const frame = await setup.waitForFrame((value) => value.includes("Open session"))
+    for (const line of frame.split("\n")) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80)
+    }
+    expect(frame).toContain("…")
+    expect(frame).toContain("Open session")
+  })
+
+  test("clearing select-all with open sessions does not claim they were selected", async () => {
+    const setup = await setupPanel()
+    const list = sent.find((item) => item.type === "sessions_list")!
+    emit(list.id, "sessions", { sessions: [
+      { ...sampleSession, id: "closed-a" },
+      { ...sampleSession, id: "open", active: true },
+      { ...sampleSession, id: "closed-b" },
+    ] })
+    await setup.waitForFrame((frame) => frame.includes("Release planning"))
+    await act(async () => setup.mockInput.pressKey("s"))
+    await setup.waitForFrame((frame) => frame.includes("skipped 1 open session"))
+    await act(async () => setup.mockInput.pressKey("s"))
+    const frame = await setup.waitForFrame((value) => value.includes("Selection cleared; 1 open session remains unselected."))
+    expect(frame).not.toContain("Selected 2; skipped 1")
+  })
+
   test("restores selected trashed sessions", async () => {
     const setup = await setupPanel()
     const list = sent.find((item) => item.type === "sessions_list")!
