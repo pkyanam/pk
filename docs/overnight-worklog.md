@@ -663,3 +663,7 @@ gates or imply that every backlog item is complete.
 - pkbench retains parent-only columns and adds deduplicated child/combined totals with coverage flags. Missing/partial usage and dispatcher calls without child accounting cannot appear as free delegation. Parent component-capture correlation is unchanged.
 - Added a benchmark-only flat Subagent dispatcher with all five actions, conditional validation and stateless result decoding across resumed registries. Actual definitions measure 2,124 → 1,317 JSON bytes. It is not enabled by a CLI policy or production defaults; no live savings claim.
 - Full runner/CLI race suites, pkbench/experiment race suites, tagged CLI tests and the additional dispatcher-accounting regression pass. No live provider calls were made for this checkpoint.
+
+### 09:18 EDT — delegation accounting installed
+
+- Managed updater activated clean f483eee as 20260923T131805.235416000Z-25ff380ac87a-cd00bf4b after full validation/build gates. Existing running sessions were not interrupted. The flat dispatcher remains experiment-only; production still exposes the five established subagent controls.
