@@ -44,7 +44,7 @@ describe("WorkersAISetup", () => {
     let row = frame.split("\n").findIndex((line) => line.includes("Connect · Enter"))
     await act(async () => rendered.mockMouse.click(frame.split("\n")[row]!.indexOf("Connect"), row))
     expect(submitted).toEqual([])
-    expect(rendered.captureCharFrame()).toContain("Enter your Cloudflare account ID.")
+    await rendered.waitForFrame((value) => value.includes("Enter your Cloudflare account ID."))
     await act(async () => rendered.mockInput.pasteBracketedText("not-an-account-id"))
     await act(async () => rendered.mockInput.pressTab())
     await act(async () => rendered.mockInput.pasteBracketedText("token"))
@@ -53,7 +53,7 @@ describe("WorkersAISetup", () => {
     await act(async () => rendered.mockMouse.click(frame.split("\n")[row]!.indexOf("Connect"), row))
     await rendered.flush()
     expect(submitted).toEqual([])
-    expect(rendered.captureCharFrame()).toContain("32-character hexadecimal account ID")
+    await rendered.waitForFrame((value) => value.includes("32-character hexadecimal account ID"))
   })
 
   test("requires a token after a valid account ID", async () => {
@@ -63,7 +63,7 @@ describe("WorkersAISetup", () => {
     await act(async () => rendered.mockInput.pressEnter())
     await rendered.flush()
     expect(submitted).toEqual([])
-    expect(rendered.captureCharFrame()).toContain("Paste a Cloudflare API token")
+    await rendered.waitForFrame((value) => value.includes("Paste a Cloudflare API token"))
   })
 
   test("cancel does not submit and closes the setup", async () => {

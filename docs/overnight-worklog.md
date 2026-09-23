@@ -811,3 +811,5 @@ The reported copy loss reproduced with the complete saved answer. Selection even
 The bundled pk skill is 281 words and links the repository/docs index. `docs/HANDOFF.md` records source-development/update/rollback workflow and open priorities. The continuously evolving solid wordmark and further matched benchmarks remain open. User installation and running processes have not been changed.
 
 Final local gate: `go test ./...`, `go test -race ./internal/providers ./cmd/pk`, TypeScript check, all 181 UI tests (969 assertions), UI build, and `git diff --check` passed. The long-Markdown test now waits for asynchronous highlighting/layout before checking scroll geometry. Publication and platform archive verification follow below.
+
+Candidate v0.1.6 (`b0d5545`) remains unpublished: Linux CI exposed one missing render wait in the new Workers AI validation test. Changed validation assertions to wait for rendered errors, preserving the assertions and application behavior. Focused form tests pass. The replacement release candidate is v0.1.7; no failed archive was offered through the updater.
