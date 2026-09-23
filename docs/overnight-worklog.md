@@ -719,3 +719,17 @@ gates or imply that every backlog item is complete.
 - A temporary drag-copy experiment reproduced partially copied hidden bold delimiters. That is a distinct selection serialization defect; tui is implementing a targeted follow-up, not a blanket Markdown strip.
 - Successful WebSearch/WebFetch envelopes now include UTC RFC3339-second `retrieved_at`, explicitly not source freshness. Shared-handler fixture/race tests cover success, failure, and partial URL errors without external calls.
 - GitHub Release download work remains uncommitted and under review/tests; no prebuilt release has been published yet.
+
+### Release and session-manager follow-up
+
+- Reviewed binary-first updater and bootstrap installer. Focused updater/CLI race tests passed; native macOS archive import smoke passed using the archive's own executable in isolated install directories. The dirty smoke archive is not a release candidate.
+- Packaging smoke caught bootstrap dispatch and macOS AppleDouble entries; both are corrected. Release workflow requires Go/UI gates and stages a draft for final download verification. Public binary publishing is still pending the UI gate.
+- Session-manager overlap/select-all/purge feedback implementation has focused coverage; additional narrow-terminal/Unicode review is in progress. No user sessions have been archived or deleted.
+- The latest pushed source CI, run 35875910744 at 4ba00a8, reports success after the portable Monid fixture correction.
+- Added explicit community-plugin compatibility and bounded pk -p regression work to the durable checklist. Current pk plugins use pk.extensions/v1; SKILL.md and MCP interoperability are distinct from foreign executable plugin compatibility.
+
+### 10:54 EDT — session-manager install
+
+Clean revision `19f79b7` passed the managed updater's Go/UI build and test gates and activated release `20260923T145253.657615000Z-6383862dff89-df8d3ba1`. Source worktree `/tmp/pk-session-manager-release` is retained for provenance. Running user sessions were not interrupted. Session-manager tests: 15 pass/58 assertions. A native interactive retest has not been performed for this install.
+
+Binary-first installer/updater and gated draft-release packaging are committed/pushed at `1d40806`; no GitHub binary release is published yet. CI run 35877358636 was queued at this checkpoint. The copy/Markdown correction remains under active implementation; this did not delay the session fix install.
