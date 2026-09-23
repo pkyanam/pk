@@ -80,6 +80,61 @@ func TestDiscoverAndInstallCopyDataWithoutExecutingScripts(t *testing.T) {
 	}
 }
 
+func TestDiscoverPortableSkillsInsideCodexAndClaudePluginBundles(t *testing.T) {
+	const treeJSON = `{"tree":[
+		{"path":"plugin.json","type":"blob","mode":"100644"},
+		{"path":".claude-plugin/plugin.json","type":"blob","mode":"100644"},
+		{"path":".codex-plugin/plugin.json","type":"blob","mode":"100644"},
+		{"path":"hooks/pre-tool.sh","type":"blob","mode":"100755"},
+		{"path":"skills/codex-review/SKILL.md","type":"blob","mode":"100644"},
+		{"path":"skills/codex-review/references/guide.md","type":"blob","mode":"100644"},
+		{"path":"skills/claude-review/SKILL.md","type":"blob","mode":"100644"},
+		{"path":"skills/claude-review/scripts/helper.sh","type":"blob","mode":"100755"}
+	]}`
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Host == "api.github.com" && strings.HasSuffix(r.URL.Path, "/repo"):
+			return response(200, `{"default_branch":"main"}`), nil
+		case r.URL.Host == "api.github.com" && strings.Contains(r.URL.Path, "/git/trees/"):
+			return response(200, treeJSON), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/codex-review/SKILL.md"):
+			return response(200, "---\nname: codex-review\ndescription: Portable Codex skill.\n---\nUse this skill."), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/claude-review/SKILL.md"):
+			return response(200, "---\nname: claude-review\ndescription: Portable Claude skill.\n---\nUse this skill."), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/guide.md"):
+			return response(200, "Reference only."), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/helper.sh"):
+			return response(200, "echo data, never execute"), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}
+	manager := Manager{Root: filepath.Join(t.TempDir(), "managed-skills"), Client: client}
+	candidates, err := manager.Discover(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 || candidates[0].Name != "claude-review" || candidates[0].Path != "skills/claude-review" || candidates[1].Name != "codex-review" || candidates[1].Path != "skills/codex-review" {
+		t.Fatalf("portable bundle skills = %+v", candidates)
+	}
+	for _, candidate := range candidates {
+		installed, err := manager.Install(context.Background(), candidate.Source, candidate.Path)
+		if err != nil {
+			t.Fatalf("install %s: %v", candidate.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(installed.Path, "SKILL.md")); err != nil {
+			t.Fatalf("installed skill %s is missing SKILL.md: %v", candidate.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(installed.Path, "plugin.json")); !os.IsNotExist(err) {
+			t.Fatalf("plugin manifest was imported with skill %s: %v", candidate.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(installed.Path, "hooks", "pre-tool.sh")); !os.IsNotExist(err) {
+			t.Fatalf("plugin hook was imported with skill %s: %v", candidate.Name, err)
+		}
+	}
+}
+
 func TestGitHubTreeSourceSelectsSkillPathAndRef(t *testing.T) {
 	source, err := parseSource("https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices")
 	if err != nil {
