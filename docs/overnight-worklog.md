@@ -427,3 +427,7 @@ gates or imply that every backlog item is complete.
 ### 2026-09-23 08:42 UTC — raw clipboard image validation
 - In Preview, selected all pixels of the generated mint PNG and copied with Cmd+C. Cmux Cmd+V produced a `clipboard-2026-09-23-044040-7E440986.png` attachment rather than the Finder source path.
 - Session 7c1a2e81 records ViewImage on that clipboard PNG and a final answer accurately describing the glowing mint rectangle. This verifies the Preview→Cmux→pk raw-image path for this terminal, not every terminal's clipboard protocol. Native drag/drop remains pending.
+
+### 2026-09-23 08:45 UTC — scope audit and ImageGen gap
+- Auditing actual startup exposed ImageGen as one-shot only, contrary to intended TUI tool availability. Luna backend/UI agents are implementing explicit persisted opt-in plus a keyboard/mouse setting; separate image driver will remain distinct from chat model and disabled by default.
+- Native Finder drag attempt produced no queued file; coordinate interaction did not establish a successful cross-window drop. Kept native drag/drop unverified rather than inferring behavior from parser tests.
