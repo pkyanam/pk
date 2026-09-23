@@ -58,6 +58,12 @@ func TestMatchedPilotSelectionIsRejectedForAblationsBeforeExecution(t *testing.T
 	if got := run([]string{"-total-timeout", "15m", "-tool-schema-ablation"}); got != 2 {
 		t.Fatalf("matched whole-run timeout with ablation = %d, want usage error 2", got)
 	}
+	if got := run([]string{"-replay-compaction-profile", "aggressive"}); got != 2 {
+		t.Fatalf("experimental replay profile without ablation = %d, want usage error 2", got)
+	}
+	if got := run([]string{"-replay-compaction-ablation", "-replay-compaction-profile", "unknown"}); got != 2 {
+		t.Fatalf("unknown replay profile = %d, want usage error 2", got)
+	}
 }
 
 func TestParseOutputCapCountersAndByteMetrics(t *testing.T) {
@@ -86,7 +92,7 @@ func TestParseReplayCompactionMetrics(t *testing.T) {
 
 func TestReplayCompactionSummaryReportsManipulationAndMeasuredUsage(t *testing.T) {
 	passed := true
-	result := suite{Model: "gpt-6-luna", Effort: "medium", Experiment: "replay compact", ReplayCompactionExperiment: true, Records: []runRecord{{Engine: "pk-compact-replayed-output", Task: "fixture", Phase: "verification", ReplayMetricsAvailable: true, ReplayEligibleResults: 2, ReplayCompactedResults: 2, ReplayOriginalBytes: 18000, ReplayStoredBytes: 4000, CorrectnessPassed: &passed}}}
+	result := suite{Model: "gpt-6-luna", Effort: "medium", Experiment: "replay compact", ReplayCompactionExperiment: true, ReplayThresholdBytes: 1_024, ReplayExcerptRunes: 256, Records: []runRecord{{Engine: "pk-compact-replayed-output-aggressive", Task: "fixture", Phase: "verification", ReplayMetricsAvailable: true, ReplayEligibleResults: 2, ReplayCompactedResults: 2, ReplayOriginalBytes: 18000, ReplayStoredBytes: 4000, CorrectnessPassed: &passed}}}
 	path := filepath.Join(t.TempDir(), "summary.md")
 	if err := writeMarkdown(path, result); err != nil {
 		t.Fatal(err)
@@ -95,7 +101,7 @@ func TestReplayCompactionSummaryReportsManipulationAndMeasuredUsage(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"Eligible / compacted", "2 / 2", "18000 / 4000", "provider-reported", "do not establish general task quality or cache savings"} {
+	for _, expected := range []string{"Replay compaction threshold: 1024 bytes", "Replay head/tail excerpt: 256 runes each", "configured 1024-byte threshold", "256-rune head and tail", "Eligible / compacted", "2 / 2", "18000 / 4000", "provider-reported", "do not establish general task quality or cache savings"} {
 		if !strings.Contains(string(content), expected) {
 			t.Fatalf("summary missing %q:\n%s", expected, content)
 		}

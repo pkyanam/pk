@@ -65,16 +65,18 @@ var replayTaskSelection = map[string]task{
 }
 
 type pairedPolicy struct {
-	resultPrefix     string
-	name             string
-	currentMode      string
-	treatmentEngine  string
-	treatmentMode    string
-	toolSchema       bool
-	replayCompaction bool
-	tasks            []task
-	wholeTimeout     time.Duration
-	effortArms       []effortArm
+	resultPrefix         string
+	name                 string
+	currentMode          string
+	treatmentEngine      string
+	treatmentMode        string
+	toolSchema           bool
+	replayCompaction     bool
+	replayThresholdBytes int
+	replayExcerptRunes   int
+	tasks                []task
+	wholeTimeout         time.Duration
+	effortArms           []effortArm
 }
 
 type effortArm struct {
@@ -95,16 +97,32 @@ func runToolSchemaExperiment(repo, out string, repetitions int, phaseTimeout tim
 	})
 }
 
-func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeout time.Duration, selection string) int {
+func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeout time.Duration, selection, profile string) int {
 	tasks, err := selectReplayTasks(selection)
+	if err != nil {
+		return fail(err)
+	}
+	threshold, excerpt, treatmentEngine, treatmentMode, err := replayCompactionProfile(profile)
 	if err != nil {
 		return fail(err)
 	}
 	return runPairedPolicyExperiment(repo, out, repetitions, phaseTimeout, pairedPolicy{
 		resultPrefix: "replay-compaction", name: "Large Bash result context replay: current vs compact captured result",
-		currentMode: "replay-compaction-current", treatmentEngine: "pk-compact-replayed-output", treatmentMode: "compact-replayed-shell-output",
+		currentMode: "replay-compaction-current", treatmentEngine: treatmentEngine, treatmentMode: treatmentMode,
+		replayThresholdBytes: threshold, replayExcerptRunes: excerpt,
 		replayCompaction: true, tasks: tasks, wholeTimeout: replayWholeTimeout(tasks),
 	})
+}
+
+func replayCompactionProfile(profile string) (threshold, excerpt int, engine, mode string, err error) {
+	switch profile {
+	case "standard":
+		return 4_096, 768, "pk-compact-replayed-output", "compact-replayed-shell-output", nil
+	case "aggressive":
+		return 1_024, 256, "pk-compact-replayed-output-aggressive", "compact-replayed-shell-output-aggressive", nil
+	default:
+		return 0, 0, "", "", fmt.Errorf("unknown replay compaction profile %q (available: standard, aggressive)", profile)
+	}
 }
 
 func runEffortExperiment(repo, out string, repetitions int, phaseTimeout time.Duration, selection string) int {
@@ -244,6 +262,7 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 		Timeout: phaseTimeout.String(), GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		PKRevision: gitRevision(ctx, repoPath), Unreal: "not used (paired pk-only policy ablation)",
 		Experiment: policy.name, ToolSchemaExperiment: policy.toolSchema, ReplayCompactionExperiment: policy.replayCompaction,
+		ReplayThresholdBytes: policy.replayThresholdBytes, ReplayExcerptRunes: policy.replayExcerptRunes,
 		EffortAblationExperiment: len(policy.effortArms) > 0,
 		SourceTreeSHA256:         source.TreeSHA256, GitDiffSHA256: source.DiffSHA256,
 	}
@@ -291,6 +310,7 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 					engine: engine.name, phase: "implementation", prompt: current.implementationPrompt, effort: engine.effort,
 					workspace: workspace, timeout: phaseTimeout, binary: pkBinary, mode: engine.mode,
 					pkHome: pkHome, outputDir: resultDir, skillsDir: emptySkills, taskName: current.name, repetition: rep,
+					replayThresholdBytes: policy.replayThresholdBytes, replayExcerptRunes: policy.replayExcerptRunes,
 				})
 				metadata.Records = append(metadata.Records, first)
 				if err := checkpoint(); err != nil {
@@ -316,6 +336,7 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 					workspace: workspace, sessionID: first.SessionID, timeout: phaseTimeout,
 					binary: pkBinary, mode: engine.mode, pkHome: pkHome, outputDir: resultDir,
 					skillsDir: emptySkills, taskName: current.name, repetition: rep,
+					replayThresholdBytes: policy.replayThresholdBytes, replayExcerptRunes: policy.replayExcerptRunes,
 				})
 				passed, testErr := verifyHoldout(ctx, fixture, workspace, resultDir, engine.name, rep, current.name)
 				second.CorrectnessPassed = &passed

@@ -85,6 +85,20 @@ func TestSelectReplayTasksRejectsInvalidSelection(t *testing.T) {
 	}
 }
 
+func TestReplayCompactionProfilesAreExplicitAndReproducible(t *testing.T) {
+	threshold, excerpt, engine, mode, err := replayCompactionProfile("standard")
+	if err != nil || threshold != 4_096 || excerpt != 768 || engine != "pk-compact-replayed-output" || mode != "compact-replayed-shell-output" {
+		t.Fatalf("standard profile = %d/%d %q %q, %v", threshold, excerpt, engine, mode, err)
+	}
+	threshold, excerpt, engine, mode, err = replayCompactionProfile("aggressive")
+	if err != nil || threshold != 1_024 || excerpt != 256 || engine != "pk-compact-replayed-output-aggressive" || mode != "compact-replayed-shell-output-aggressive" {
+		t.Fatalf("aggressive profile = %d/%d %q %q, %v", threshold, excerpt, engine, mode, err)
+	}
+	if _, _, _, _, err := replayCompactionProfile("unknown"); err == nil {
+		t.Fatal("unknown profile should fail clearly")
+	}
+}
+
 func TestReplayTaskSelectionRequiresReplayExperimentFlag(t *testing.T) {
 	if got := run([]string{"-replay-tasks", "webhook"}); got != 2 {
 		t.Fatalf("run with task selection but no replay experiment = %d, want usage error 2", got)

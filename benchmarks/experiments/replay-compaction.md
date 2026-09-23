@@ -32,6 +32,14 @@ a general quality or efficiency conclusion.
 go run ./cmd/pkbench -replay-compaction-ablation -repetitions 2 -timeout 90s
 ```
 
+To test a more aggressive, still reversible replay policy, add
+`-replay-compaction-profile aggressive`. It lowers the eligibility threshold
+to 1,024 bytes and keeps a 256-rune head and tail. The default `standard`
+profile remains 4,096 bytes and 768 runes. The selected profile is recorded
+in the result JSON and Markdown. Both profiles retain the full capture paths
+and can reread the unchanged capture files; neither changes tools or shell
+output limits.
+
 Use `-replay-tasks clamp,webhook` for the separately reviewed simple-control
 and multi-file webhook cohort. `-replay-tasks` is valid only with this ablation;
 without it, the original `routematch,eventmerge` task set stays the default.
@@ -41,6 +49,13 @@ must remain separate from the earlier replay pilot.
 
 For a longer worker-recovery task, use `-replay-tasks jobqueue`; its fixture and
 separate pilot limits are documented in [`jobqueue-recovery.md`](jobqueue-recovery.md).
+
+The original standard-profile pilot did not generalize across task types: on
+the separate `jobqueue` cohort, compact replay used 74,571 input tokens versus
+55,741 for the control (+33.8%) and produced more model responses. That
+regression motivates measuring the aggressive threshold as a separate dose;
+it is not evidence that the aggressive profile will improve usage. Avoid
+extrapolating from the standard profile's favorable selected pairs.
 
 The run is bounded to 16 model phases at 90 seconds each, with a 30-minute
 overall experiment timeout. It writes checkpointed JSONL records, a source

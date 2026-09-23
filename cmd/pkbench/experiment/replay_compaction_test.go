@@ -89,3 +89,56 @@ func TestRegistryLeavesSmallBashResultAlone(t *testing.T) {
 		t.Fatalf("unexpected counters: %+v", got)
 	}
 }
+
+func TestConfiguredReplayLimitsCompactAtTreatmentThresholdAndExcerpt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capture")
+	if err := os.WriteFile(path, []byte("full shell output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	full := strings.Repeat("H", 700) + strings.Repeat("M", 700) + strings.Repeat("T", 700)
+	stateBytes, err := json.Marshal(operation.ShellState{OutPath: path, Result: &operation.ShellResult{Out: full, OutSize: int64(len(full)), ExitCode: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := operation.Operation{ID: "op-1", Type: operation.TypeShell, Version: operation.VersionShell, Status: operation.StatusCompleted, MaxOutputLength: operation.DefaultMaxOutputLength, State: stateBytes}
+	counters := &ReplayCompactionCounters{}
+	registry := CompactCapturedShellResultsWithLimits(tool.NewRegistry(tool.StaticTranslators{Bash: bash.New(bash.Config{})}, tool.BashName), counters, 1_024, 32)
+	translator, _ := registry.Resolve(tool.BashName)
+	result, err := translator.TranslateResult("call-1", tool.CallStatus{}, []operation.Operation{op})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := counters.Snapshot(); got.EligibleResults != 1 || got.CompactedResults != 1 {
+		t.Fatalf("aggressive configured threshold did not trigger: %+v", got)
+	}
+	text := result.Output[0].Value
+	if !strings.Contains(text, strings.Repeat("H", 32)) || !strings.Contains(text, strings.Repeat("T", 32)) || strings.Contains(text, strings.Repeat("H", 33)) || !strings.Contains(text, path) {
+		t.Fatalf("configured excerpt bounds or capture path not honored: %q", text)
+	}
+}
+
+func TestConfiguredReplayLimitsDoNotExpandShortMultibyteOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capture")
+	if err := os.WriteFile(path, []byte("full shell output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	full := strings.Repeat("🎯", 300) // 1,200 bytes but only 300 runes.
+	stateBytes, err := json.Marshal(operation.ShellState{OutPath: path, Result: &operation.ShellResult{Out: full, OutSize: int64(len(full)), ExitCode: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := operation.Operation{ID: "op-1", Type: operation.TypeShell, Version: operation.VersionShell, Status: operation.StatusCompleted, MaxOutputLength: operation.DefaultMaxOutputLength, State: stateBytes}
+	counters := &ReplayCompactionCounters{}
+	registry := CompactCapturedShellResultsWithLimits(tool.NewRegistry(tool.StaticTranslators{Bash: bash.New(bash.Config{})}, tool.BashName), counters, 1_024, 256)
+	translator, _ := registry.Resolve(tool.BashName)
+	result, err := translator.TranslateResult("call-1", tool.CallStatus{}, []operation.Operation{op})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output[0].Value != full {
+		t.Fatal("compaction should preserve an input when bounded excerpts do not shorten it")
+	}
+	if got := counters.Snapshot(); got.EligibleResults != 1 || got.CompactedResults != 0 || got.StoredBytes != int64(len(full)) {
+		t.Fatalf("unexpected no-expansion metrics: %+v", got)
+	}
+}

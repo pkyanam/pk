@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/pkyanam/pk/cmd/pkbench/experiment"
 	"github.com/pkyanam/pk/internal/runner"
@@ -22,6 +23,8 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 	measureSchema := false
 	compactReplay := false
 	measureReplay := false
+	replayThreshold := experiment.ReplayCompactionThreshold
+	replayExcerpt := 768
 	switch policy {
 	case "current":
 	case "output-cap-4k":
@@ -32,10 +35,28 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 		measureSchema = true
 	case "compact-replayed-shell-output":
 		compactReplay = true
+	case "compact-replayed-shell-output-aggressive":
+		compactReplay = true
 	case "replay-compaction-current":
 		measureReplay = true
 	default:
 		return nil, fmt.Errorf("unknown policy %q", policy)
+	}
+	if compactReplay || measureReplay {
+		if raw := os.Getenv("PK_BENCH_REPLAY_THRESHOLD_BYTES"); raw != "" {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 1 {
+				return nil, fmt.Errorf("invalid replay threshold %q", raw)
+			}
+			replayThreshold = value
+		}
+		if raw := os.Getenv("PK_BENCH_REPLAY_EXCERPT_RUNES"); raw != "" {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 1 {
+				return nil, fmt.Errorf("invalid replay excerpt %q", raw)
+			}
+			replayExcerpt = value
+		}
 	}
 	counters := &experiment.Counters{}
 	replayCounters := &experiment.ReplayCompactionCounters{}
@@ -61,9 +82,9 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 		if compactReplay || measureReplay {
 			base = experiment.Decorate(base, 0, counters)
 			if compactReplay {
-				return experiment.CompactCapturedShellResults(base, replayCounters)
+				return experiment.CompactCapturedShellResultsWithLimits(base, replayCounters, replayThreshold, replayExcerpt)
 			}
-			return experiment.MeasureCapturedShellResults(base, replayCounters)
+			return experiment.MeasureCapturedShellResultsWithThreshold(base, replayCounters, replayThreshold)
 		}
 		return experiment.Decorate(base, limit, counters)
 	}
@@ -83,7 +104,8 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 		if compactReplay || measureReplay {
 			_ = json.NewEncoder(options.Output).Encode(map[string]any{
 				"type": "benchmark_context_compaction", "mode": policy,
-				"threshold_bytes":                      experiment.ReplayCompactionThreshold,
+				"threshold_bytes":                      replayThreshold,
+				"excerpt_runes_each_side":              replayExcerpt,
 				"context_compaction_metrics":           replayCounters.Snapshot(),
 				"context_compaction_metrics_available": true,
 			})

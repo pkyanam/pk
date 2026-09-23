@@ -113,6 +113,8 @@ type suite struct {
 	Experiment                 string      `json:"experiment,omitempty"`
 	ToolSchemaExperiment       bool        `json:"tool_schema_experiment,omitempty"`
 	ReplayCompactionExperiment bool        `json:"replay_compaction_experiment,omitempty"`
+	ReplayThresholdBytes       int         `json:"replay_compaction_threshold_bytes,omitempty"`
+	ReplayExcerptRunes         int         `json:"replay_compaction_excerpt_runes,omitempty"`
 	EffortAblationExperiment   bool        `json:"effort_ablation_experiment,omitempty"`
 	SourceTreeSHA256           string      `json:"source_tree_sha256,omitempty"`
 	GitDiffSHA256              string      `json:"git_diff_sha256,omitempty"`
@@ -171,6 +173,7 @@ func run(args []string) int {
 	toolSchemaExperiment := flags.Bool("tool-schema-ablation", false, "run the paired current-vs-compact tool-description experiment only")
 	replayCompactionExperiment := flags.Bool("replay-compaction-ablation", false, "run the paired current-vs-captured-output context replay experiment only")
 	replayTasks := flags.String("replay-tasks", "", "comma-separated replay-ablation fixtures (default: routematch,eventmerge)")
+	replayProfile := flags.String("replay-compaction-profile", "standard", "replay compaction treatment: standard or aggressive (requires -replay-compaction-ablation)")
 	effortExperiment := flags.Bool("effort-ablation", false, "run the paired Luna low-vs-medium effort experiment only")
 	effortTasks := flags.String("effort-tasks", "webhook,jobqueue", "comma-separated effort-ablation fixtures (default: webhook,jobqueue)")
 	if err := flags.Parse(args); err != nil {
@@ -211,6 +214,10 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "-replay-tasks requires -replay-compaction-ablation")
 		return 2
 	}
+	if *replayProfile != "standard" && !*replayCompactionExperiment {
+		fmt.Fprintln(os.Stderr, "-replay-compaction-profile requires -replay-compaction-ablation")
+		return 2
+	}
 	if *effortTasks != "webhook,jobqueue" && !*effortExperiment {
 		fmt.Fprintln(os.Stderr, "-effort-tasks requires -effort-ablation")
 		return 2
@@ -222,7 +229,11 @@ func run(args []string) int {
 		return runToolSchemaExperiment(*repo, *out, *repetitions, *timeout)
 	}
 	if *replayCompactionExperiment {
-		return runReplayCompactionExperiment(*repo, *out, *repetitions, *timeout, *replayTasks)
+		if *replayProfile != "standard" && *replayProfile != "aggressive" {
+			fmt.Fprintln(os.Stderr, "-replay-compaction-profile must be standard or aggressive")
+			return 2
+		}
+		return runReplayCompactionExperiment(*repo, *out, *repetitions, *timeout, *replayTasks, *replayProfile)
 	}
 	if *effortExperiment {
 		if modelID != "gpt-6-luna" {
@@ -381,6 +392,7 @@ func run(args []string) int {
 type phaseOptions struct {
 	engine, phase, prompt, workspace, sessionID, binary, unreal, mode, effort, pkHome, authPath, outputDir, skillsDir, taskName string
 	repetition                                                                                                                  int
+	replayThresholdBytes, replayExcerptRunes                                                                                    int
 	timeout                                                                                                                     time.Duration
 }
 
@@ -425,6 +437,9 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		}
 		cmd = exec.Command(options.binary, args...)
 		cmd.Env = withEnv(os.Environ(), "PK_HOME", options.pkHome, "PK_BENCH_POLICY", options.mode, "PK_BENCH_FAILED_COMMAND_LOG", failedLog)
+		if options.replayThresholdBytes > 0 {
+			cmd.Env = withEnv(cmd.Env, "PK_BENCH_REPLAY_THRESHOLD_BYTES", fmt.Sprint(options.replayThresholdBytes), "PK_BENCH_REPLAY_EXCERPT_RUNES", fmt.Sprint(options.replayExcerptRunes))
+		}
 	} else if options.engine == "pk" {
 		args := []string{"run", "-p", options.prompt, "--workspace", options.workspace, "--model", modelID, "--effort", phaseEffort, "--context-policy", "full", "--jsonl"}
 		args = append(args, "--skills-dir", options.skillsDir)
@@ -911,11 +926,14 @@ func writeMarkdown(path string, result suite) error {
 	fmt.Fprintf(&out, "# pk coding-task pilot\n\n- Started: %s\n- Model: `%s` / `%s`\n- Repetitions: %d\n- Tasks: `%s`\n- Per-phase timeout: %s\n- Whole-run timeout: %s\n- pk source revision: `%s`\n- Upstream baseline: %s\n- Runtime: %s %s/%s\n", result.StartedAt.Format(time.RFC3339), result.Model, result.Effort, result.Repetitions, strings.Join(result.TaskSelection, ", "), result.Timeout, result.WholeTimeout, result.PKRevision, upstream, result.GoVersion, result.GOOS, result.GOARCH)
 	if result.Experiment != "" {
 		fmt.Fprintf(&out, "- Experiment: %s\n- Source tree SHA-256: `%s`\n- Tracked diff SHA-256: `%s`\n", result.Experiment, result.SourceTreeSHA256, result.GitDiffSHA256)
+		if result.ReplayCompactionExperiment {
+			fmt.Fprintf(&out, "- Replay compaction threshold: %d bytes\n- Replay head/tail excerpt: %d runes each\n", result.ReplayThresholdBytes, result.ReplayExcerptRunes)
+		}
 	}
 	fmt.Fprintln(&out)
 	if result.Experiment != "" {
 		if result.ReplayCompactionExperiment {
-			fmt.Fprintln(&out, "Both arms use the production CLI, prompt, model and effort, empty skills, and identical Git-initialized task fixtures. The treatment compacts completed Bash result text over the 4096-byte threshold once, at translation, to a 768-rune head and tail, exact existing stdout/stderr capture paths, and exit code. It falls back to the original result if no capture file exists. The fixtures request ordinary verbose Go test output; they do not pad streams or modify tool output limits. Per-run eligible/compacted counts verify treatment exposure. Stored result bytes are a manipulation check only: provider-reported input, cached-input, output tokens and wall time are the efficiency measures. Holdout tests are restored from pristine fixtures after each run. Small stochastic results are descriptive and do not establish general task quality or cache savings.")
+			fmt.Fprintf(&out, "Both arms use the production CLI, prompt, model and effort, empty skills, and identical Git-initialized task fixtures. The treatment compacts completed Bash result text over the configured %d-byte threshold once, at translation, to a %d-rune head and tail, exact existing stdout/stderr capture paths, and exit code. It falls back to the original result if no capture file exists. The fixtures request ordinary verbose Go test output; they do not pad streams or modify tool output limits. Per-run eligible/compacted counts verify treatment exposure. Stored result bytes are a manipulation check only: provider-reported input, cached-input, output tokens and wall time are the efficiency measures. Holdout tests are restored from pristine fixtures after each run. Small stochastic results are descriptive and do not establish general task quality or cache savings.\n", result.ReplayThresholdBytes, result.ReplayExcerptRunes)
 			fmt.Fprintln(&out, "\n| Engine | Task | Rep | Phase | Responses | Input | Uncached input | Output | Cached | Eligible / compacted | Result bytes (before / stored) | Missing captures | Wall ms | Correct |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|")
 		} else if result.EffortAblationExperiment {
 			fmt.Fprintln(&out, "Both arms use the same Luna model, product CLI, system prompt, full tool-output context policy, prompts, empty skills, and Git-initialized fixtures. The only planned treatment is reasoning effort (low vs medium), applied consistently to each task's new session and resumed verification. Provider-reported input, cached-input, and output tokens are reported separately; cached input is included in total input and is not a separate cost measure. Correctness is checked against pristine holdout tests. This two-repetition pilot is small and stochastic; it does not establish a generally better effort setting or justify changing the product default.")
