@@ -688,3 +688,10 @@ gates or imply that every backlog item is complete.
 - ACP inline images use private per-input artifacts and the existing ViewImage tool path; this is not native image parts in the initial provider request. Mixed block order survives process restart via bounded, prompt-hash-bound metadata. Archive/restore/purge includes the artifacts.
 - Limits: eight images and 2 MiB decoded bytes / 32M pixels per prompt, eight image-bearing active turns, existing 4 MiB JSON-line cap. Validation/replay reject malformed or mismatched data and unsafe artifact paths; pre-persist failure cleans only the current input.
 - Focused ACP/CLI race tests and attachment/session-manager race tests pass. Official ACP SDK loopback smoke verifies input, real CLI ViewImage execution, image content delivered to Chat Completions, and exact image replay after another restart. No paid model calls. Remote provider vision and named editor interoperability remain unverified.
+
+### 10:08 EDT — counterbalanced delegation pilot
+
+- Pushed 79c468b: content-free child model/effort observations and combined uncached-input accounting, including missing/invalid cache coverage. Focused forwarder tests/race and benchmark tests/race pass.
+- Ran two repetitions, reversed arm order, Luna/low, 120-second phase bounds. All eight children have verified Luna/low model events; all four arms completed both children with complete usage and passed both holdouts.
+- Dispatcher elapsed was lower in both samples (23.992 vs 36.651 seconds; 33.483 vs 39.766). Uncached input was worse in rep one (19,520 vs 17,024), better in rep two (20,172 vs 23,351). No general savings claim or production policy promotion.
+- Raw evidence: benchmarks/results/subagent-schema-counterbalanced-20260923/. Existing installed release remains b263a48; accounting-only source changes will ride the next product installment.

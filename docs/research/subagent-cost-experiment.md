@@ -65,3 +65,28 @@ does not isolate cache effects or cover steering/cancellation. The trace records
 the parent model and effort, but did not capture each child's actual selection;
 defaults alone do not prove that neither parent requested an override. Production keeps
 the existing controls pending broader, counterbalanced evidence.
+
+## Counterbalanced follow-up
+
+Revision `79c468b` added explicit child model/effort requests and observed child
+selection metadata, plus combined uncached-input reporting that rejects invalid
+per-response cache counters. The two-repetition follow-up ran baseline then
+dispatcher, then dispatcher then baseline. All eight children actually used
+`gpt-6-luna` / `low`; every arm completed both children and passed both holdouts.
+
+| Rep | Interface | Combined input | Uncached input | Output | Responses | Wall seconds |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | Five tools | 26,752 | 17,024 | 1,620 | 14 | 36.651 |
+| 1 | Dispatcher | 26,688 | 19,520 | 1,367 | 15 | 23.992 |
+| 2 | Five tools | 28,983 | 23,351 | 1,694 | 15 | 39.766 |
+| 2 | Dispatcher | 24,780 | 20,172 | 1,419 | 15 | 33.483 |
+
+The dispatcher was faster in both samples and used less total input/output,
+but uncached input regressed in repetition one and improved in repetition two.
+This is mixed evidence, not a reliable cost advantage. Children also made
+different numbers of model calls despite the same model settings. The fixtures
+are small and only exercise start/wait coding delegation; larger tasks and
+steering/cancellation remain necessary before promoting the policy. Production
+continues to use five tools.
+
+[Raw results, source manifest, traces, and generated code](../../benchmarks/results/subagent-schema-counterbalanced-20260923/summary.md).
