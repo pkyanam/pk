@@ -146,6 +146,45 @@ func TestListSummaryCacheOverlaysActiveStateOnEveryCall(t *testing.T) {
 	}
 }
 
+func TestGetUsesValidatedSummaryAndRefreshesActiveState(t *testing.T) {
+	manager, sessionDir := fixtureManager(t)
+	const id = "session-get-cache"
+	if _, err := createSession(t, sessionDir, id, "Get title", "Get preview"); err != nil {
+		t.Fatal(err)
+	}
+	invalidateMetadataCache(sessionDir, id)
+	got, err := manager.Get(context.Background(), id, nil)
+	if err != nil || got.Title != "Get title" || got.Preview != "Get preview" || got.Workspace != "/workspace/test" {
+		t.Fatalf("Get returned unexpected metadata: %+v err=%v", got, err)
+	}
+	lease, err := sessionlock.Acquire(sessionDir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = manager.Get(context.Background(), id, nil)
+	if err != nil || !got.Active {
+		t.Fatalf("Get cache hit hid active lease: %+v err=%v", got, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = manager.Get(context.Background(), id, map[string]bool{id: true})
+	if err != nil || !got.Active {
+		t.Fatalf("Get cache hit ignored caller active state: %+v err=%v", got, err)
+	}
+	if _, err := manager.Get(context.Background(), "missing-session", nil); err == nil {
+		t.Fatal("Get of missing session unexpectedly succeeded")
+	}
+
+	logPath := filepath.Join(sessionDir, id+".session.jsonl")
+	if err := os.WriteFile(logPath, []byte("corrupt session log"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Get(context.Background(), id, nil); err == nil {
+		t.Fatal("Get reused cached metadata for a corrupt replacement log")
+	}
+}
+
 func TestMetadataChangedDuringReadIsNotCached(t *testing.T) {
 	for _, test := range []struct {
 		name   string

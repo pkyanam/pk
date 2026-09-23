@@ -46,6 +46,21 @@ func BenchmarkListRepeatedLargeSessionLogs(b *testing.B) {
 	}
 }
 
+// BenchmarkGetLargeSessionLogCold invalidates only the in-memory summary entry
+// before each lookup, measuring uncached Get work over one 128 KiB response.
+func BenchmarkGetLargeSessionLogCold(b *testing.B) {
+	manager, ctx := largeSessionListFixture(b)
+	const id = "bench-session-000"
+	b.ReportMetric(128<<10, "assistant-output-bytes/op")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		invalidateMetadataCache(manager.SessionDir, id)
+		if _, err := manager.Get(ctx, id, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func largeSessionListFixture(b *testing.B) (Manager, context.Context) {
 	b.Helper()
 	const (

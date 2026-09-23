@@ -941,15 +941,46 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 	if err != nil {
 		return Session{}, err
 	}
+	// Capture the log and sidecar identities before validating/reading session
+	// data. The same baseline is compared after Items so a replacement during
+	// Inspect or Items cannot seed the cache with a mixed summary.
+	logPath := filepath.Join(sessionsDir, id+".session.jsonl")
+	logInfo, statErr := os.Lstat(logPath)
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		return Session{}, statErr
+	}
+	var cacheKey metadataCacheKey
+	var cacheFiles metadataFiles
+	cacheable := false
+	if statErr == nil {
+		cacheKey, cacheFiles, cacheable = metadataCacheIdentityForLog(sessionsDir, id, logInfo, logInfo.ModTime().UTC())
+		if cacheable {
+			if meta, hit := cachedMetadata(cacheKey, cacheFiles); hit {
+				if err := ctx.Err(); err != nil {
+					return Session{}, err
+				}
+				meta.Active = activeIDs[id]
+				if !meta.Active {
+					meta.Active, err = sessionlock.IsBusy(sessionsDir, id)
+				}
+				return meta, err
+			}
+		}
+	}
 	info, err := store.Inspect(ctx, session.ID(id))
 	if err != nil {
 		return Session{}, err
 	}
-	logInfo, err := os.Stat(filepath.Join(sessionsDir, id+".session.jsonl"))
-	if err != nil {
-		return Session{}, err
+	if statErr != nil {
+		// Preserve the store's validation/error for missing records, but guard
+		// the uncommon case where the file appeared between Lstat and Inspect.
+		logInfo, err = os.Lstat(logPath)
+		if err != nil {
+			return Session{}, err
+		}
 	}
-	meta, err := readMetadata(ctx, store, sessionsDir, sessionstore.SessionInfo{ID: session.ID(id), LastUpdatedAt: logInfo.ModTime().UTC()})
+	infoForMetadata := sessionstore.SessionInfo{ID: session.ID(id), LastUpdatedAt: logInfo.ModTime().UTC()}
+	meta, err := readMetadataFromSnapshot(ctx, store, sessionsDir, infoForMetadata, info)
 	if err != nil {
 		return Session{}, err
 	}
@@ -960,6 +991,9 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 	if !meta.Active {
 		meta.Active, err = sessionlock.IsBusy(sessionsDir, id)
 	}
+	if err == nil && cacheable && ctx.Err() == nil {
+		cacheMetadataIfUnchanged(cacheKey, cacheFiles, meta)
+	}
 	return meta, err
 }
 
@@ -968,6 +1002,10 @@ func readMetadata(ctx context.Context, store *localfile.Store, sessionsDir strin
 	if err != nil {
 		return Session{}, err
 	}
+	return readMetadataFromSnapshot(ctx, store, sessionsDir, info, snapshot)
+}
+
+func readMetadataFromSnapshot(ctx context.Context, store *localfile.Store, sessionsDir string, info sessionstore.SessionInfo, snapshot sessionstore.Snapshot) (Session, error) {
 	meta := Session{ID: string(info.ID), CreatedAt: snapshot.Session.CreatedAt, UpdatedAt: info.LastUpdatedAt}
 	if data, err := os.ReadFile(contextSnapshotPath(sessionsDir, string(info.ID))); err == nil {
 		var context contextMetadata

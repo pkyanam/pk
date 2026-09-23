@@ -43,7 +43,18 @@ func metadataCacheIdentity(sessionsDir, id string, updatedAt time.Time) (metadat
 	}
 	logPath := filepath.Join(dir, id+".session.jsonl")
 	logInfo, err := os.Lstat(logPath)
-	if err != nil || logInfo.Mode()&os.ModeSymlink != 0 || !logInfo.Mode().IsRegular() || !logInfo.ModTime().UTC().Equal(updatedAt.UTC()) {
+	if err != nil {
+		return metadataCacheKey{}, metadataFiles{}, false
+	}
+	return metadataCacheIdentityForLog(dir, id, logInfo, updatedAt)
+}
+
+func metadataCacheIdentityForLog(sessionsDir, id string, logInfo os.FileInfo, updatedAt time.Time) (metadataCacheKey, metadataFiles, bool) {
+	dir := filepath.Clean(sessionsDir)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = filepath.Clean(resolved)
+	}
+	if logInfo == nil || logInfo.Mode()&os.ModeSymlink != 0 || !logInfo.Mode().IsRegular() || !logInfo.ModTime().UTC().Equal(updatedAt.UTC()) {
 		return metadataCacheKey{}, metadataFiles{}, false
 	}
 	files := metadataFiles{log: logInfo, updatedAt: updatedAt.UTC()}

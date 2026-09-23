@@ -117,3 +117,11 @@ On Apple M3 with Go 1.27, the 32-session fixture measured 28.64 ms/op and 44.6 M
 ```sh
 go test ./internal/sessionmanager -run '^$' -bench 'BenchmarkList.*LargeSessionLogs$' -benchmem -benchtime=5x
 ```
+
+## Cold single-session lookup
+
+`Manager.Get` now reuses its first validated snapshot instead of calling `Inspect` twice. A cache miss still validates and reads the session through the upstream store; it does not introduce a separate parser. A five-iteration 128 KiB fixture measured 2.305 ms/op and 2,097,492 B/op before, versus 1.531 ms/op and 1,415,161 B/op in root verification afterward. Allocation count increased from 312 to 372 per operation. This isolates metadata lookup, not the entire TUI attachment flow.
+
+```sh
+go test ./internal/sessionmanager -run '^$' -bench '^BenchmarkGetLargeSessionLogCold$' -benchmem -benchtime=5x
+```
