@@ -1,0 +1,10 @@
+{"type":"session"}
+{"effort":"medium","model":"gpt-6-luna","type":"model"}
+{"cache_write_input_tokens":0,"cache_write_input_tokens_available":true,"cached_input_tokens":1536,"cached_input_tokens_available":true,"input_tokens":1751,"output_tokens":61,"reasoning_tokens":0,"type":"usage","usage_available":true}
+{"phase":"commentary","text_bytes":127,"type":"assistant"}
+{"arguments_preview":"{\"command\":\"go test -v ./...\",\"max_output_length\":40000}","command_preview":"go test -v ./...","elapsed_ms":6,"name":"Bash","operations":[{"id":"f6859670-20fa-42ce-a176-da88c64d185b","state":"ready","type":"shell"}],"state":"running","type":"tool_call"}
+{"arguments_preview":"{\"command\":\"go test -v ./...\",\"max_output_length\":40000}","command_preview":"go test -v ./...","elapsed_ms":413,"name":"Bash","operations":[{"exit_code":0,"id":"f6859670-20fa-42ce-a176-da88c64d185b","output_excerpt":"=== RUN   TestClampInt\n--- PASS: TestClampInt (0.00s)\nPASS\nok  \tbenchmark/clamp\t0.187s","state":"completed","type":"shell"}],"state":"completed","type":"tool_call"}
+{"cache_write_input_tokens":0,"cache_write_input_tokens_available":true,"cached_input_tokens":0,"cached_input_tokens_available":true,"input_tokens":1856,"output_tokens":20,"reasoning_tokens":0,"type":"usage","usage_available":true}
+{"phase":"final_answer","text_bytes":65,"type":"assistant"}
+{"mode":"compact-replayed-shell-output","type":"benchmark_context_compaction"}
+{"bash_error_bytes":0,"bash_error_truncated_operations":0,"bash_metrics_available":true,"bash_output_bytes":760,"bash_output_truncated_operations":0,"bash_raw_error_bytes":0,"bash_raw_output_bytes":760,"benchmark_default_applied":0,"explicit_bash_output_limits":1,"mode":"compact-replayed-shell-output","omitted_bash_output_limits":0,"type":"benchmark_tool_limits"}

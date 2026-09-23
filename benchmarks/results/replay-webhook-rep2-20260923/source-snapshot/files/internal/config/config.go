@@ -1,0 +1,75 @@
+// Package config stores user-level pk defaults.
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	DefaultModel  = "gpt-6-luna"
+	DefaultEffort = "medium"
+)
+
+type Config struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+}
+
+func Defaults() Config { return Config{Model: DefaultModel, Effort: DefaultEffort} }
+func ValidEffort(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
+}
+func (c Config) Normalized() Config {
+	if strings.TrimSpace(c.Model) == "" {
+		c.Model = DefaultModel
+	}
+	if strings.TrimSpace(c.Effort) == "" {
+		c.Effort = DefaultEffort
+	} else {
+		c.Effort = strings.ToLower(strings.TrimSpace(c.Effort))
+	}
+	return c
+}
+func Load(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Defaults(), nil
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+	return c.Normalized(), nil
+}
+func Save(path string, c Config) error {
+	c = c.Normalized()
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}

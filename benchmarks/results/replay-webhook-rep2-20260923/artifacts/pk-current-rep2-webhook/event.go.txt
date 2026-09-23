@@ -1,0 +1,33 @@
+package webhook
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+)
+
+// Store atomically inserts an event if its ID has not been seen. It returns
+// true only for the first successful insertion.
+type Store interface {
+	InsertIfAbsent(context.Context, Event) (bool, error)
+}
+
+// Event is the signed, durable envelope accepted by the webhook endpoint.
+type Event struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// Validate checks that an event has a usable identity and a JSON object payload.
+func (event Event) Validate() error {
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.Type) == "" {
+		return errors.New("event id and type are required")
+	}
+	var object map[string]json.RawMessage
+	if len(event.Payload) == 0 || json.Unmarshal(event.Payload, &object) != nil || object == nil {
+		return errors.New("event payload must be a JSON object")
+	}
+	return nil
+}

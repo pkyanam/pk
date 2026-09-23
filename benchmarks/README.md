@@ -55,6 +55,8 @@ For the benchmark-only large Bash-result context replay experiment, use
 `-replay-compaction-ablation`; its fixture, capture-path fallback, bounded
 excerpt policy, and byte-versus-token interpretation are in
 [`experiments/replay-compaction.md`](experiments/replay-compaction.md).
+Use `-replay-tasks clamp,webhook` to select the opt-in multi-file task cohort;
+the default replay experiment still runs `routematch,eventmerge`.
 
 Fixtures are separate Go modules under `benchmarks/tasks/`. Their TODO
 implementations intentionally fail tests, so repository `go test ./...` does

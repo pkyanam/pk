@@ -8,6 +8,18 @@ import (
 	"testing"
 )
 
+func TestBenchmarkSourceRootsCoverExecutableAndFixtureInputs(t *testing.T) {
+	roots := make(map[string]bool)
+	for _, root := range benchmarkSourceRoots() {
+		roots[root] = true
+	}
+	for _, required := range []string{"cmd/pk", "cmd/pkbench", "internal", "skills", "benchmarks/tasks", "benchmarks/experiments", "go.mod", "go.sum"} {
+		if !roots[required] {
+			t.Errorf("benchmark source roots omit %q", required)
+		}
+	}
+}
+
 func TestWriteSourceSnapshotCopiesTextAndVerifiesManifestHash(t *testing.T) {
 	repo, output := t.TempDir(), t.TempDir()
 	const relative = "cmd/pkbench/main.go"

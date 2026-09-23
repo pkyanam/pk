@@ -32,6 +32,13 @@ a general quality or efficiency conclusion.
 go run ./cmd/pkbench -replay-compaction-ablation -repetitions 2 -timeout 90s
 ```
 
+Use `-replay-tasks clamp,webhook` for the separately reviewed simple-control
+and multi-file webhook cohort. `-replay-tasks` is valid only with this ablation;
+without it, the original `routematch,eventmerge` task set stays the default.
+The webhook cohort's fixture, immutable holdout behavior, and bounded command
+are documented in [`multifile-webhook.md`](multifile-webhook.md). Its results
+must remain separate from the earlier replay pilot.
+
 The run is bounded to 16 model phases at 90 seconds each, with a 30-minute
 overall experiment timeout. It writes checkpointed JSONL records, a source
 manifest, generated-code artifacts, and a Markdown/JSON summary under
