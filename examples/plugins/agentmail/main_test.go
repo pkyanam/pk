@@ -14,7 +14,7 @@ func TestInboxListUsesReadOnlyCLIAndBoundsLimit(t *testing.T) {
 	var got []string
 	w := worker{run: func(_ context.Context, args ...string) ([]byte, error) {
 		got = args
-		return []byte(`{"count":3,"inboxes":[{"inbox_id":"i1","email":"a@example.test","display_name":"A"},{"inbox_id":"i2"},{"inbox_id":"i3"}],"next_page_token":"` + strings.Repeat("x", maxID+1) + `"}`), nil
+		return []byte(`{"count":3,"inboxes":[{"inbox_id":"i1","email":"a@example.test","display_name":"A"},{"inbox_id":"i2"},{"inbox_id":"i3"}],"next_page_token":"next"}`), nil
 	}}
 	result, err := w.ExecuteTool(context.Background(), extensions.ToolExecuteParams{Name: "mail_inboxes", Arguments: json.RawMessage(`{"limit":2}`)})
 	if err != nil {
@@ -34,8 +34,8 @@ func TestInboxListUsesReadOnlyCLIAndBoundsLimit(t *testing.T) {
 	if decoded.Count != 2 || len(decoded.Inboxes) != 2 {
 		t.Fatalf("provider limit was not enforced: %#v", decoded)
 	}
-	if decoded.Next != "" {
-		t.Fatalf("oversized page token was returned (%d bytes)", len(decoded.Next))
+	if decoded.Next != "next" {
+		t.Fatalf("page token was changed: %q", decoded.Next)
 	}
 	if len(result.Content[0].Text) > 10_000 {
 		t.Fatalf("inbox response was not bounded: %d bytes", len(result.Content[0].Text))
@@ -105,20 +105,90 @@ func TestMessageListEnforcesProviderLimitAndTokenBound(t *testing.T) {
 		}
 		return []byte(`{"count":3,"messages":[{"message_id":"m1"},{"message_id":"m2"},{"message_id":"m3"}],"next_page_token":"` + strings.Repeat("p", maxID+1) + `"}`), nil
 	}}
-	result, err := w.ExecuteTool(context.Background(), extensions.ToolExecuteParams{Name: "mail_list", Arguments: json.RawMessage(`{"inbox_id":"inbox","limit":1}`)})
+	_, err := w.ExecuteTool(context.Background(), extensions.ToolExecuteParams{Name: "mail_list", Arguments: json.RawMessage(`{"inbox_id":"inbox","limit":1}`)})
+	if err == nil || !strings.Contains(err.Error(), "pagination cannot safely continue") {
+		t.Fatalf("oversized page token error=%v", err)
+	}
+}
+
+func TestOpaqueIDsAreReturnedExactlyWithinToolLimit(t *testing.T) {
+	inboxID := strings.Repeat("i", maxID)
+	messageID := strings.Repeat("m", maxID)
+	threadID := strings.Repeat("t", maxID)
+	pageToken := strings.Repeat("p", maxID)
+	w := worker{run: func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "list" {
+			return json.Marshal(map[string]any{
+				"count": 1, "next_page_token": pageToken,
+				"messages": []map[string]string{{"message_id": messageID, "thread_id": threadID}},
+			})
+		}
+		if len(args) > 1 && args[1] == "list" {
+			return json.Marshal(map[string]any{"count": 1, "next_page_token": pageToken, "inboxes": []map[string]string{{"inbox_id": inboxID}}})
+		}
+		return json.Marshal(map[string]string{"text": "ok"})
+	}}
+	inboxes, err := w.ExecuteTool(context.Background(), extensions.ToolExecuteParams{Name: "mail_inboxes", Arguments: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded struct {
-		Count    int               `json:"count"`
-		Messages []json.RawMessage `json:"messages"`
-		Next     string            `json:"next_page_token"`
+	var inboxResult struct {
+		Inboxes []struct {
+			ID string `json:"inbox_id"`
+		} `json:"inboxes"`
+		Next string `json:"next_page_token"`
 	}
-	if err := json.Unmarshal([]byte(result.Content[0].Text), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(inboxes.Content[0].Text), &inboxResult); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Count != 1 || len(decoded.Messages) != 1 || decoded.Next != "" {
-		t.Fatalf("unbounded response: %#v", decoded)
+	if inboxResult.Inboxes[0].ID != inboxID || inboxResult.Next != pageToken {
+		t.Fatal("inbox ID or page token was changed")
+	}
+	messages, err := w.ExecuteTool(context.Background(), extensions.ToolExecuteParams{Name: "mail_list", Arguments: json.RawMessage(`{"inbox_id":"inbox"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messageResult struct {
+		Messages []struct {
+			ID       string `json:"message_id"`
+			ThreadID string `json:"thread_id"`
+		} `json:"messages"`
+		Next string `json:"next_page_token"`
+	}
+	if err := json.Unmarshal([]byte(messages.Content[0].Text), &messageResult); err != nil {
+		t.Fatal(err)
+	}
+	if messageResult.Messages[0].ID != messageID || messageResult.Messages[0].ThreadID != threadID || messageResult.Next != pageToken {
+		t.Fatal("message ID, thread ID, or page token was changed")
+	}
+}
+
+func TestOversizedOpaqueIDsAndPageTokensReturnActionableErrors(t *testing.T) {
+	tooLong := strings.Repeat("x", maxID+1)
+	for _, test := range []struct {
+		name string
+		tool string
+		args string
+		out  any
+		want string
+	}{
+		{name: "inbox", tool: "mail_inboxes", args: `{}`, out: map[string]any{"inboxes": []map[string]string{{"inbox_id": tooLong}}}, want: "inbox_id longer"},
+		{name: "message", tool: "mail_list", args: `{"inbox_id":"i"}`, out: map[string]any{"messages": []map[string]string{{"message_id": tooLong}}}, want: "message_id longer"},
+		{name: "thread", tool: "mail_list", args: `{"inbox_id":"i"}`, out: map[string]any{"messages": []map[string]string{{"message_id": "m", "thread_id": tooLong}}}, want: "thread_id longer"},
+		{name: "page token", tool: "mail_inboxes", args: `{}`, out: map[string]any{"inboxes": []map[string]string{{"inbox_id": "i"}}, "next_page_token": tooLong}, want: "pagination cannot safely continue"},
+		{name: "get message", tool: "mail_get", args: `{"inbox_id":"i","message_id":"m"}`, out: map[string]string{"message_id": tooLong}, want: "message_id longer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := worker{run: func(context.Context, ...string) ([]byte, error) { return data, nil }}
+			_, err = w.ExecuteTool(context.Background(), extensions.ToolExecuteParams{Name: test.tool, Arguments: json.RawMessage(test.args)})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want actionable message containing %q", err, test.want)
+			}
+		})
 	}
 }
 

@@ -42,6 +42,172 @@ func TestListSearchesBoundedSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestListSummaryCacheInvalidatesLogContextAndCorruptReplacement(t *testing.T) {
+	manager, sessionDir := fixtureManager(t)
+	const id = "session-cache"
+	if _, err := createSession(t, sessionDir, id, "Cache title", "First answer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.List(context.Background(), ListOptions{}); err != nil { // warm summary
+		t.Fatal(err)
+	}
+	store, err := localfile.New(sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendTurn(context.Background(), session.ID(id), session.Turn{ID: "turn-2", PreviousTurnID: "turn-1", Type: session.TurnRegular}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendModelResponse(context.Background(), session.ID(id), sessionstore.ModelResponse{
+		TurnID: "turn-2", Response: llm.Response{ID: "response-2", Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "Updated answer"}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Preview != "Updated answer" {
+		t.Fatalf("append did not invalidate cached preview: %+v err=%v", listed, err)
+	}
+
+	contextPath := contextSnapshotPath(sessionDir, id)
+	oldInfo, err := os.Stat(contextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(sessionDir, "context-replacement")
+	if err := os.WriteFile(replacement, []byte(`{"Version":1,"Workspace":"/workspace/next"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacement, oldInfo.ModTime(), oldInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, contextPath); err != nil {
+		t.Fatal(err)
+	}
+	newInfo, err := os.Stat(contextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldInfo.Size() != newInfo.Size() || !oldInfo.ModTime().Equal(newInfo.ModTime()) || os.SameFile(oldInfo, newInfo) {
+		t.Fatalf("test did not create same-stat replacement: old=%v new=%v same=%t", oldInfo, newInfo, os.SameFile(oldInfo, newInfo))
+	}
+	listed, err = manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Workspace != "/workspace/next" {
+		t.Fatalf("same-stat context replacement was not observed: %+v err=%v", listed, err)
+	}
+
+	logPath := filepath.Join(sessionDir, id+".session.jsonl")
+	originalLog, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("not a valid session log"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Title != "" || listed[0].Preview != "" {
+		t.Fatalf("corrupt changed log reused metadata cache: %+v err=%v", listed, err)
+	}
+	if err := os.WriteFile(logPath, originalLog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Title != "Cache title" || listed[0].Preview != "Updated answer" {
+		t.Fatalf("repaired log did not revalidate metadata: %+v err=%v", listed, err)
+	}
+}
+
+func TestListSummaryCacheOverlaysActiveStateOnEveryCall(t *testing.T) {
+	manager, sessionDir := fixtureManager(t)
+	const id = "session-active-cache"
+	if _, err := createSession(t, sessionDir, id, "Active state", "Answer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.List(context.Background(), ListOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := sessionlock.Acquire(sessionDir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || !listed[0].Active {
+		t.Fatalf("active lease was hidden by cached summary: %+v err=%v", listed, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Active {
+		t.Fatalf("released lease remained cached as active: %+v err=%v", listed, err)
+	}
+	listed, err = manager.List(context.Background(), ListOptions{ActiveIDs: map[string]bool{id: true}})
+	if err != nil || len(listed) != 1 || !listed[0].Active {
+		t.Fatalf("caller active state was not overlaid on cache hit: %+v err=%v", listed, err)
+	}
+}
+
+func TestMetadataChangedDuringReadIsNotCached(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(t *testing.T, dir, id string)
+	}{
+		{
+			name: "session log append",
+			change: func(t *testing.T, dir, id string) {
+				t.Helper()
+				path := filepath.Join(dir, id+".session.jsonl")
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, append(contents, []byte("\n")...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "context snapshot update",
+			change: func(t *testing.T, dir, id string) {
+				t.Helper()
+				path := contextSnapshotPath(dir, id)
+				if err := os.WriteFile(path, []byte(`{"Version":1,"Workspace":"/workspace/changed"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, dir := fixtureManager(t)
+			const id = "session-midread"
+			if _, err := createSession(t, dir, id, "Mid-read", "Answer"); err != nil {
+				t.Fatal(err)
+			}
+			invalidateMetadataCache(dir, id)
+			info, err := os.Stat(filepath.Join(dir, id+".session.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, before, ok := metadataCacheIdentity(dir, id, info.ModTime().UTC())
+			if !ok {
+				t.Fatal("could not capture pre-read metadata identity")
+			}
+			test.change(t, dir, id)
+			cacheMetadataIfUnchanged(key, before, Session{ID: id, Title: "stale hybrid summary"})
+			currentInfo, err := os.Stat(filepath.Join(dir, id+".session.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			currentKey, current, ok := metadataCacheIdentity(dir, id, currentInfo.ModTime().UTC())
+			if !ok {
+				t.Fatal("changed files should still permit a fresh cache identity")
+			}
+			if _, hit := cachedMetadata(currentKey, current); hit {
+				t.Fatal("metadata observed across a file change was cached")
+			}
+		})
+	}
+}
+
 func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T) {
 	manager, sessionDir := fixtureManager(t)
 	const id = "session-archive"

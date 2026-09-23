@@ -32,9 +32,10 @@ a paired release containing both the Go binary and UI assets. `pk rollback` rest
 release. Without `--source`, `pk update` fetches the official [pk GitHub repository](https://github.com/pkyanam/pk)
 on `main`; use `--source /path/to/pk` to update from a local checkout. The TUI also supports
 `/update [--source PATH]`, `/rollback`, and `/reload`; bare `/update` uses the same GitHub default. Update and
-rollback require an idle foreground session. After the update succeeds, `/reload` requests a
-session-preserving restart on the new release. That restart path is implemented, but if the active
-terminal does not relaunch cleanly, exit and run `pk` again, then use `/attach SESSION_ID`.
+rollback require an idle foreground session. After the update succeeds, `/reload` restarts the
+supervised process and restores the current session. It preserves that session's saved prompt, tools,
+and skills; use `/new` to start with the current instructions and tool configuration, or `/attach ID`
+to continue an older saved session. If the terminal does not relaunch cleanly, exit and run `pk` again.
 
 New sessions load the current prompt and skill files. Existing sessions retain their saved prompt,
 tools, and skill contents; attaching does not refresh them. Use `/new` to pick up an updated bundled
@@ -93,16 +94,18 @@ pk
 
 Type a prompt and press Enter to submit. Shift-Enter or Ctrl-J adds a line without submitting.
 Ctrl-P opens the slash command menu; type to filter, use Up/Down to move, Tab to complete, and
-Enter to select. Ctrl+O toggles the latest tool details. The menu contains `/model`, `/effort`,
-`/tasks`, `/task`, `/new`, `/attach SESSION_ID`, `/detach`, `/cancel`,
-`/status`, `/login`, `/help`, and `/exit`. `/tasks` opens the detached task picker. Use
-`/attach SESSION_ID` to return to a saved conversation.
+Enter to select. Ctrl+O toggles the latest tool details. Use `/help` for the full command list; common
+commands include `/model`, `/effort`, `/sessions`, `/tasks`, `/new`, `/attach SESSION_ID`, `/history`,
+`/usage`, `/tools`, `/update`, `/reload`, `/cancel`, and `/exit`. `/sessions` browses saved
+conversations; `/tasks` opens the detached task picker.
 
 During longer work, pk shows a live wait/run state and elapsed time, including while waiting for a
 model response. Assistant progress messages appear in order alongside tool activity. Tool rows
 update as operations run and finish, with bounded command/argument previews, elapsed time, and
-available shell result excerpts. The UI redacts common credential-shaped values in these previews;
-do not treat the preview filter as a complete secret detector. Use `/new` to start a fresh
+available shell result excerpts. Enabled extensions that support negotiated progress can also show
+transient updates on their active tool row; these are best-effort, may be dropped under load, and are
+not added to model context or saved history. The UI redacts common credential-shaped values in these
+previews; do not treat the preview filter as a complete secret detector. Use `/new` to start a fresh
 conversation with current system instructions and skills. Attaching an older session retains its
 saved instruction and tool/skill snapshot. See the [prompt and tool reference](prompt-reference.md)
 for the full prompt template and default TUI tool schemas, including the installed model-aware
@@ -129,20 +132,28 @@ attachment queue. Native drag/drop has not been verified yet.
 /paste
 ```
 
+PDFs use bounded local text extraction, not native PDF upload; scanned pages are not OCRed. See the
+[attachment guide](attachments-design.md) for the current preview fallback and its installation and
+resource limits.
+
 `/files` lists queued paths. Click a visible file chip to remove it, or use `/files remove N` with
 its 1-based number. A prompt sends the queued files and shows a loaded notice; the queue clears only
 after the host confirms loading succeeded. If the prompt fails, the queued files remain available
 for retry. The effective limit is 8 files per prompt. Ctrl+V invokes clipboard import; Cmd+V can
 invoke it when the terminal delivers that key to pk, and `/paste` is the explicit fallback when it
-does not. A Cmux image clipboard was converted to a temporary path and queued; direct Finder-file
-Cmd+V has not completed verification. Bracketed paste recognizes file URI lists and quoted/escaped
-file paths.
+does not. Both Finder-file Cmd+V of a spaced image path and Preview raw-pixel Cmd+V reached
+`ViewImage` in Cmux; other terminals may behave differently. Bracketed paste recognizes file URI
+lists and quoted/escaped file paths.
 
 Double-click selects transcript text; Ctrl+Y copies the selection through OSC 52. Some terminals
 intercept Cmd+C, so Ctrl+Y is the reliable in-app copy shortcut. This is explicit path selection,
 not a file browser; relative paths use the session workspace, while explicitly selected absolute
 paths may be outside it. Attachments belong to the foreground prompt draft: starting a detached task
 does not transfer or consume the queued files. See [attachment formats and bounds](attachments-design.md).
+
+`/usage` opens a local view of provider-reported token totals saved for the current session. It makes
+no provider request and shows per-metric response coverage so unavailable counts are not mistaken
+for zero.
 
 Esc closes an open picker or stops the active turn. Ctrl-D detaches from an idle session and closes
 the interface while preserving its durable conversation; with no session it closes pk. Ctrl-C

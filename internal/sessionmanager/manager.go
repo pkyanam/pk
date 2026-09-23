@@ -254,6 +254,7 @@ func (m Manager) archiveOne(ctx context.Context, id string) Result {
 		return result
 	}
 	result.OK, result.TrashID = true, trashID
+	invalidateMetadataCache(sessionsDir, id)
 	return result
 }
 
@@ -450,6 +451,7 @@ func (m Manager) purgeOne(ctx context.Context, trashID string, activeIDs map[str
 		result.Error = fmt.Errorf("permanently remove archived session: %w", err).Error()
 		return result
 	}
+	invalidateMetadataCache(sessionsDir, manifest.SessionID)
 	result.OK = true
 	return result
 }
@@ -569,6 +571,7 @@ func (m Manager) restoreOne(ctx context.Context, trashID string, activeIDs map[s
 		result.Error = fmt.Errorf("restored session, but archive metadata remains in trash: %w", err).Error()
 		return result
 	}
+	invalidateMetadataCache(sessionsDir, manifest.SessionID)
 	result.OK = true
 	return result
 }
@@ -885,10 +888,22 @@ func (m Manager) List(ctx context.Context, opts ListOptions) ([]Session, error) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		meta, err := readMetadata(ctx, store, sessionsDir, info)
-		if err != nil {
-			// An unreadable or corrupt session should remain addressable for recovery.
-			meta = Session{ID: string(info.ID), UpdatedAt: info.LastUpdatedAt}
+		key, files, cacheable := metadataCacheIdentity(sessionsDir, string(info.ID), info.LastUpdatedAt)
+		meta, hit := Session{}, false
+		if cacheable {
+			meta, hit = cachedMetadata(key, files)
+		}
+		if !hit {
+			meta, err = readMetadata(ctx, store, sessionsDir, info)
+			if err != nil {
+				// An unreadable or corrupt session should remain addressable for recovery.
+				meta = Session{ID: string(info.ID), UpdatedAt: info.LastUpdatedAt}
+			} else if cacheable && ctx.Err() == nil {
+				cacheMetadataIfUnchanged(key, files, meta)
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		meta.Active = opts.ActiveIDs[meta.ID]
 		if !meta.Active {

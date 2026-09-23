@@ -18,6 +18,36 @@ import (
 // metadata when a history contains large captured assistant/tool outputs.
 // Setup is outside the timer; run with -cpuprofile to inspect the list path.
 func BenchmarkListLargeSessionLogs(b *testing.B) {
+	manager, ctx := largeSessionListFixture(b)
+	b.ReportMetric(32, "sessions/op")
+	b.ReportMetric(32*(128<<10), "assistant-output-bytes/op")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := manager.List(ctx, ListOptions{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkListRepeatedLargeSessionLogs measures steady-state repeated list
+// calls after the first validated metadata summary has populated the cache.
+func BenchmarkListRepeatedLargeSessionLogs(b *testing.B) {
+	manager, ctx := largeSessionListFixture(b)
+	if _, err := manager.List(ctx, ListOptions{}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportMetric(32, "sessions/op")
+	b.ReportMetric(32*(128<<10), "assistant-output-bytes/op")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := manager.List(ctx, ListOptions{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func largeSessionListFixture(b *testing.B) (Manager, context.Context) {
+	b.Helper()
 	const (
 		sessionCount = 32
 		outputBytes  = 128 << 10
@@ -49,13 +79,5 @@ func BenchmarkListLargeSessionLogs(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	manager := Manager{SessionDir: sessionDir}
-	b.ReportMetric(sessionCount, "sessions/op")
-	b.ReportMetric(sessionCount*outputBytes, "assistant-output-bytes/op")
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := manager.List(ctx, ListOptions{}); err != nil {
-			b.Fatal(err)
-		}
-	}
+	return Manager{SessionDir: sessionDir}, ctx
 }

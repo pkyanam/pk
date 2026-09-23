@@ -6,6 +6,12 @@ pk should make small, deliberate actions easy for an agent to combine. The toolb
 
 The pinned Unreal harness already supplies **Bash**, **ViewImage**, and **SkillUse**. Bash and ViewImage translate calls into durable operations; SkillUse selects a registered skill. The pk runner's default local operation manager executes the built-in shell and image operations. `runner.Options.RegistryFactory` is a composition seam for an in-repository host to provide a registry, but it does not replace the operation manager. A custom translator must submit an operation type that the selected manager can execute. New side effects need a compatible durable operation path. See [the integration notes](research/unreal-integration.md) for the boundary.
 
+This is the pinned base tool set, not a promise that every session has only these tools. pk adds the
+foreground `AskUser` interaction and can register optional ImageGen, WebSearch/WebFetch, MCP, and
+extension tools. Their availability depends on the session's explicit configuration; inspect `/tools`
+for the active model-visible catalog. Slash commands and UI controls such as `/usage` are not model
+tools.
+
 That distinction matters: a new schema is easy; a new durable operation requires an executable operation path. We should not present a proposed affordance as shipped until its translator is registered and its operation path is executable.
 
 ## Toolbelt design
@@ -70,7 +76,7 @@ The diagram describes one event ordering. If an operation finishes after the mod
 
 `ArtifactSlice` is a strong base candidate because stable offsets and a content hash let the model retrieve only evidence it needs, then continue safely without rereading the whole file. Its contract should accept a workspace-relative path, a byte offset, and a capped byte count; return the exact slice, hash, and continuation cursor; and reject traversal and symlink escapes against a configured workspace root. If the artifact changes between reads, the cursor should fail as stale. The root check belongs in a filesystem-aware operation that opens the file beneath that root. It must not be described as a sandbox: Bash still has whatever process permissions the host grants it.
 
-Unreal's local operation manager currently has no filesystem-read operation, and routing this feature through a generated shell command would inherit shell/runtime access and would not provide reliable root confinement. Therefore `ArtifactSlice` remains proposed until pk owns an operation manager or an upstream-compatible operation is available. A workspace adapter also cannot just pass a new translator to `tool.NewRegistry`: that registry's static definitions are closed over its built-in names. This document does not claim a working custom tool implementation.
+Unreal's local operation manager currently has no workspace-confined filesystem-read operation, and routing this feature through a generated shell command would inherit shell/runtime access and would not provide reliable root confinement. Therefore the specific `ArtifactSlice` primitive remains proposed until pk has a suitable filesystem operation path. Separately, pk's extension host can register explicitly configured custom tools, but those trusted subprocesses run with the user's OS permissions; that extension seam is not a filesystem boundary or sandbox. A workspace adapter also cannot just pass a new translator to `tool.NewRegistry`: that registry's static definitions are closed over its built-in names.
 
 ## Acceptance checks for future primitives
 
