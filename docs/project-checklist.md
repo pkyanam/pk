@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `347a609` (`20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`), including interactive ImageGen, mouse session opening, and restored compact tool history. All 110 UI tests / 485 assertions passed before activation; native Cmux reload and restored tool expansion passed.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `2e365e8` (`20260923T093118.840648000Z-7bd1d5efc551-b59e58a0`), including explicit MCP keyboard/mouse focus, bounded saved attachment chips, and lower-allocation assistant previews. All 113 UI tests / 508 assertions and affected Go race suites passed; native Cmux reload and MCP selector Enter behavior passed.
 
 ## Product and implementation
 
@@ -100,7 +100,7 @@ The 08:00 EDT, 23 September target was the requested handoff deadline, not evide
 - [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy, Finder Cmd+C/Cmd+V of a spaced image path, and Preview raw-pixel paste are verified; Luna inspected both image routes with `ViewImage`. Native GUI drag/drop remains unverified. Keep those limits distinct from the tested paste routes.
 - [x] Finish the local focused coding demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization; a broader montage remains optional.
 
-Latest installed checkpoint: `347a609` (`20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
+Latest installed checkpoint: `2e365e8` (`20260923T093118.840648000Z-7bd1d5efc551-b59e58a0`). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
@@ -123,4 +123,4 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 - [x] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Committed `af07f05`; 11 focused tests pass including 80×24 visibility and active/busy protections. Installed in `347a609`.
 - [x] Restore compact tool activity on attach/reload/history paging, preserving event order, paging bounds, and excluding analysis. Installed in `347a609`; native reload retained grouped Bash and ViewImage activity, with Ctrl+O details.
-- [ ] Present saved attachment metadata as user-facing files instead of showing generated model-input wrappers; do not silently strip arbitrary user-authored text.
+- [x] Present saved attachment metadata for new foreground file prompts as user-facing chips, verified against durable input hashes. Installed in `2e365e8`; legacy/mismatched records keep original text. Steering attachments remain unsupported.
