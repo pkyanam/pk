@@ -71,7 +71,7 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	}
 
 	store := Store{Root: filepath.Join(root, "tasks")}
-	task, err := store.Start(context.Background(), StartOptions{ID: "detached-check", Prompt: "do a task", Workspace: workspace, Executable: script})
+	task, err := store.Start(context.Background(), StartOptions{ID: "detached-check", Prompt: "do a task", Workspace: workspace, ProviderID: "test-provider", Executable: script})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +80,13 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	}
 	if task.Status != StatusRunning || task.PID <= 0 {
 		t.Fatalf("unexpected launch state: %+v", task)
+	}
+	loadedTask, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedTask.ProviderID != "test-provider" || loadedTask.Options.ProviderID != "test-provider" {
+		t.Fatalf("task did not persist provider identity: task=%q options=%q", loadedTask.ProviderID, loadedTask.Options.ProviderID)
 	}
 	if _, err = store.Resume(context.Background(), task.ID); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("resume of live worker = %v, want ErrAlreadyRunning", err)

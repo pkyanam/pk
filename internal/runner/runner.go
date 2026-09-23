@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -87,6 +88,19 @@ type Options struct {
 	// MCPFingerprint binds an MCP tool schema/configuration set to the saved
 	// session prefix. Resumes must provide the same fingerprint.
 	MCPFingerprint string
+	// CompactCapturedOutput shortens large completed Bash results at ingestion
+	// when every non-empty output stream has a readable capture artifact. It is
+	// opt-in and affects only newly translated results; saved prefixes are never
+	// rewritten. OnOutputCompaction reports the actual decision for each eligible
+	// result, including capture fallback.
+	CompactCapturedOutput bool
+	OnOutputCompaction    func(OutputCompactionEvent)
+	OutputCompactionStore OutputCompactionStore
+	// ProviderFingerprint binds a session to its configured API endpoint and
+	// protocol. Empty preserves legacy/default native-provider sessions.
+	ProviderFingerprint string
+	// ProviderID is persisted to resolve the exact configured provider on attach.
+	ProviderID string
 }
 
 // Input is a steer/follow-up prompt submitted to the active coordinator.
@@ -252,6 +266,9 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("load session context snapshot: %w", snapshotErr)
 			}
 			fmt.Fprintf(options.Diagnostics, "pk: warning: session %s has no saved prompt context; resuming with current workspace context.\n", id)
+			if options.CompactCapturedOutput {
+				return RunResult{SessionID: string(id)}, errors.New("captured-output compaction cannot be enabled while resuming a session without a saved context snapshot; start a new session")
+			}
 		} else {
 			snapshot = loaded
 			loadedSnapshot = true
@@ -259,6 +276,15 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s belongs to workspace %q; refusing resume from %q", id, snapshot.Workspace, options.Workspace)
 			}
 			if err := validateMCPFingerprint(snapshot, options.MCPFingerprint); err != nil {
+				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
+			}
+			if err := validateProviderFingerprint(snapshot, options.ProviderFingerprint); err != nil {
+				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
+			}
+			if err := validateProviderSelection(snapshot, options.ProviderID); err != nil {
+				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
+			}
+			if err := validateOutputCompactionMode(snapshot, options.CompactCapturedOutput); err != nil {
 				return RunResult{SessionID: string(id)}, fmt.Errorf("session %s: %w", id, err)
 			}
 			if explicit := strings.TrimSpace(options.SystemPrompt); explicit != "" && explicit != snapshot.ExplicitSystemPrompt {
@@ -285,6 +311,14 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		if registry == nil {
 			return RunResult{SessionID: string(id)}, errors.New("registry decorator returned nil")
 		}
+	}
+	if options.CompactCapturedOutput {
+		compactionStore := options.OutputCompactionStore
+		if compactionStore == nil {
+			digest := sha256.Sum256([]byte(id))
+			compactionStore = newLocalOutputCompactionStore(filepath.Join(operationDir, "output-compaction", hex.EncodeToString(digest[:])))
+		}
+		registry = compactCapturedOutputRegistry(registry, options.OnOutputCompaction, compactionStore)
 	}
 	for _, warning := range warnings {
 		fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", warning)
@@ -314,6 +348,10 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		snapshot = newContextSnapshot(options, registry, skills)
 		snapshot.IdentityTemplate = defaultIdentityTemplate
 		snapshot.MCPFingerprint = options.MCPFingerprint
+		snapshot.ProviderFingerprint = options.ProviderFingerprint
+		if options.CompactCapturedOutput {
+			snapshot.OutputCompactionVersion = outputDecisionVersion
+		}
 		captured, captureErr := captureSkills(skills)
 		if captureErr != nil {
 			return RunResult{SessionID: string(id)}, captureErr
@@ -1220,7 +1258,7 @@ func newContextSnapshot(options Options, registry tool.Registry, _ []tool.Skill)
 	return ContextSnapshot{
 		Version: contextSnapshotVersion, Workspace: options.Workspace,
 		SystemPrompt:         workspaceSystemPrompt(options.Workspace, options.SystemPrompt, options.Diagnostics),
-		ExplicitSystemPrompt: explicit, Tools: tools, MCPFingerprint: options.MCPFingerprint,
+		ExplicitSystemPrompt: explicit, Tools: tools, MCPFingerprint: options.MCPFingerprint, ProviderFingerprint: options.ProviderFingerprint, ProviderID: options.ProviderID,
 	}
 }
 

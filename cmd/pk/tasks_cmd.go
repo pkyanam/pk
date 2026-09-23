@@ -27,18 +27,21 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 	case "create":
 		fs := flag.NewFlagSet("pk task create", flag.ContinueOnError)
 		fs.SetOutput(errOut)
-		var prompt, workspace, model, effort, system string
+		var prompt, workspace, model, effort, system, providerChoice string
+		var useCodex bool
 		fs.StringVar(&prompt, "p", "", "prompt to run")
 		fs.StringVar(&prompt, "prompt", "", "prompt to run")
 		fs.StringVar(&workspace, "workspace", "", "new or existing task workspace directory")
 		fs.StringVar(&model, "model", "", "model override")
 		fs.StringVar(&effort, "effort", "", "reasoning effort override")
+		fs.StringVar(&providerChoice, "provider", "", "configured provider ID, or native for ChatGPT login")
+		fs.BoolVar(&useCodex, "use-codex", false, "use the native ChatGPT login")
 		fs.StringVar(&system, "system", "", "additional system instructions")
 		if err := fs.Parse(args[1:]); err != nil {
 			return 2
 		}
 		if fs.NArg() != 0 || strings.TrimSpace(prompt) == "" {
-			fmt.Fprintln(errOut, "usage: pk task create -p PROMPT [--workspace DIR] [--model MODEL --effort EFFORT]")
+			fmt.Fprintln(errOut, "usage: pk task create -p PROMPT [--workspace DIR] [--provider ID|native] [--model MODEL --effort EFFORT]")
 			return 2
 		}
 		if workspace == "" {
@@ -54,12 +57,29 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
 		}
-		if model == "" {
-			model = cfg.Model
+		provider, err := resolveCLIProvider(providerChoice, useCodex)
+		if err != nil {
+			fmt.Fprintf(errOut, "pk task create: %v\n", err)
+			return 1
 		}
-		if effort == "" {
-			effort = cfg.Effort
+		modelSet, effortSet := false, false
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "model":
+				modelSet = true
+			case "effort":
+				effortSet = true
+			}
+		})
+		options := runner.Options{Model: cfg.Model, Effort: cfg.Effort}
+		if modelSet {
+			options.Model = model
 		}
+		if effortSet {
+			options.Effort = effort
+		}
+		applyProviderDefaults(&options, provider, modelSet, effortSet)
+		model, effort = options.Model, options.Effort
 		if !config.ValidEffort(effort) {
 			fmt.Fprintf(errOut, "pk task create: unsupported effort %q\n", effort)
 			return 2
@@ -70,7 +90,7 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
 		}
-		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}, ToolEvents: true, Executable: executable})
+		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: options.ProviderID, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}, ToolEvents: true, Executable: executable})
 		if err != nil {
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
@@ -156,11 +176,6 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 		return 2
 	}
 	err := tasks.RunWorker(ctx, args[0], func(ctx context.Context, taskOptions tasks.WorkerOptions, output io.Writer) error {
-		client, err := prepareAdapter(ctx, taskOptions.UseCodex, taskOptions.CodexPath)
-		if err != nil {
-			return err
-		}
-		defer client.Close()
 		inputs := make(chan runner.Input, 32)
 		go func() {
 			defer close(inputs)
@@ -175,12 +190,43 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 				}
 			}
 		}()
-		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, Adapter: client, OnSession: taskOptions.OnSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: taskOptions.OnSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		client, providerSnapshot, err := prepareCLIAdapter(ctx, &o, taskOptions.UseCodex, taskOptions.CodexPath)
+		if err != nil {
+			return err
+		}
+		if closer, ok := client.(interface{ Close() error }); ok {
+			defer closer.Close()
+		}
+		o.Adapter = client
+		if _, err := configureCLIExtensions(ctx, &o, nil, nil, diagnostics, tinyFishRegistryExtension()); err != nil {
+			return err
+		}
 		mcpHost, err := configureCLIMCP(ctx, &o, diagnostics)
 		if err != nil {
 			return err
 		}
+		mcpServers, err := configuredSubagentMCPServers()
+		if err != nil {
+			if mcpHost != nil {
+				_ = mcpHost.Close()
+			}
+			return fmt.Errorf("read MCP configuration for subagents: %w", err)
+		}
+		subagentManager, err := configureSubagents(ctx, &o, subagentRuntimeConfig{
+			Workspace: o.Workspace, SessionDir: o.SessionDir, SkillsDirs: o.SkillsDirs,
+			ProviderID: o.ProviderID, ProviderConfig: providerSnapshot, Effort: o.Effort,
+			MCPServers: mcpServers, InheritMCP: len(mcpServers) > 0,
+			UseCodex: taskOptions.UseCodex, CodexPath: taskOptions.CodexPath, Diagnostics: diagnostics,
+		})
+		if err != nil {
+			if mcpHost != nil {
+				_ = mcpHost.Close()
+			}
+			return fmt.Errorf("configure task subagents: %w", err)
+		}
 		_, err = runner.Run(ctx, o)
+		subagentManager.Close()
 		if mcpHost != nil {
 			if closeErr := mcpHost.Close(); err == nil && closeErr != nil {
 				err = closeErr

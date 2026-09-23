@@ -122,13 +122,14 @@ func snapshotRPCPluginPaths(service pluginconfig.Service) ([]string, []error, er
 
 // configureRPCPluginSession wires the frozen manifest list into this prompt's
 // runner. The host is caller-owned and must be closed after runner.Run returns.
-func configureRPCPluginSession(ctx context.Context, options *runner.Options, manifests []string, broker *interaction.Broker, diagnostics io.Writer) (*extensions.Host, error) {
+func configureRPCPluginSession(ctx context.Context, options *runner.Options, manifests []string, broker *interaction.Broker, diagnostics io.Writer, additional ...cliRegistryExtension) (*extensions.Host, error) {
 	var extra []cliRegistryExtension
 	if broker != nil {
 		extra = append(extra, cliRegistryExtension{Decorate: func(base tool.Registry) tool.Registry {
 			return interaction.DecorateRegistry(base, broker)
 		}})
 	}
+	extra = append(extra, additional...)
 	return configureCLIExtensions(ctx, options, manifests, nil, diagnostics, extra...)
 }
 

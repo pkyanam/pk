@@ -19,18 +19,22 @@ import (
 )
 
 const contextSnapshotVersion = 1
+const outputCompactionSnapshotVersion = 1
 
 // ContextSnapshot captures the stable part of a session's model prefix. Model
 // and reasoning effort deliberately remain turn settings and are not stored.
 type ContextSnapshot struct {
-	Version              int
-	Workspace            string
-	SystemPrompt         string
-	IdentityTemplate     string `json:",omitempty"`
-	ExplicitSystemPrompt string
-	Skills               []ContextSkill
-	Tools                []llm.Tool
-	MCPFingerprint       string `json:",omitempty"`
+	Version                 int
+	Workspace               string
+	SystemPrompt            string
+	IdentityTemplate        string `json:",omitempty"`
+	ExplicitSystemPrompt    string
+	Skills                  []ContextSkill
+	Tools                   []llm.Tool
+	MCPFingerprint          string `json:",omitempty"`
+	ProviderFingerprint     string `json:",omitempty"`
+	ProviderID              string `json:",omitempty"`
+	OutputCompactionVersion int    `json:",omitempty"`
 }
 
 const (
@@ -54,6 +58,23 @@ type ContextSkill struct {
 type ContextSnapshotStore interface {
 	LoadContext(context.Context, session.ID) (ContextSnapshot, error)
 	SaveContext(context.Context, session.ID, ContextSnapshot) error
+}
+
+func validateOutputCompactionMode(snapshot ContextSnapshot, enabled bool) error {
+	switch snapshot.OutputCompactionVersion {
+	case 0:
+		if enabled {
+			return errors.New("captured-output compaction was not enabled when this session context was saved; start a new session to enable it")
+		}
+		return nil
+	case outputCompactionSnapshotVersion:
+		if !enabled {
+			return errors.New("captured-output compaction is part of this session context; resume with the same setting or start a new session")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported captured-output compaction version %d", snapshot.OutputCompactionVersion)
+	}
 }
 
 type fileContextSnapshotStore struct{ directory string }

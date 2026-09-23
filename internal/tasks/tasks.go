@@ -48,6 +48,7 @@ type StartOptions struct {
 	Workspace    string   `json:"workspace"`
 	Model        string   `json:"model,omitempty"`
 	Effort       string   `json:"effort,omitempty"`
+	ProviderID   string   `json:"provider_id,omitempty"`
 	SystemPrompt string   `json:"system_prompt,omitempty"`
 	SessionDir   string   `json:"session_dir,omitempty"`
 	SkillsDirs   []string `json:"skills_dirs,omitempty"`
@@ -83,6 +84,7 @@ type Task struct {
 	Workspace       string       `json:"workspace"`
 	Model           string       `json:"model"`
 	Effort          string       `json:"effort"`
+	ProviderID      string       `json:"provider_id,omitempty"`
 	PID             int          `json:"pid,omitempty"`
 	SessionID       string       `json:"session_id,omitempty"`
 	CreatedAt       time.Time    `json:"created_at"`
@@ -185,7 +187,7 @@ func (s Store) Start(ctx context.Context, options StartOptions) (Task, error) {
 		return Task{}, fmt.Errorf("create task directory: %w", err)
 	}
 	now := time.Now().UTC()
-	t := Task{ID: options.ID, Status: StatusQueued, Prompt: options.Prompt, Workspace: workspace, Model: options.Model, Effort: options.Effort, CreatedAt: now, UpdatedAt: now, Options: options}
+	t := Task{ID: options.ID, Status: StatusQueued, Prompt: options.Prompt, Workspace: workspace, Model: options.Model, Effort: options.Effort, ProviderID: options.ProviderID, CreatedAt: now, UpdatedAt: now, Options: options}
 	if err = writeTask(dir, t); err != nil {
 		os.RemoveAll(dir)
 		return Task{}, err

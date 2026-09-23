@@ -22,7 +22,9 @@ import (
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/mcpclient"
 	"github.com/pkyanam/pk/internal/modelstream"
+	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/pkyanam/pk/internal/subagents"
 	"github.com/pkyanam/pk/internal/tasks"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -68,6 +70,7 @@ type rpcServer struct {
 	started             bool
 	steeringEnabled     bool
 	session             string
+	providerID          string
 	activeCancel        context.CancelFunc
 	releaseCancel       context.CancelFunc
 	releaseDone         chan struct{}
@@ -378,16 +381,69 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			workspace, _ = os.Getwd()
 		}
 		workspace, _ = filepath.Abs(workspace)
+		sessionID := get("session_id")
+		requestedProviderID := get("provider_id")
+		providerID := ""
+		if sessionID != "" {
+			savedID, savedFingerprint, saved, snapshotErr := runner.LoadSavedProvider(s.ctx, s.sessionDir, sessionID, workspace)
+			if snapshotErr != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "load saved session provider: " + snapshotErr.Error(), "recoverable": true})
+				return
+			}
+			if saved {
+				providerID = savedID
+				if providerID == "" && savedFingerprint != "" {
+					configured, err := rpcProviderStore().List()
+					if err != nil {
+						_ = s.emit(msg.ID, "error", map[string]any{"message": "load configured providers: " + err.Error(), "recoverable": true})
+						return
+					}
+					for _, candidate := range configured {
+						if candidate.Fingerprint() == savedFingerprint {
+							providerID = candidate.ID
+							break
+						}
+					}
+					if providerID == "" {
+						_ = s.emit(msg.ID, "error", map[string]any{"message": "this saved session uses a provider whose ID cannot be resolved; configure the original provider or start a new session", "recoverable": true})
+						return
+					}
+				}
+				if requestedProviderID != "" && requestedProviderID != providerID {
+					_ = s.emit(msg.ID, "error", map[string]any{"message": "the requested provider does not match this saved session; select the original provider or start a new session", "recoverable": true})
+					return
+				}
+			} else {
+				providerID, err = resolveRPCProviderID(requestedProviderID)
+			}
+		} else {
+			providerID, err = resolveRPCProviderID(requestedProviderID)
+		}
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "select model provider: " + err.Error(), "recoverable": true})
+			return
+		}
+		provider, err := resolveRPCProvider(providerID)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load model provider: " + err.Error(), "recoverable": true})
+			return
+		}
 		model := get("model")
 		if model == "" {
-			model = strings.TrimSpace(os.Getenv("PK_MODEL"))
+			model = provider.DefaultModel
+			if model == "" {
+				model = strings.TrimSpace(os.Getenv("PK_MODEL"))
+			}
 			if model == "" {
 				model = cfg.Model
 			}
 		}
 		effort := get("effort")
 		if effort == "" {
-			effort = strings.TrimSpace(os.Getenv("PK_EFFORT"))
+			effort = provider.DefaultEffort
+			if effort == "" {
+				effort = strings.TrimSpace(os.Getenv("PK_EFFORT"))
+			}
 			if effort == "" {
 				effort = cfg.Effort
 			}
@@ -413,8 +469,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		for _, issue := range pluginIssues {
 			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
 		}
-		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
-		s.session = get("session_id")
+		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
+		s.providerID = providerID
+		s.session = sessionID
 		s.opts.SessionID = s.session
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
@@ -429,7 +486,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		s.started = true
 		capabilities := rpcCapabilities(steeringEnabled)
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "capabilities": capabilities})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "capabilities": capabilities})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
@@ -473,7 +530,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": rpcPluginUnavailableMessage(issues), "recoverable": true})
 			return
 		}
-		workspace, sessionID := s.opts.Workspace, s.session
+		workspace, sessionID, providerID := s.opts.Workspace, s.session, s.providerID
 		pluginPaths := append([]string(nil), s.pluginPaths...)
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
@@ -544,28 +601,53 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				finished <- turnDone{id: msg.ID, err: err}
 				return
 			}
-			s.mu.Lock()
-			client := s.adapter
-			s.mu.Unlock()
-			if client == nil {
-				prepare := s.prepareAdapter
-				if prepare == nil {
-					prepare = prepareAdapter
-				}
-				var err error
-				client, err = prepare(ctx, s.useCodex, s.codexPath)
+			var client llm.Adapter
+			var selectedProvider *providers.Provider
+			if providerID != "" {
+				provider, err := resolveRPCProvider(providerID)
 				if err != nil {
-					finished <- turnDone{id: msg.ID, err: err}
+					finished <- turnDone{id: msg.ID, err: fmt.Errorf("load selected provider: %w", err)}
 					return
 				}
-				s.mu.Lock()
-				if s.adapter == nil {
-					s.adapter = client
-				} else if client != s.adapter {
-					_ = client.Close()
-					client = s.adapter
+				providerClient, err := providers.NewClient(provider)
+				if err != nil {
+					finished <- turnDone{id: msg.ID, err: fmt.Errorf("prepare selected provider: %w", err)}
+					return
 				}
+				client = providerClient
+				selectedProvider = &provider
+				opts.ProviderFingerprint = provider.Fingerprint()
+				defer func() {
+					if closeErr := providerClient.Close(); closeErr != nil {
+						fmt.Fprintf(s.diagnostics, "pk: close provider client: %v\n", closeErr)
+					}
+				}()
+			} else {
+				s.mu.Lock()
+				defaultClient := s.adapter
 				s.mu.Unlock()
+				if defaultClient == nil {
+					prepare := s.prepareAdapter
+					if prepare == nil {
+						prepare = prepareAdapter
+					}
+					var err error
+					defaultClient, err = prepare(ctx, s.useCodex, s.codexPath)
+					if err != nil {
+						finished <- turnDone{id: msg.ID, err: err}
+						return
+					}
+					s.mu.Lock()
+					if s.adapter == nil {
+						s.adapter = defaultClient
+					} else if defaultClient != s.adapter {
+						_ = defaultClient.Close()
+						defaultClient = s.adapter
+					}
+					s.mu.Unlock()
+				}
+				client = defaultClient
+				opts.ProviderFingerprint = ""
 			}
 			if err := ctx.Err(); err != nil {
 				finished <- turnDone{id: msg.ID, err: err}
@@ -573,6 +655,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 			s.mu.Lock()
 			opts.SessionID = s.session
+			opts.ProviderID = providerID
 			opts.Adapter = client
 			s.mu.Unlock()
 			out := &rpcRunnerOutput{server: s, id: msg.ID}
@@ -611,7 +694,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				s.mu.Unlock()
 				_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
 			}
-			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics)
+			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics, tinyFishRegistryExtension())
 			if err != nil {
 				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load session plugins: %w", err)}
 				return
@@ -632,7 +715,47 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load configured MCP servers: %w", err)}
 				return
 			}
+			mcpServers, err := configuredSubagentMCPServers()
+			if err != nil {
+				if mcpHost != nil {
+					_ = mcpHost.Close()
+				}
+				if host != nil {
+					_ = host.Close()
+				}
+				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load MCP configuration for subagents: %w", err)}
+				return
+			}
+			subagentManager, err := configureSubagents(broker.Context(), &opts, subagentRuntimeConfig{
+				Workspace: opts.Workspace, SessionDir: opts.SessionDir, SkillsDirs: opts.SkillsDirs,
+				PluginManifests: pluginPaths, MCPServers: mcpServers,
+				InheritPlugins: len(pluginPaths) > 0, InheritMCP: len(mcpServers) > 0,
+				ProviderID: providerID, ProviderConfig: selectedProvider,
+				UseCodex: s.useCodex, CodexPath: s.codexPath, Diagnostics: s.diagnostics,
+				AdapterFactory: func(adapterCtx context.Context, useCodex bool, codexPath string) (llm.Adapter, error) {
+					if selectedProvider != nil {
+						return providers.NewClient(*selectedProvider)
+					}
+					prepare := s.prepareAdapter
+					if prepare == nil {
+						prepare = prepareAdapter
+					}
+					return prepare(adapterCtx, useCodex, codexPath)
+				},
+				Events: func(event subagents.Event) { _ = s.emit(msg.ID, "subagent", event) },
+			})
+			if err != nil {
+				if mcpHost != nil {
+					_ = mcpHost.Close()
+				}
+				if host != nil {
+					_ = host.Close()
+				}
+				finished <- turnDone{id: msg.ID, err: fmt.Errorf("configure subagents: %w", err)}
+				return
+			}
 			result, err := runner.Run(broker.Context(), opts)
+			subagentManager.Close()
 			if mcpHost != nil {
 				if closeErr := mcpHost.Close(); err == nil && closeErr != nil {
 					err = closeErr
@@ -886,14 +1009,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
-		steeringEnabled := s.steeringEnabled
+		steeringEnabled, providerID := s.steeringEnabled, s.providerID
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
 		_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "attached": true, "capabilities": rpcCapabilities(steeringEnabled)})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "attached": true, "capabilities": rpcCapabilities(steeringEnabled)})
 	case "new":
 		s.mu.Lock()
 		active, sessionID := s.active, s.session
@@ -916,9 +1039,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
-		steeringEnabled := s.steeringEnabled
+		steeringEnabled, providerID := s.steeringEnabled, s.providerID
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "capabilities": rpcCapabilities(steeringEnabled)})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "capabilities": rpcCapabilities(steeringEnabled)})
 	case "plugins_list":
 		payload, err := listRPCPlugins(userPluginService())
 		if err != nil {
@@ -926,6 +1049,131 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "plugins", payload)
+	case "providers_list":
+		items, err := rpcProviderStore().Summaries()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "providers", map[string]any{"providers": items})
+	case "provider_models":
+		providerID := get("provider_id")
+		if providerID == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "provider_id is required", "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "provider_models_started", map[string]any{"provider_id": providerID})
+		models, err := rpcProviderModels(s.ctx, providerID)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "provider_models", map[string]any{"provider_id": providerID, "models": models})
+	case "provider_add":
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(msg.Payload, &raw); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid provider configuration: " + err.Error(), "recoverable": true})
+			return
+		}
+		if _, hasLiteralKey := raw["api_key"]; hasLiteralKey {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "literal API keys cannot be sent over RPC; configure api_key_env or use `pk provider add --api-key-stdin`", "recoverable": true})
+			return
+		}
+		var provider providers.Provider
+		if err := json.Unmarshal(msg.Payload, &provider); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid provider configuration: " + err.Error(), "recoverable": true})
+			return
+		}
+		if err := s.providerMutationAllowed(provider.ID); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		if err := rpcProviderStore().Put(provider); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		updated, err := rpcProvidersUpdated()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "providers_updated", updated)
+	case "provider_remove":
+		providerID := get("id")
+		if providerID == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "provider id is required", "recoverable": true})
+			return
+		}
+		if err := s.providerMutationAllowed(providerID); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		if err := rpcProviderStore().Remove(providerID); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		updated, err := rpcProvidersUpdated()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "providers_updated", updated)
+	case "provider_default":
+		providerID := get("provider_id")
+		if err := s.providerMutationAllowed(""); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		if err := rpcProviderStore().SetDefault(providerID); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		updated, err := rpcProvidersUpdated()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "providers_updated", updated)
+	case "provider_select":
+		providerID := get("provider_id")
+		s.mu.Lock()
+		if !s.started {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before selecting a provider", "recoverable": true})
+			return
+		}
+		if s.active || s.session != "" || s.attachedTask != "" {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "provider selection is available only before the first prompt in a new session", "recoverable": true})
+			return
+		}
+		s.mu.Unlock()
+		selected, err := resolveRPCProvider(providerID)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		model, effort := selected.DefaultModel, selected.DefaultEffort
+		if model == "" {
+			model = cfg.Model
+		}
+		if effort == "" {
+			effort = cfg.Effort
+		}
+		s.mu.Lock()
+		if s.active || s.session != "" || s.attachedTask != "" {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "provider selection is available only before the first prompt in a new session", "recoverable": true})
+			return
+		}
+		s.providerID, s.opts.ProviderID, s.opts.Model, s.opts.Effort = providerID, providerID, model, effort
+		s.mu.Unlock()
+		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort})
 	case "plugins_enable":
 		s.mu.Lock()
 		workspace := s.opts.Workspace
@@ -1028,7 +1276,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		cfg, _ := config.Load(s.cfgPath)
-		model, effort := get("model"), get("effort")
+		model, effort, providerID := get("model"), get("effort"), get("provider_id")
+		s.mu.Lock()
+		if providerID == "" {
+			providerID = s.providerID
+		}
+		s.mu.Unlock()
 		if model == "" {
 			model = cfg.Model
 		}
@@ -1050,7 +1303,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			workspace = filepath.Join(s.opts.Workspace, "pk-work", fmt.Sprintf("task-%d", time.Now().UnixNano()))
 		}
 		executable, _ := os.Executable()
-		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, SessionDir: s.sessionDir, SkillsDirs: []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}, ToolEvents: true, Executable: executable})
+		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: []string{filepath.Join(userHome(), ".codex", "skills"), filepath.Join(userHome(), ".agents", "skills")}, ToolEvents: true, Executable: executable})
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
@@ -1156,9 +1409,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "status":
 		status := auth.Status()
 		s.mu.Lock()
-		sessionID, model, effort := s.session, s.opts.Model, s.opts.Effort
+		sessionID, model, effort, providerID := s.session, s.opts.Model, s.opts.Effort, s.providerID
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "logged_in": status.LoggedIn, "expired": status.Expired, "account_id": status.AccountID})
+		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "logged_in": status.LoggedIn, "expired": status.Expired, "account_id": status.AccountID})
 	case "login":
 		if err := auth.Login(s.ctx, auth.LoginOptions{Output: s.diagnostics}); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
@@ -1191,7 +1444,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		if effort != "" {
 			s.opts.Effort = effort
 		}
-		model, effort, sessionID := s.opts.Model, s.opts.Effort, s.session
+		model, effort, sessionID, providerID := s.opts.Model, s.opts.Effort, s.session, s.providerID
 		s.mu.Unlock()
 		if model != "" && effort != "" {
 			if err := config.Save(s.cfgPath, config.Config{Model: model, Effort: effort}); err != nil {
@@ -1199,7 +1452,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				return
 			}
 		}
-		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort})
+		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID})
 	case "shutdown":
 		s.quit = true
 		_ = s.emit(msg.ID, "shutdown", map[string]any{"session_id": s.session})

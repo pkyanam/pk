@@ -131,7 +131,7 @@ func TestParentRunnerCanStartAndWaitForChildWithoutNestedCapability(t *testing.T
 	childAdapter := &subagentScriptAdapter{child: true}
 	var eventsMu sync.Mutex
 	var events []subagents.Event
-	parent := runner.Options{Prompt: "delegate one file", Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "low", Adapter: parentAdapter}
+	parent := runner.Options{Prompt: "delegate one file", Workspace: workspace, SessionDir: sessions, Model: "gpt-6-astra", Effort: "low", Adapter: parentAdapter}
 	manager, err := configureSubagents(context.Background(), &parent, subagentRuntimeConfig{
 		Workspace: workspace, SessionDir: sessions, UseCodex: true, Diagnostics: io.Discard,
 		Events: func(event subagents.Event) {
@@ -154,6 +154,9 @@ func TestParentRunnerCanStartAndWaitForChildWithoutNestedCapability(t *testing.T
 	}
 	if childAdapter.calls != 1 || !childAdapter.closed {
 		t.Fatalf("child calls=%d closed=%v", childAdapter.calls, childAdapter.closed)
+	}
+	if len(childAdapter.requests) != 1 || childAdapter.requests[0].Model.ID != "gpt-6-luna" {
+		t.Fatalf("native child default should remain Luna when parent uses Astra: %#v", childAdapter.requests)
 	}
 	eventsMu.Lock()
 	defer eventsMu.Unlock()

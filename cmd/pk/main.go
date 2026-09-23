@@ -44,6 +44,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runACPCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "mcp":
 		return runMCPCommand(ctx, args[1:], stdout, stderr)
+	case "provider":
+		return runProviderCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "update", "rollback", "version", "__install-artifacts":
 		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
@@ -133,18 +135,21 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 		writeAttachmentSummary(stderr, loaded)
 	}
-	client, err := prepareAdapter(ctx, useCodex, codexPath)
+	client, providerSnapshot, err := prepareCLIAdapter(ctx, &options, useCodex, codexPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk run: %v\n", err)
 		return 1
 	}
-	defer client.Close()
+	if closer, ok := client.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
 	options.Adapter = client
 	var imageExtension []cliRegistryExtension
 	if imageDriver != "" {
 		imageConfig := imagegen.Config{Driver: imageDriver, Effort: "low", CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME"))}
 		imageExtension = append(imageExtension, cliRegistryExtension{Decorate: imagegen.Decorator(imageConfig, options.Workspace), RemoteJobHandlers: imagegen.HandlerFactory(imageConfig, options.Workspace)})
 	}
+	imageExtension = append(imageExtension, tinyFishRegistryExtension())
 	host, err := configureCLIExtensions(ctx, &options, extensionPaths, nil, stderr, imageExtension...)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk run: load extensions: %v\n", err)
@@ -172,6 +177,23 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			}
 		}()
 	}
+	mcpServers, err := configuredSubagentMCPServers()
+	if err != nil {
+		fmt.Fprintf(stderr, "pk run: read MCP configuration for subagents: %v\n", err)
+		return 1
+	}
+	subagentManager, err := configureSubagents(ctx, &options, subagentRuntimeConfig{
+		Workspace: options.Workspace, SessionDir: options.SessionDir, SkillsDirs: options.SkillsDirs,
+		Effort:          options.Effort,
+		PluginManifests: extensionPaths, MCPServers: mcpServers,
+		InheritPlugins: len(extensionPaths) > 0, InheritMCP: len(mcpServers) > 0,
+		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "pk run: configure subagents: %v\n", err)
+		return 1
+	}
+	defer subagentManager.Close()
 	options.Output = stdout
 	options.Diagnostics = stderr
 	options.OnSession = func(id string) { fmt.Fprintf(stderr, "Session: %s\n", id) }
@@ -201,16 +223,22 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 		fmt.Fprintf(stderr, "pk: %v\n", err)
 		return 2
 	}
-	client, err := prepareAdapter(ctx, useCodex, codexPath)
+	client, providerSnapshot, err := prepareCLIAdapter(ctx, &options, useCodex, codexPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk: %v\n", err)
 		return 1
 	}
-	defer client.Close()
+	if closer, ok := client.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
 	options.Adapter = client
 	options.Output = stdout
 	options.Diagnostics = stderr
 	options.ToolEvents = true
+	if _, err := configureCLIExtensions(ctx, &options, nil, nil, stderr, tinyFishRegistryExtension()); err != nil {
+		fmt.Fprintf(stderr, "pk: load web tools: %v\n", err)
+		return 1
+	}
 	mcpHost, err := configureCLIMCP(ctx, &options, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk: load MCP servers: %v\n", err)
@@ -223,6 +251,22 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 			}
 		}()
 	}
+	mcpServers, err := configuredSubagentMCPServers()
+	if err != nil {
+		fmt.Fprintf(stderr, "pk: read MCP configuration for subagents: %v\n", err)
+		return 1
+	}
+	subagentManager, err := configureSubagents(ctx, &options, subagentRuntimeConfig{
+		Workspace: options.Workspace, SessionDir: options.SessionDir, SkillsDirs: options.SkillsDirs,
+		Effort:     options.Effort,
+		MCPServers: mcpServers, InheritMCP: len(mcpServers) > 0,
+		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "pk: configure subagents: %v\n", err)
+		return 1
+	}
+	defer subagentManager.Close()
 	err = interactiveLoop(ctx, stdin, stderr, options, runner.Run)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -367,6 +411,7 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	var options runner.Options
 	var useCodex bool
 	var codexAuth string
+	var providerChoice string
 	var skills stringList
 	var files stringList
 	var extensionPaths stringList
@@ -385,6 +430,7 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	flags.BoolVar(&options.JSONL, "jsonl", false, "write assistant and tool events as JSONL")
 	flags.BoolVar(&useCodex, "use-codex", false, "explicitly reuse existing Codex ChatGPT credentials read-only")
 	flags.StringVar(&codexAuth, "codex-auth-file", "", "Codex auth file used with --use-codex")
+	flags.StringVar(&providerChoice, "provider", "", "provider ID or native (default configured provider)")
 	flags.Var(&skills, "skills-dir", "directory containing <skill>/SKILL.md; may be repeated")
 	if requirePrompt {
 		flags.Var(&files, "file", "attach a text, PDF, or image file; may be repeated")
@@ -394,6 +440,20 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	if err := flags.Parse(args); err != nil {
 		return runner.Options{}, false, "", nil, nil, "", err
 	}
+	provider, err := resolveCLIProvider(providerChoice, useCodex)
+	if err != nil {
+		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("select model provider: %w", err)
+	}
+	modelSet, effortSet := false, false
+	flags.Visit(func(item *flag.Flag) {
+		switch item.Name {
+		case "model":
+			modelSet = true
+		case "effort":
+			effortSet = true
+		}
+	})
+	applyProviderDefaults(&options, provider, modelSet, effortSet)
 	options.Effort = strings.ToLower(strings.TrimSpace(options.Effort))
 	if flags.NArg() != 0 {
 		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
@@ -499,6 +559,7 @@ func usage(out io.Writer) {
   pk rpc                     start the JSONL frontend backend
   pk acp                     serve Agent Client Protocol v1 over stdio
   pk mcp list|add|remove     manage explicitly configured MCP servers
+  pk provider list|add|use  manage model providers
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...
   pk config [show|set model|set effort VALUE]
@@ -519,6 +580,7 @@ Run options:
   --file PATH                attach a text, PDF, or image (repeatable; relative to workspace)
   --extension MANIFEST       load an extension manifest explicitly (repeatable; new sessions only)
   --image-driver MODEL       explicitly enable ImageGen using a separate model (new sessions only)
+  --provider ID|native       select a configured model provider for this run
   --use-codex                reuse existing Codex credentials read-only
   --jsonl                    write assistant and tool events as JSONL
 

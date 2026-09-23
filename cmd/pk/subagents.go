@@ -10,6 +10,7 @@ import (
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/helperregistry"
 	"github.com/pkyanam/pk/internal/mcpclient"
+	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/subagents"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -24,6 +25,8 @@ type subagentRuntimeConfig struct {
 	SessionDir      string
 	Model           string
 	Effort          string
+	ProviderID      string
+	ProviderConfig  *providers.Provider
 	SkillsDirs      []string
 	SystemPrompt    string
 	PluginManifests []string
@@ -66,21 +69,50 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 	if len(cfg.SkillsDirs) == 0 {
 		cfg.SkillsDirs = append([]string(nil), parent.SkillsDirs...)
 	}
+	if cfg.ProviderID == "" {
+		cfg.ProviderID = parent.ProviderID
+	}
+	if cfg.ProviderConfig != nil {
+		if cfg.ProviderID != "" && cfg.ProviderID != cfg.ProviderConfig.ID {
+			return nil, errors.New("subagent provider configuration does not match the selected provider ID")
+		}
+		cfg.ProviderID = cfg.ProviderConfig.ID
+	}
+	if cfg.ProviderID != "" && cfg.ProviderConfig == nil {
+		providerConfig, err := loadCLIProvider(cfg.ProviderID)
+		if err != nil {
+			return nil, fmt.Errorf("load subagent provider %q: %w", cfg.ProviderID, err)
+		}
+		cfg.ProviderConfig = providerConfig
+	}
 	if cfg.Run == nil {
 		cfg.Run = runner.Run
 	}
 	if cfg.AdapterFactory == nil {
 		cfg.AdapterFactory = func(ctx context.Context, useCodex bool, codexPath string) (llm.Adapter, error) {
+			if cfg.ProviderConfig != nil {
+				return providers.NewClient(*cfg.ProviderConfig)
+			}
 			return prepareAdapter(ctx, useCodex, codexPath)
 		}
 	}
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
-		model = config.DefaultModel
+		if cfg.ProviderConfig != nil && strings.TrimSpace(cfg.ProviderConfig.DefaultModel) != "" {
+			model = cfg.ProviderConfig.DefaultModel
+		} else if cfg.ProviderID != "" && parent.ProviderID == cfg.ProviderID && strings.TrimSpace(parent.Model) != "" {
+			model = parent.Model
+		} else {
+			model = config.DefaultModel
+		}
 	}
 	effort := strings.TrimSpace(cfg.Effort)
 	if effort == "" {
-		effort = strings.TrimSpace(parent.Effort)
+		if cfg.ProviderConfig != nil && strings.TrimSpace(cfg.ProviderConfig.DefaultEffort) != "" {
+			effort = cfg.ProviderConfig.DefaultEffort
+		} else {
+			effort = strings.TrimSpace(parent.Effort)
+		}
 	}
 	if effort == "" {
 		effort = config.DefaultEffort
@@ -91,6 +123,10 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 		SystemPrompt: cfg.SystemPrompt, SkillsDirs: append([]string(nil), cfg.SkillsDirs...),
 		MaxConcurrent: cfg.MaxConcurrent, Depth: 0, Events: cfg.Events,
 		Runner: func(runCtx context.Context, child runner.Options) (runner.RunResult, error) {
+			child.ProviderID = cfg.ProviderID
+			if cfg.ProviderConfig != nil {
+				child.ProviderFingerprint = cfg.ProviderConfig.Fingerprint()
+			}
 			return runSubagent(runCtx, child, cfg)
 		},
 	})
