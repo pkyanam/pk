@@ -229,8 +229,9 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest) (Child, error) 
 	}
 	immediate := m.active < m.cfg.MaxConcurrent && len(m.queue) == 0
 	if !immediate && len(m.queue) >= maxQueuedChildren {
+		active := m.active
 		m.mu.Unlock()
-		return Child{}, fmt.Errorf("subagent queue is full (%d active, %d queued maximum)", m.active, maxQueuedChildren)
+		return Child{}, fmt.Errorf("subagent queue is full (%d active, %d queued maximum)", active, maxQueuedChildren)
 	}
 	id, err := randomID()
 	if err != nil {

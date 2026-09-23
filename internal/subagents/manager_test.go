@@ -371,6 +371,81 @@ func TestCloseWaitsForQueuedEventDelivery(t *testing.T) {
 	}
 }
 
+func TestCancelThenCloseDrainsChildOutputAndTerminalEvent(t *testing.T) {
+	enteredCallback := make(chan Event, 1)
+	releaseCallback := make(chan struct{})
+	delivered := make(chan Event, 8)
+	m, err := New(Config{Workspace: t.TempDir(), Events: func(e Event) {
+		if e.Type == "assistant" {
+			enteredCallback <- e
+			<-releaseCallback
+		}
+		delivered <- e
+	}, Runner: func(ctx context.Context, opts runner.Options) (runner.RunResult, error) {
+		if _, err := fmt.Fprintln(opts.Output, `{"type":"assistant","phase":"commentary","text":"child progress"}`); err != nil {
+			return runner.RunResult{}, err
+		}
+		<-ctx.Done()
+		return runner.RunResult{}, ctx.Err()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Launch(context.Background(), LaunchRequest{Task: "long task", Files: []string{"owned.go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-enteredCallback:
+	case <-time.After(time.Second):
+		t.Fatal("child progress event was not delivered")
+	}
+	if err := m.Cancel(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	go func() { m.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while child event delivery was blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseCallback)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after event delivery resumed")
+	}
+	var events []Event
+	for {
+		select {
+		case e := <-delivered:
+			events = append(events, e)
+		default:
+			goto drained
+		}
+	}
+drained:
+	var previous uint64
+	terminalCanceled := false
+	for _, e := range events {
+		if e.Sequence <= previous {
+			t.Fatalf("event sequence not increasing: previous=%d event=%+v", previous, e)
+		}
+		previous = e.Sequence
+		if e.Type == "subagent" && e.ChildID == child.ID && e.State == "canceled" {
+			terminalCanceled = true
+		}
+	}
+	if !terminalCanceled {
+		t.Fatalf("terminal cancellation event was not drained before Close returned: %+v", events)
+	}
+	status, ok := m.Status(child.ID)
+	if !ok || status.State != "canceled" {
+		t.Fatalf("child status after cancellation = %+v, found=%v", status, ok)
+	}
+}
+
 func TestOwnershipClaimsResolveSymlinkAliasesAndMacCaseAliases(t *testing.T) {
 	workspace := t.TempDir()
 	actual := filepath.Join(workspace, "Actual.go")
