@@ -16,7 +16,7 @@ const AskUserName = "AskUser"
 var askUserDefinition = tool.Definition{Tool: llm.Tool{
 	Type:        llm.ToolFunction,
 	Name:        AskUserName,
-	Description: "Ask the user a concise clarifying question or confirmation when their answer will change your work. Use this when blocked on a missing detail or preference. This tool is not an approval gate for ordinary tool use.",
+	Description: "Ask only when the answer matters. Route each needed question, including follow-ups, through this tool—not prose. Make safe assumptions otherwise. This is not tool approval.",
 	Parameters: map[string]any{
 		"type": "object",
 		"properties": map[string]any{

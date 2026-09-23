@@ -3,6 +3,7 @@ package interaction
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -78,6 +79,64 @@ func TestAskUserCarriesQuestionAndReturnsActualAnswer(t *testing.T) {
 	}
 	if len(llmResult.Output) != 1 || llmResult.Output[0].Value != "Go" {
 		t.Fatalf("unexpected tool result: %#v", llmResult)
+	}
+}
+
+func TestAskUserRoutesSequentialFollowupsAsSeparateQuestions(t *testing.T) {
+	broker := NewBroker(context.Background(), "session-followup")
+	defer broker.Close()
+	base := tool.NewRegistry(tool.StaticTranslators{})
+	translator, ok := DecorateRegistry(base, broker).Resolve(AskUserName)
+	if !ok {
+		t.Fatal("AskUser translator missing")
+	}
+
+	for i, item := range []struct{ id, question, answer string }{
+		{"followup-1", "Where are you going?", "Portland"},
+		{"followup-2", "How many days?", "Three"},
+	} {
+		callContext := &captureToolContext{}
+		finished := make(chan tool.CallStatus, 1)
+		go func(item struct{ id, question, answer string }) {
+			finished <- translator.Translate(callContext, llm.ToolCall{
+				CallID: item.id, Arguments: fmt.Sprintf(`{"question":%q}`, item.question),
+			})
+		}(item)
+
+		select {
+		case question := <-broker.Questions():
+			if question.ID != item.id || question.Text != item.question {
+				t.Fatalf("follow-up %d = %#v, want id %q and text %q", i+1, question, item.id, item.question)
+			}
+			if err := broker.Answer(item.id, item.answer); err != nil {
+				t.Fatalf("answer follow-up %d: %v", i+1, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("follow-up %d was not published", i+1)
+		}
+		if status := <-finished; status.Error != "" || len(status.WaitingFor) != 1 {
+			t.Fatalf("follow-up %d did not complete through AskUser: %#v", i+1, status)
+		}
+	}
+}
+
+func TestAskUserDescriptionKeepsSingleQuestionSchemaAndRoutingRule(t *testing.T) {
+	const want = "Ask only when the answer matters. Route each needed question, including follow-ups, through this tool—not prose. Make safe assumptions otherwise. This is not tool approval."
+	if got := askUserDefinition.Tool.Description; got != want {
+		t.Fatalf("AskUser description = %q, want %q", got, want)
+	}
+	parameters := askUserDefinition.Tool.Parameters
+	properties, ok := parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("AskUser properties = %#v", parameters["properties"])
+	}
+	for _, key := range []string{"question", "choices", "kind"} {
+		if _, exists := properties[key]; !exists {
+			t.Errorf("backward-compatible single-question property %q missing", key)
+		}
+	}
+	if got := askUserDefinition.Tool.Name; got != AskUserName {
+		t.Fatalf("AskUser tool name changed: %q", got)
 	}
 }
 
