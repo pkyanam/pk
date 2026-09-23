@@ -563,6 +563,36 @@ describe("OpenTUI application", () => {
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
   })
 
+  test("keeps the composer responsive through a silent model gap, steering, and cancel completion", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", capabilities: ["steer"] } }))
+    await act(async () => { await setup.mockInput.typeText("Start a task that takes a while") })
+    act(() => setup.mockInput.pressEnter())
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)) })
+    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [1-9]\d*s/)
+    const composer = (setup.renderer.root as any).findDescendantById("composer")
+    await act(async () => { await setup.mockInput.typeText("Keep the change minimal") })
+    expect(composer.plainText).toBe("Keep the change minimal")
+    act(() => setup.mockInput.pressEnter())
+    const steer = fake.sent.find((item) => item.type === "steer")!
+    expect(steer.payload?.text).toBe("Keep the change minimal")
+    expect(composer.plainText).toBe("")
+
+    await act(async () => { await setup.mockInput.pressKeys(["ESCAPE"], 100) })
+    expect(fake.sent.some((item) => item.type === "cancel")).toBe(true)
+    expect(setup.captureCharFrame()).toContain("Waiting for model")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+    await setup.waitForFrame((frame) => frame.includes("Ready"))
+    await act(async () => { await setup.mockInput.typeText("A fresh follow-up") })
+    expect(composer.plainText).toBe("A fresh follow-up")
+  })
+
   test("only offers steering when the start handshake advertises the capability", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })

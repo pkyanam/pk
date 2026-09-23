@@ -464,3 +464,10 @@ gates or imply that every backlog item is complete.
 - Affected Go race suites pass after correcting the new large-prompt test to account for the existing ellipsis marker. History metadata is included in entry/page display budgets.
 
 - GitHub-source install activated clean `2e365e8`, release `20260923T093118.840648000Z-7bd1d5efc551-b59e58a0`. Native Cmux reload returned the owned demo; Enter on Connection type switched to Remote Streamable HTTP without saving, with the matching focused hint. Canceled the form without configuration changes.
+
+### 2026-09-23 09:37 UTC — stream failure ordering and reliability audit
+- `3dbd31e`: reproduced a delayed assistant delta arriving after `request_failed` because the error path bypassed timer cleanup and serialized delivery. Changed it to the existing failure-event path; failing-before/passing-after regression plus the modelstream race suite pass. This is not evidence that the unrelated native freeze is fixed.
+- Native `/new` on installed `2e365e8` shows the mint ASCII wordmark, plain pk header, welcome actions below the wordmark, and bottom activity row. No stale starting-session text remained.
+- Luna lifecycle audit found no reproducible native-freeze cause; added a simulated silent-gap/steer/cancel/follow-up regression. It covers UI event state, not minute-long provider latency or native terminal input.
+- Upstream session-store audit confirms no public one-pass API combines snapshot metadata and transcript items. `Inspect` and `Items` each decode/replay the log; avoiding that safely needs an upstream combined API or carefully invalidated metadata index. No custom replay decoder introduced.
+- A bounded two-fixture, two-repetition current-pk versus pinned-Unreal comparison is being prepared, with matched Luna/low settings, 90-second phases and 15-minute overall cap; no repeated paid runs are authorized for this cohort.
