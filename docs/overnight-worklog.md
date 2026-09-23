@@ -355,3 +355,15 @@ gates or imply that every backlog item is complete.
   revise the privacy page after parent review; then use remaining time for freeze-safe GUI checks,
   benchmark follow-up, and local demo editing. Deadline is 08:00 EDT; report remaining work instead of
   claiming full completion.
+
+## 03:40 EDT — history, integrations, streaming, and installation checkpoint
+
+- `1964201` fixes `/history` in a fresh session and adds the interactive skills browser. `/history` loads the latest saved page; `/history older` follows the cursor. UI checks passed with 72 tests/341 assertions.
+- `91b14c3` preserves image tool results in compatible Chat Completions requests, grouping parallel calls and keeping image parts out of tool-role messages. Local strict HTTP fixtures pass; remote-provider capability is not implied.
+- `d9d7407` flushes visible streamed text during provider pauses within the 75 ms coalescing window, with serialized terminal/retry delivery and a barrier-controlled ordering test.
+- `fd31672` exposes opt-in full/compact Bash-result context policy across foreground, RPC, detached tasks, and children. Default remains full; the existing mixed pilot does not establish general savings. It also adds asynchronous integration/session-management RPC routes.
+- A full race run caught detached-task terminal writes regressing the durable event cursor. Terminal transitions now serialize with event appends; a deterministic regression and repeated race test pass. The subsequent isolated full race suite and `go vet ./...` pass. Updater installation of this checkpoint is in progress.
+- User clarified with a screenshot that long-answer layout looks correct; the footer/composer contamination occurs in copied text. Selection handling remains under active investigation.
+- User requested a root `install.sh` and README curl one-liner. A clean-directory installer test is in progress using separate install directories; do not claim it published until its commit and public URL are verified.
+- WebSearch/WebFetch ship using TinyFish's documented free APIs, which require a key. Easy secure setup and authenticated live validation remain outstanding; no paid proxy or undisclosed fallback is used.
+- Rich session panel, guided MCP/plugin setup, native attachment checks, further benchmark evidence, and real Cmux/Cap video remain required before the 08:00 report.
