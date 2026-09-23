@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -995,11 +996,31 @@ func readMetadata(ctx context.Context, store *localfile.Store, sessionsDir strin
 }
 
 func compact(value string, maxRunes int) string {
-	runes := []rune(strings.Join(strings.Fields(value), " "))
-	if len(runes) <= maxRunes {
-		return string(runes)
+	// Build only the normalized prefix needed for the display preview. The old
+	// strings.Fields + []rune path materialized the entire assistant response,
+	// often tens or hundreds of KiB, even though callers retain at most 320 runes.
+	runes := make([]rune, 0, maxRunes+1)
+	pendingSpace := false
+	for _, r := range value {
+		if unicode.IsSpace(r) {
+			if len(runes) > 0 {
+				pendingSpace = true
+			}
+			continue
+		}
+		if pendingSpace {
+			if len(runes) == maxRunes {
+				return string(runes) + "…"
+			}
+			runes = append(runes, ' ')
+			pendingSpace = false
+		}
+		runes = append(runes, r)
+		if len(runes) > maxRunes {
+			return string(runes[:maxRunes]) + "…"
+		}
 	}
-	return string(runes[:maxRunes]) + "…"
+	return string(runes)
 }
 
 func matches(item Session, query string) bool {
