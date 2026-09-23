@@ -45,3 +45,12 @@ The wire behavior follows ACP v1's [overview](https://agentclientprotocol.com/pr
 [prompt turn](https://agentclientprotocol.com/protocol/v1/prompt-turn), and
 [stdio transport](https://agentclientprotocol.com/protocol/v1/transports)
 requirements.
+
+To check stdio interoperability without credentials or a model call, run
+`scripts/acp-sdk-smoke/run.sh`. It installs the official
+`@agentclientprotocol/sdk` pinned at 1.5.0 into a temporary directory, builds a
+fake local ACP agent using a fixed assistant response, and exercises initialize,
+session creation, prompt updates, and the `end_turn` response. The script uses a
+temporary private home and removes its temporary files on exit. It verifies the
+wire exchange with the SDK; it does not claim compatibility testing with a
+specific ACP editor.
