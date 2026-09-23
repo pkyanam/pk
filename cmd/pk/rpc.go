@@ -94,6 +94,7 @@ type rpcServer struct {
 	skillOperationRequestID string
 	reloadPrepared          bool
 	activeInputs            chan runner.Input
+	activeSteerRequests     chan steeringRequest
 	pendingSteers           map[string]func(error)
 	active                  bool
 	quit                    bool
@@ -496,6 +497,7 @@ func (s *rpcServer) completeTurn(result turnDone) {
 	s.active = false
 	s.activeCancel = nil
 	s.activeInputs = nil
+	s.activeSteerRequests = nil
 	pending := make([]func(error), 0, len(s.pendingSteers))
 	for _, reject := range s.pendingSteers {
 		pending = append(pending, reject)
@@ -738,12 +740,18 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.activeCancel = cancel
 		s.active = true
 		var inputStream chan runner.Input
+		var steeringRequests chan steeringRequest
+		var sessionReady chan string
 		steeringEnabled := s.steeringEnabled
 		if steeringEnabled {
 			inputStream = make(chan runner.Input, 64)
+			steeringRequests = make(chan steeringRequest, 64)
+			sessionReady = make(chan string, 1)
 			s.activeInputs = inputStream
+			s.activeSteerRequests = steeringRequests
 		} else {
 			s.activeInputs = nil
+			s.activeSteerRequests = nil
 		}
 		broker := interaction.NewBroker(ctx, sessionID)
 		s.broker = broker
@@ -771,6 +779,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}()
 		go func() {
+			defer cancel()
+			if steeringRequests != nil {
+				go s.prepareSteeringInputs(ctx, steeringRequests, inputStream, workspace, s.sessionDir, sessionID, sessionReady)
+			}
 			pagesPersisted := false
 			if len(files) > 0 {
 				var identityErr error
@@ -930,6 +942,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				s.session = id
 				s.opts.SessionID = id
 				s.mu.Unlock()
+				if sessionReady != nil {
+					select {
+					case sessionReady <- id:
+					default:
+					}
+				}
 				_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
 			}
 			additional := []cliRegistryExtension{tinyFishRegistryExtension(broker.Context())}
@@ -1076,6 +1094,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.mu.Lock()
 		cancel, active, sessionID, model, effort := s.activeCancel, s.active, s.session, s.opts.Model, s.opts.Effort
 		s.activeInputs = nil
+		s.activeSteerRequests = nil
 		s.mu.Unlock()
 		if cancel != nil {
 			cancel()
@@ -1139,16 +1158,20 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "reload_exit", map[string]any{"ready": true})
 	case "steer":
 		text := get("text")
-		if strings.TrimSpace(text) == "" {
-			s.rejectSteer(msg.ID, "steering text is empty")
-			return
-		}
+		var files []string
 		if raw, present := payload["files"]; present && len(raw) > 0 {
-			var files []json.RawMessage
-			if err := json.Unmarshal(raw, &files); err != nil || len(files) != 0 {
-				s.rejectSteer(msg.ID, "steering attachments are not supported; files were not queued")
+			if err := json.Unmarshal(raw, &files); err != nil {
+				s.rejectSteer(msg.ID, "files must be an array of paths: "+err.Error())
 				return
 			}
+		}
+		if strings.TrimSpace(text) == "" && len(files) == 0 {
+			s.rejectSteer(msg.ID, "steering text or at least one attachment is required")
+			return
+		}
+		if len(files) > attachments.DefaultLimits().MaxFiles {
+			s.rejectSteer(msg.ID, fmt.Sprintf("too many steering attachments: got %d, limit %d", len(files), attachments.DefaultLimits().MaxFiles))
+			return
 		}
 		if strings.TrimSpace(msg.ID) == "" {
 			s.rejectSteer(msg.ID, "steering request ID is required")
@@ -1163,10 +1186,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		queuedEvent := make(chan struct{})
 		inputID, requestID := msg.ID, msg.ID
+		artifacts := &steeringArtifactCleanup{}
 		var replyOnce sync.Once
 		reply := func(acceptedErr error) {
 			replyOnce.Do(func() {
 				<-queuedEvent
+				if acceptedErr != nil {
+					artifacts.run()
+				}
 				s.mu.Lock()
 				delete(s.pendingSteers, inputID)
 				sessionID := s.session
@@ -1179,9 +1206,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			})
 		}
 		s.mu.Lock()
-		inputStream := s.activeInputs
+		requestQueue := s.activeSteerRequests
 		sessionID := s.session
-		if !s.active || inputStream == nil {
+		if !s.active || s.activeInputs == nil || requestQueue == nil {
 			s.mu.Unlock()
 			close(queuedEvent)
 			s.rejectSteer(msg.ID, "there is no active foreground run to steer")
@@ -1197,17 +1224,16 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		s.pendingSteers[inputID] = reply
-		steerInput := runner.Input{ID: inputID, Text: text, Accepted: reply}
 		select {
-		case inputStream <- steerInput:
+		case requestQueue <- steeringRequest{requestID: requestID, inputID: inputID, text: text, files: append([]string(nil), files...), reply: reply, artifacts: artifacts}:
 			s.mu.Unlock()
-			_ = s.emit(msg.ID, "input_queued", map[string]any{"input_id": inputID, "session_id": sessionID})
+			_ = s.emit(msg.ID, "input_queued", map[string]any{"input_id": inputID, "session_id": sessionID, "attachments": len(files)})
 			close(queuedEvent)
 		default:
 			delete(s.pendingSteers, inputID)
 			s.mu.Unlock()
 			close(queuedEvent)
-			s.rejectSteer(msg.ID, "interactive input queue is full; text was not queued")
+			s.rejectSteer(msg.ID, "interactive input queue is full; message and files were not queued")
 		}
 	case "answer_question":
 		var questionID, answer string

@@ -111,13 +111,13 @@ func TestRPCSteerCancellationRejectsPendingAndStaleInputs(t *testing.T) {
 	waitSteeringEvent(t, sink, "steer-stale", "input_rejected")
 }
 
-func TestRPCSteerRejectsAttachmentsWithoutQueueingText(t *testing.T) {
+func TestRPCSteerRejectsMalformedAttachmentPayloadWithoutQueueingText(t *testing.T) {
 	sink := &rpcEventSink{events: make(chan []byte, 8)}
 	server := &rpcServer{ctx: context.Background(), output: sink, started: true, steeringEnabled: true, session: "session-x", requestTypes: map[string]string{}}
-	server.handle(rpcMessage{Version: 1, ID: "steer-file", Type: "steer", Payload: json.RawMessage(`{"text":"inspect this","files":["note.txt"]}`)}, make(chan turnDone, 1))
+	server.handle(rpcMessage{Version: 1, ID: "steer-file", Type: "steer", Payload: json.RawMessage(`{"text":"inspect this","files":"note.txt"}`)}, make(chan turnDone, 1))
 	event := waitSteeringEvent(t, sink, "steer-file", "input_rejected")
 	message := event.Payload.(map[string]any)["message"].(string)
-	if !strings.Contains(message, "attachments are not supported") {
+	if !strings.Contains(message, "files must be an array") {
 		t.Fatalf("unexpected rejection message %q", message)
 	}
 	if server.pendingSteers != nil && len(server.pendingSteers) != 0 {

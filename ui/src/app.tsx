@@ -518,6 +518,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const newSessionCommandID = useRef("")
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
+  const pendingSteerFiles = useRef(new Map<string, { files: string[]; inputId?: string; loaded?: boolean; summary?: string }>())
   const pendingClipboardRequests = useRef(new Map<string, { target: "composer" | "question"; questionID?: string; sessionID: string; sessionGeneration: number }>())
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const latestClipboardWriteID = useRef("")
@@ -531,6 +532,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingUsageCancels = useRef(new Set<string>())
   const historySessionID = useRef("")
   const pendingSteers = useRef(new Map<string, number>())
+  const pendingSteerDrafts = useRef(new Map<string, string>())
   const steeringNegotiated = useRef(false)
   const reloadCommandId = useRef("")
   const reloadReady = useRef(false)
@@ -703,8 +705,21 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   const finishPendingSteers = (message: string) => {
-    const ids = new Set(pendingSteers.current.values())
+    const pending = [...pendingSteers.current.entries()]
+    const ids = new Set(pending.map(([, entryId]) => entryId))
     if (ids.size) setEntries((current) => current.map((entry) => ids.has(entry.id) ? { ...entry, delivery: "rejected", deliveryMessage: message } : entry))
+    if (pending.length === 1 && !(textarea.current?.plainText ?? "").trim()) {
+      const originalDraft = pendingSteerDrafts.current.get(pending[0]![0]) ?? ""
+      if (originalDraft.trim()) {
+        textarea.current?.setText(originalDraft)
+        textarea.current?.focus()
+        setDraft(originalDraft)
+      }
+    }
+    for (const [commandId] of pending) {
+      pendingSteerFiles.current.delete(commandId)
+      pendingSteerDrafts.current.delete(commandId)
+    }
     pendingSteers.current.clear()
   }
 
@@ -1023,16 +1038,29 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "input_queued": {
         const requestId = String(event.id ?? data.command_id ?? "")
         const entryId = pendingSteers.current.get(requestId)
+        const pendingFiles = pendingSteerFiles.current.get(requestId)
+        if (pendingFiles) pendingFiles.inputId = String(data.input_id ?? data.id ?? "") || undefined
         if (entryId !== undefined) updateEntry(entryId, (entry) => ({ ...entry, delivery: "queued", deliveryMessage: undefined }))
         break
       }
       case "input_accepted": {
         const requestId = String(event.id ?? data.command_id ?? "")
         const entryId = pendingSteers.current.get(requestId)
+        const pendingFiles = pendingSteerFiles.current.get(requestId)
         if (entryId !== undefined) {
           updateEntry(entryId, (entry) => ({ ...entry, delivery: "accepted", deliveryMessage: undefined }))
           pendingSteers.current.delete(requestId)
         }
+        pendingSteerDrafts.current.delete(requestId)
+        // Loading may finish before the input is durably accepted. Keep the
+        // visible queue until this ack so a subsequent rejection restores
+        // both the draft and its files.
+        if (pendingFiles?.loaded) {
+          const loaded = new Set(pendingFiles.files)
+          updateFileQueue((current) => current.filter((path) => !loaded.has(path)))
+          addEntry("system", pendingFiles.summary ?? `Loaded ${pendingFiles.files.length} steering attachment${pendingFiles.files.length === 1 ? "" : "s"}`)
+        }
+        pendingSteerFiles.current.delete(requestId)
         break
       }
       case "input_rejected": {
@@ -1043,18 +1071,43 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           const messageEntry = entries.find((entry) => entry.id === entryId)
           updateEntry(entryId, (entry) => ({ ...entry, delivery: "rejected", deliveryMessage: reason }))
           pendingSteers.current.delete(requestId)
+          const originalDraft = pendingSteerDrafts.current.get(requestId) ?? messageEntry?.text ?? ""
+          pendingSteerDrafts.current.delete(requestId)
           if (!(textarea.current?.plainText ?? "").trim() && messageEntry) {
-            textarea.current?.setText(messageEntry.text)
-            textarea.current?.focus()
-            setDraft(messageEntry.text)
+            if (originalDraft.trim()) {
+              textarea.current?.setText(originalDraft)
+              textarea.current?.focus()
+              setDraft(originalDraft)
+            }
           }
         }
+        pendingSteerFiles.current.delete(requestId)
         addEntry("system", `Steering message not accepted · ${reason}`)
         break
       }
       case "attachments_loaded": {
-        const submitted = event.id ? pendingPromptFiles.current.get(event.id) : undefined
+        const steerRequestId = event.id ? String(event.id) : ""
+        const pendingSteerFileRecord = steerRequestId ? pendingSteerFiles.current.get(steerRequestId) : undefined
+        const inputId = String(data.input_id ?? "")
+        const isSteeringAttachment = data.steering === true
+          && pendingSteerFileRecord !== undefined
+          && (!pendingSteerFileRecord.inputId || pendingSteerFileRecord.inputId === inputId)
+        const submitted = isSteeringAttachment
+          ? pendingSteerFileRecord.files
+          : event.id ? pendingPromptFiles.current.get(event.id) : undefined
         if (event.id) pendingPromptFiles.current.delete(event.id)
+        if (isSteeringAttachment) {
+          const files = Array.isArray(data.files) ? data.files : []
+          const descriptions = files.map((file: any) => {
+            const name = String(file?.path ?? "file").split(/[\\/]/).pop() || "file"
+            const type = String(file?.kind ?? file?.content_type ?? "file")
+            const pages = Number(file?.pages_extracted ?? file?.pages_total)
+            return `${name} (${type}${Number.isFinite(pages) && pages > 0 ? `, ${pages} pages` : ""}${file?.truncated ? ", truncated" : ""})`
+          })
+          pendingSteerFileRecord.loaded = true
+          pendingSteerFileRecord.summary = `Loaded ${descriptions.join(" · ") || `${submitted?.length ?? 0} attachment${submitted?.length === 1 ? "" : "s"}`}`
+          break
+        }
         if (submitted?.length) {
           updateFileQueue((current) => current.filter((path) => !submitted.includes(path)))
           const files = Array.isArray(data.files) ? data.files : []
@@ -1731,10 +1784,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             const reason = String(data.message ?? "The active turn could not accept this message.")
             updateEntry(entryId, (entry) => ({ ...entry, delivery: "rejected", deliveryMessage: reason }))
             pendingSteers.current.delete(event.id)
+            pendingSteerFiles.current.delete(event.id)
+            const originalDraft = pendingSteerDrafts.current.get(event.id) ?? messageEntry?.text ?? ""
+            pendingSteerDrafts.current.delete(event.id)
             if (!(textarea.current?.plainText ?? "").trim() && messageEntry) {
-              textarea.current?.setText(messageEntry.text)
-              textarea.current?.focus()
-              setDraft(messageEntry.text)
+              if (originalDraft.trim()) {
+                textarea.current?.setText(originalDraft)
+                textarea.current?.focus()
+                setDraft(originalDraft)
+              }
             }
           }
         }
@@ -1834,6 +1892,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       addEntry("system", `Already queued · ${path}`)
       return true
     }
+    if ([...pendingSteerFiles.current.values()].some((pending) => pending.files.includes(path))) {
+      addEntry("system", `Already being sent with a steering message · ${path}`)
+      return false
+    }
     if (current.length >= 8) {
       addEntry("system", "The attachment queue is full (8 files). Send a prompt or remove a file first.")
       return false
@@ -1875,7 +1937,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       clearComposer(true)
       return
     }
-    if (!text || !connected) return
+    const activeForegroundTurn = !activeTaskId && (waiting.current || turnActive.current || busyRef.current)
+    const alreadySteeredFiles = new Set([...pendingSteerFiles.current.values()].flatMap((pending) => pending.files))
+    const sendableFiles = queuedFilesRef.current.filter((path) => !alreadySteeredFiles.has(path))
+    const canSteerFilesOnly = activeForegroundTurn && steeringEnabled && sendableFiles.length > 0
+    if ((!text && !canSteerFilesOnly) || !connected) return
     const leadingPath = leadingPathFromPrompt(text)
     if (leadingPath && "ambiguous" in leadingPath) {
       addEntry("system", 'That looks like a file path with spaces. Quote the path, for example: "/path/to/meeting notes.pdf" describe this file.')
@@ -1908,22 +1974,21 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (!activeTaskId && (waiting.current || turnActive.current || busyRef.current)) {
-      if (queuedFilesRef.current.length) {
-        addEntry("system", "Steering messages cannot include queued file attachments yet. The draft and file queue are kept; send after this turn or clear files with /files clear.")
-        return
-      }
       if (!steeringEnabled) {
         addEntry("system", "This session does not support mid-turn steering. Your draft is kept; use Esc to stop the active turn, then send it.")
         return
       }
-      const commandId = transport.send("steer" as any, { text: promptText })
+      const files = sendableFiles
+      const commandId = transport.send("steer" as any, { text: promptText, ...(files.length ? { files } : {}) })
       if (!commandId) {
         addEntry("system", "Could not queue this steering message because the agent connection is unavailable. Your draft is kept.")
         return
       }
       const id = entryId.current++
       pendingSteers.current.set(commandId, id)
-      const steeringEntry: Entry = { id, role: "user", text: promptText, delivery: "queued" }
+      pendingSteerDrafts.current.set(commandId, promptText)
+      if (files.length) pendingSteerFiles.current.set(commandId, { files })
+      const steeringEntry: Entry = { id, role: "user", text: promptText || `Attached ${files.length} file${files.length === 1 ? "" : "s"}`, delivery: "queued" }
       setEntries((previous) => appendTranscriptEntries(previous, steeringEntry))
       clearComposer(true)
       return
