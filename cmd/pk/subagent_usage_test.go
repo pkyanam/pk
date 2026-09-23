@@ -78,6 +78,7 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 	counts := map[string]int{}
 	usageByResponse := map[string]map[string]any{}
 	var unavailableEvent map[string]any
+	var terminalState map[string]any
 	scanner := bufio.NewScanner(strings.NewReader(out.String()))
 	for scanner.Scan() {
 		var event map[string]any
@@ -96,6 +97,9 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 		if typ == "subagent_accounting_unavailable" {
 			unavailableEvent = event
 		}
+		if typ == "subagent_state" {
+			terminalState = event
+		}
 		if _, exists := event["session_id"]; exists {
 			t.Fatalf("child session id leaked into parent CLI stream: %v", event)
 		}
@@ -106,8 +110,11 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if counts["parent_marker"] != 40 || counts["subagent_started"] != 1 || counts["subagent_usage"] != 2 || counts["subagent_accounting_unavailable"] != 1 {
+	if counts["parent_marker"] != 40 || counts["subagent_started"] != 1 || counts["subagent_usage"] != 2 || counts["subagent_accounting_unavailable"] != 1 || counts["subagent_state"] != 1 {
 		t.Fatalf("forwarded event counts=%v", counts)
+	}
+	if terminalState == nil || terminalState["child_id"] != child.ID || terminalState["state"] != "completed" {
+		t.Fatalf("child terminal state=%v, want completed for %s", terminalState, child.ID)
 	}
 	available := usageByResponse["r-1"]
 	if available == nil || available["input_tokens"] != float64(11) || available["output_tokens"] != float64(5) || available["usage_available"] != true {

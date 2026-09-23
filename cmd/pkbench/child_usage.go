@@ -2,6 +2,17 @@ package main
 
 import "encoding/json"
 
+func validSubagentActionCoverage(record runRecord) bool {
+	return subagentActionCoverageAvailable(record) &&
+		record.SubagentStartedChildren >= 2 && record.SubagentCompletedChildren >= 2 &&
+		record.SubagentChildrenWithUsage >= 2
+}
+
+func subagentActionCoverageAvailable(record runRecord) bool {
+	return record.SubagentStartedAvailable && record.SubagentStateAvailable && record.SubagentChildrenUsageAvail &&
+		record.SubagentInputAvailable && record.SubagentOutputAvailable
+}
+
 func observeParentResponse(sum *usageSum, event map[string]any, usage bool) {
 	responseID := stringValue(event["response_id"])
 	if responseID == "" {
@@ -32,6 +43,19 @@ func observeChildStart(sum *usageSum, event map[string]any) {
 		sum.childStarted = map[string]bool{}
 	}
 	sum.childStarted[childID] = true
+}
+
+func observeChildState(sum *usageSum, event map[string]any) {
+	sum.childActivityObserved = true
+	childID, state := stringValue(event["child_id"]), stringValue(event["state"])
+	if childID == "" || (state != "completed" && state != "failed" && state != "canceled") {
+		sum.childUnknownResponse = true
+		return
+	}
+	if sum.childStates == nil {
+		sum.childStates = map[string]string{}
+	}
+	sum.childStates[childID] = state
 }
 
 func observeChildResponse(sum *usageSum, event map[string]any, usage bool) {
@@ -113,6 +137,10 @@ func nonnegativeCounter(value any) (int64, bool) {
 
 func finalizeUsageAccounting(sum *usageSum) {
 	sum.subagentResponsesAvailable = !sum.childUnknownResponse && (!sum.childStartToolSeen || len(sum.childStarted) > 0)
+	sum.subagentStartedChildren = len(sum.childStarted)
+	sum.subagentStartedAvailable = !sum.childUnknownResponse && (!sum.childStartToolSeen || len(sum.childStarted) > 0)
+	sum.subagentStateAvailable = sum.subagentStartedAvailable
+	sum.subagentChildrenUsageAvailable = sum.subagentStartedAvailable
 	for childID := range sum.childStarted {
 		found := false
 		for key := range sum.childResponses {
@@ -123,11 +151,31 @@ func finalizeUsageAccounting(sum *usageSum) {
 		}
 		if !found {
 			sum.subagentResponsesAvailable = false
+			sum.subagentChildrenUsageAvailable = false
+		}
+		state, stateFound := sum.childStates[childID]
+		if !stateFound {
+			sum.subagentStateAvailable = false
+		} else if state == "completed" {
+			sum.subagentCompletedChildren++
+		}
+		if !childHasCompleteUsage(sum.childResponses, childID) {
+			sum.subagentChildrenUsageAvailable = false
+		} else {
+			sum.subagentChildrenWithUsage++
 		}
 	}
 	if !sum.childActivityObserved && !sum.childStartToolSeen {
 		// No child tool call or child lifecycle event was present in this trace.
 		sum.subagentResponsesAvailable = true
+		sum.subagentStartedAvailable = true
+		sum.subagentStateAvailable = true
+		sum.subagentChildrenUsageAvailable = true
+	}
+	if sum.childUnknownResponse {
+		sum.subagentStartedAvailable = false
+		sum.subagentStateAvailable = false
+		sum.subagentChildrenUsageAvailable = false
 	}
 	childUsageComplete := sum.subagentResponsesAvailable && allResponseUsagePresent(sum.childResponses)
 	sum.subagentInputAvailable, sum.subagentOutputAvailable = childUsageComplete, childUsageComplete
@@ -155,6 +203,20 @@ func finalizeUsageAccounting(sum *usageSum) {
 	sum.combinedOutputAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "output") && sum.subagentOutputAvailable
 	sum.combinedCachedAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "cached") && sum.subagentCachedAvailable
 	sum.combinedWritesAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "writes") && sum.subagentWritesAvailable
+}
+
+func childHasCompleteUsage(responses map[responseKey]*responseUsage, childID string) bool {
+	count := 0
+	for key, response := range responses {
+		if key.childID != childID {
+			continue
+		}
+		count++
+		if !response.usageSeen || !response.inputAvailable || !response.outputAvailable {
+			return false
+		}
+	}
+	return count > 0
 }
 
 func allResponseUsagePresent[K comparable](responses map[K]*responseUsage) bool {

@@ -70,6 +70,8 @@ func subagentJSONLForwarder(out io.Writer, enabled bool) func(subagents.Event) {
 			started[event.ChildID] = struct{}{}
 			mu.Unlock()
 			_ = writeSubagentJSONLine(out, map[string]any{"type": "subagent_started", "child_id": event.ChildID})
+		case event.Type == "subagent" && (event.State == "completed" || event.State == "failed" || event.State == "canceled"):
+			_ = writeSubagentJSONLine(out, map[string]any{"type": "subagent_state", "child_id": event.ChildID, "state": event.State})
 		case event.Type == "usage":
 			var usage childUsageRecord
 			if len(event.Payload) == 0 || json.Unmarshal(event.Payload, &usage) != nil || !validChildUsage(usage) {

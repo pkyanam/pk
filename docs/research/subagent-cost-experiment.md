@@ -12,8 +12,11 @@ mid-session. It must retain all five operations and the same manager behavior.
 
 The experimental registry decorator and deterministic tests live in
 `cmd/pkbench/experiment/subagent_dispatch.go`. Tests cover all five actions,
-invalid arguments and result decoding after recreating the decorator. No CLI
-policy or production default selects it yet.
+invalid arguments and result decoding after recreating the decorator. Tagged benchmark builds can select `PK_BENCH_POLICY=compact-subagent-schema`
+or the unchanged `subagent-schema-current` baseline. Normal builds ignore these
+policies. Use isolated benchmark homes; do not mix experimental session schemas
+with ordinary installed sessions. The adapter rejects preparation or schema
+mismatches before contacting a provider.
 
 Before live evaluation:
 
@@ -32,3 +35,9 @@ Before live evaluation:
 Do not promote the experimental schema based only on its byte size. A smaller
 schema can cost more if it causes extra turns, invalid arguments or failed work.
 The existing compact-tool-description pilot did not establish a general gain.
+
+The real tagged-CLI loopback capture passes both policies: baseline exposes nine
+tools / 4,004 schema bytes; dispatcher exposes five tools / 3,197 bytes. The four
+non-subagent tools are unchanged. Both requests used synthetic local responses,
+so this establishes request composition, not live cost or quality. Reproduce
+with `python3 scripts/benchmark-capture-smoke.py`.
