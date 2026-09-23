@@ -1655,7 +1655,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
-		if err := rpcProviderStore().Put(provider); err != nil {
+		store := rpcProviderStore()
+		if err := preserveProviderCredentials(store, &provider); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		if err := store.Put(provider); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}

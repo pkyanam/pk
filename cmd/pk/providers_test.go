@@ -38,6 +38,38 @@ func TestProviderCommandsStoreKeyFromStdinAndListRedactedSummary(t *testing.T) {
 	}
 }
 
+func TestProviderSetPreservesCredentialsOnlyForSameEndpoint(t *testing.T) {
+	store := providers.Store{Home: filepath.Join(t.TempDir(), "pk")}
+	if err := store.Put(providers.Provider{ID: "custom", Protocol: providers.ProtocolChatCompletions, BaseURL: "https://old.example.test/v1", APIKey: "old-secret", DefaultModel: "old-model"}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := runProviderCommandWithStore(context.Background(), []string{"set", "--id", "custom", "--protocol", "chat_completions", "--base-url", "https://old.example.test/v1", "--model", "new-model"}, strings.NewReader(""), &out, &errOut, store)
+	if code != 0 {
+		t.Fatalf("same-endpoint set code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	got, err := store.Get("custom")
+	if err != nil || got.APIKey != "old-secret" || got.DefaultModel != "new-model" {
+		t.Fatalf("same-endpoint set did not preserve key/update model: %+v err=%v", got, err)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = runProviderCommandWithStore(context.Background(), []string{"set", "--id", "custom", "--protocol", "chat_completions", "--base-url", "https://new.example.test/v1"}, strings.NewReader(""), &out, &errOut, store)
+	if code == 0 || !strings.Contains(errOut.String(), "configure a new API key source") {
+		t.Fatalf("changed-endpoint set unexpectedly succeeded: code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	got, err = store.Get("custom")
+	if err != nil || got.BaseURL != "https://old.example.test/v1" || got.APIKey != "old-secret" {
+		t.Fatalf("failed endpoint change mutated stored provider: %+v err=%v", got, err)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = runProviderCommandWithStore(context.Background(), []string{"add", "--id", "custom", "--protocol", "chat_completions", "--base-url", "https://old.example.test/v1", "--api-key-stdin"}, strings.NewReader("replacement"), &out, &errOut, store)
+	if code == 0 || !strings.Contains(errOut.String(), "already exists") {
+		t.Fatalf("duplicate add unexpectedly succeeded: code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
 func TestProviderModelsCommandDiscoversEndpointModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"model-b"},{"id":"model-a"}]}`))

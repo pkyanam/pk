@@ -91,7 +91,7 @@ func runProviderCommandWithStore(ctx context.Context, args []string, input io.Re
 		fmt.Fprintf(stdout, "Using provider %s by default.\n", args[1])
 		return 0
 	case "add", "set":
-		return runProviderPut(ctx, args[1:], input, stdout, stderr, store)
+		return runProviderPut(ctx, args[1:], input, stdout, stderr, store, args[0] == "set")
 	case "remove", "rm":
 		if len(args) != 2 {
 			printProviderUsage(stderr)
@@ -128,7 +128,7 @@ func runProviderCommandWithStore(ctx context.Context, args []string, input io.Re
 	}
 }
 
-func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout, stderr io.Writer, store providers.Store) int {
+func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout, stderr io.Writer, store providers.Store, allowUpdate bool) int {
 	flags := flag.NewFlagSet("provider add", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	id := flags.String("id", "", "provider ID")
@@ -170,6 +170,22 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 	}
 	if provider.DefaultEffort == "" {
 		provider.DefaultEffort = config.DefaultEffort
+	}
+	if !allowUpdate {
+		configured, err := store.List()
+		if err != nil {
+			fmt.Fprintln(stderr, "pk provider add: could not read provider configuration")
+			return 1
+		}
+		for _, existing := range configured {
+			if existing.ID == provider.ID {
+				fmt.Fprintf(stderr, "pk provider add: provider %q already exists; use `pk provider set` to update it\n", provider.ID)
+				return 2
+			}
+		}
+	} else if err := preserveProviderCredentials(store, &provider); err != nil {
+		fmt.Fprintf(stderr, "pk provider set: %v\n", err)
+		return 2
 	}
 	if err := store.Put(provider); err != nil {
 		fmt.Fprintf(stderr, "pk provider add: %v\n", err)

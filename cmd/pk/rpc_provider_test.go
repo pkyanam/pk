@@ -179,6 +179,22 @@ func TestRPCProviderMutationRoutesRedactSecretsAndRespectActiveSession(t *testin
 	if strings.Contains(string(addedJSON), "literal-secret") || strings.Contains(string(addedJSON), "RPC_MODEL_KEY") == false {
 		t.Fatalf("provider add summary leaked credential or omitted safe env name: %s", addedJSON)
 	}
+	server.handle(rpcMessage{Version: 1, ID: "update-same", Type: "provider_add", Payload: json.RawMessage(`{"id":"rpc","protocol":"chat_completions","base_url":"https://api.example.test/v1","default_model":"model-y"}`)}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.Type != "providers_updated" {
+		t.Fatalf("same-endpoint generic update response=%+v", event)
+	}
+	stored, err := (providers.Store{Home: home}).Get("rpc")
+	if err != nil || stored.APIKeyEnv != "RPC_MODEL_KEY" || stored.DefaultModel != "model-y" {
+		t.Fatalf("same-endpoint RPC update lost credential source: %+v err=%v", stored, err)
+	}
+	server.handle(rpcMessage{Version: 1, ID: "update-changed", Type: "provider_add", Payload: json.RawMessage(`{"id":"rpc","protocol":"chat_completions","base_url":"https://changed.example.test/v1"}`)}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.Type != "error" || !strings.Contains(event.Payload.(map[string]any)["message"].(string), "configure a new API key source") {
+		t.Fatalf("changed-endpoint RPC update response=%+v", event)
+	}
+	stored, err = (providers.Store{Home: home}).Get("rpc")
+	if err != nil || stored.BaseURL != "https://api.example.test/v1" || stored.APIKeyEnv != "RPC_MODEL_KEY" {
+		t.Fatalf("failed endpoint change altered existing provider: %+v err=%v", stored, err)
+	}
 	server.handle(rpcMessage{Version: 1, ID: "default", Type: "provider_default", Payload: json.RawMessage(`{"provider_id":"rpc"}`)}, make(chan turnDone, 1))
 	if event := readRPCEvent(t, sink); event.Type != "providers_updated" || event.Payload.(map[string]any)["default_provider_id"] != "rpc" {
 		t.Fatalf("provider default response=%+v", event)

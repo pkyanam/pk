@@ -53,6 +53,35 @@ func resolveRPCProviderID(id string) (string, error) {
 
 func rpcProviderPresets() []providers.Preset { return providers.Presets() }
 
+// preserveProviderCredentials carries an omitted credential forward only when
+// the configured provider ID still names the same protocol and endpoint.
+func preserveProviderCredentials(store providers.Store, provider *providers.Provider) error {
+	if provider.APIKey != "" || provider.APIKeyEnv != "" {
+		return nil
+	}
+	configured, err := store.List()
+	if err != nil {
+		return fmt.Errorf("read provider configuration")
+	}
+	for _, existing := range configured {
+		if existing.ID != provider.ID {
+			continue
+		}
+		oldBase, oldErr := providers.NormalizeBaseURL(existing.BaseURL)
+		newBase, newErr := providers.NormalizeBaseURL(provider.BaseURL)
+		if oldErr != nil || newErr != nil || existing.Protocol != provider.Protocol || oldBase != newBase {
+			if existing.APIKey == "" && existing.APIKeyEnv == "" {
+				return nil
+			}
+			return fmt.Errorf("provider endpoint changed; configure a new API key source explicitly")
+		}
+		provider.APIKey = existing.APIKey
+		provider.APIKeyEnv = existing.APIKeyEnv
+		return nil
+	}
+	return nil
+}
+
 func putRPCProviderPreset(store providers.Store, presetID, id, key string, model, effort *string) (providers.Provider, error) {
 	preset, ok := providers.PresetByID(presetID)
 	if !ok {
