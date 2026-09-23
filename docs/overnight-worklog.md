@@ -413,3 +413,8 @@ gates or imply that every backlog item is complete.
 - Provider model lookup race fix e9821c4 pushed; 96 UI tests/434 assertions, typecheck/build pass. GitHub updater running against this checkpoint, existing sessions left intact.
 - Installed e9821c4 verified with `pk version`: clean GitHub source, release `20260923T083151.202063000Z-9180ffa6da58-0d042a65`. Existing demo session displayed Update ready without interruption.
 - Cap 0.6.0 source investigation found window targeting crops the display region, so foreground occlusion caused the rejected capture. Raising the dedicated Cmux window through Computer Use then taking a Cap still on window 31835 produced the correct pk view (inspected). Next recording must keep this window frontmost and validate initial footage.
+
+### 2026-09-23 08:36 UTC — allocation fix and capture retry
+- Session preview normalization now stops at the required prefix; Unicode/invalid UTF-8 differential checks and race suite pass. Synthetic 32×128KiB session listing measured 27.3% fewer allocated bytes in one five-iteration run. Reproduction and limitations in docs/performance.md; committed 7436784/d85b6c7.
+- Full UI suite now 97 tests/441 assertions, including repeated-turn/overflow/resize keyboard+mouse recovery. Original reported native freeze remains unreproduced.
+- Second real coding run in /tmp/pk-demo-fixture.4do6j3 passed independent tests and CLI output5. Capture showed generated Finder test window occluding Cmux despite clean Cap still. Rejected/removed second take and edit. Closed only the generated Finder window; next capture must validate an actual short recording, not rely on still behavior.
