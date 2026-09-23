@@ -139,15 +139,46 @@ func (s ConfigStore) ClearOAuthSession(ref string) error {
 		return errors.New("OAuth session reference is unavailable")
 	}
 	return s.withLock(func() error {
+		cfg, err := s.load()
+		if err != nil {
+			return err
+		}
+		serverIndex := -1
+		for i := range cfg.Servers {
+			if cfg.Servers[i].Auth.Mode == "oauth" && cfg.Servers[i].Auth.SecretRef == ref {
+				serverIndex = i
+				break
+			}
+		}
+		if serverIndex < 0 {
+			return errors.New("OAuth session reference is unavailable")
+		}
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return errors.New("could not create replacement OAuth session reference")
+		}
+		replacement := hex.EncodeToString(random[:])
 		values, err := s.loadSecrets()
 		if err != nil {
 			return err
 		}
-		if _, ok := values[ref]; !ok {
-			return errors.New("OAuth session reference is unavailable")
+		previous := cfg.Servers[serverIndex].Auth.SecretRef
+		cfg.Servers[serverIndex].Auth.SecretRef = replacement
+		values[replacement] = ""
+		delete(values, previous)
+		// Publish the new reference first. If secret-store replacement fails,
+		// restore the old configuration while still holding the store lock.
+		if err := s.save(cfg); err != nil {
+			return err
 		}
-		values[ref] = ""
-		return s.saveSecrets(values)
+		if err := s.saveSecrets(values); err != nil {
+			cfg.Servers[serverIndex].Auth.SecretRef = previous
+			if rollbackErr := s.save(cfg); rollbackErr != nil {
+				return fmt.Errorf("clear OAuth session: %v; restore configuration: %w", err, rollbackErr)
+			}
+			return err
+		}
+		return nil
 	})
 }
 
@@ -161,7 +192,11 @@ func (s ConfigStore) OAuthSession(ref string) (string, error) {
 		var ok bool
 		value, ok = values[ref]
 		if !ok {
-			return errors.New("OAuth session reference is unavailable")
+			// A cleared reference is deliberately removed so a stale live token
+			// source cannot write a refresh into it. Treat it as an empty local
+			// session for status/redaction callers.
+			value = ""
+			return nil
 		}
 		return nil
 	})

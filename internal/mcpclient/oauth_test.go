@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,9 +98,94 @@ func TestOAuthStatusRequiresStoredSession(t *testing.T) {
 	if err := store.ClearOAuthSession(ref); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetOAuthSession(ref, data); err == nil {
+		t.Fatal("stale OAuth reference accepted a refresh after logout")
+	}
+	servers, err = store.List()
+	if err != nil || len(servers) != 1 || servers[0].Auth.SecretRef == ref {
+		t.Fatalf("logout did not rotate OAuth reference: servers=%#v err=%v", servers, err)
+	}
+	if err := store.SetOAuthSession(servers[0].Auth.SecretRef, data); err != nil {
+		t.Fatalf("fresh OAuth reference did not accept re-login: %v", err)
+	}
+	if err := store.ClearOAuthSession(servers[0].Auth.SecretRef); err != nil {
+		t.Fatalf("second logout: %v", err)
+	}
 	summary, err = store.Summaries()
 	if err != nil || summary[0].AuthStatus != "needs_login" {
 		t.Fatalf("after logout=%#v err=%v", summary, err)
+	}
+}
+
+func TestOAuthLogoutSerializesAgainstStaleRefresh(t *testing.T) {
+	store := ConfigStore{Home: t.TempDir()}
+	if err := store.AddOAuth(ServerConfig{ID: "remote", URL: "https://example.test/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := store.List()
+	if err != nil || len(servers) != 1 {
+		t.Fatalf("List()=%#v, %v", servers, err)
+	}
+	oldRef := servers[0].Auth.SecretRef
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	refreshErr := make(chan error, 1)
+	logoutErr := make(chan error, 1)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		refreshErr <- store.SetOAuthSession(oldRef, []byte(`{"token":"stale-refresh"}`))
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		logoutErr <- store.ClearOAuthSession(oldRef)
+	}()
+	close(start)
+	wg.Wait()
+	if err := <-logoutErr; err != nil {
+		t.Fatal(err)
+	}
+	_ = <-refreshErr // It may serialize before logout; logout must still win.
+	servers, err = store.List()
+	if err != nil || len(servers) != 1 || servers[0].Auth.SecretRef == oldRef || servers[0].Auth.SecretValue != "" {
+		t.Fatalf("stale refresh restored OAuth session: servers=%#v err=%v", servers, err)
+	}
+	if summary, err := store.Summaries(); err != nil || summary[0].AuthStatus != "needs_login" {
+		t.Fatalf("post-race summary=%#v err=%v", summary, err)
+	}
+}
+
+func TestPersistingTokenSourceCannotRestoreLogoutReference(t *testing.T) {
+	store := ConfigStore{Home: t.TempDir()}
+	if err := store.AddOAuth(ServerConfig{ID: "remote", URL: "https://example.test/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := store.List()
+	if err != nil || len(servers) != 1 {
+		t.Fatalf("List()=%#v, %v", servers, err)
+	}
+	oldRef := servers[0].Auth.SecretRef
+	source := &persistingTokenSource{
+		source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "rotated-access", RefreshToken: "rotated-refresh"}),
+		save: func(updated oauthSession) error {
+			data, err := json.Marshal(updated)
+			if err != nil {
+				return err
+			}
+			return store.SetOAuthSession(oldRef, data)
+		},
+	}
+	if err := store.ClearOAuthSession(oldRef); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Token(); err == nil {
+		t.Fatal("stale token source successfully persisted a token after logout")
+	}
+	summary, err := store.Summaries()
+	if err != nil || len(summary) != 1 || summary[0].AuthStatus != "needs_login" {
+		t.Fatalf("post-refresh summary=%#v err=%v", summary, err)
 	}
 }
 
