@@ -31,5 +31,15 @@ must never execute. On completion, reconcile the provisional display with the au
 response; reset it on retries, cancellation, and failure. Observation must be bounded and
 must not change the bytes consumed by the existing parser.
 
-The phase timer and streaming observer are in development. They are not part of the
-installed UI checkpoint `c589e26`; this document is diagnostic evidence, not a release claim.
+The phase timer shipped in `6813acb`; the streaming observer and UI shipped and were
+installed in `eed3d6e`. The UI passed 40 tests (170 assertions), typechecking, and its build.
+Go race tests cover the observer, RPC bridge, and runner integration. A local SSE server
+test holds completion open and verifies that a visible draft arrives before completion,
+while the session history contains only the eventual authoritative response.
+
+A live Luna RPC smoke delivered its first text at 1.222 seconds and its first authoritative
+assistant event at 2.772 seconds. Tool preparation events preceded a Bash call; the generated
+fixture was verified, and the final confirmation streamed before the turn finished. These
+are observations from one small task, not latency guarantees. Headless/task output remains
+completion-based in this installment. Real Cmux launch was verified; the interactive GUI
+streaming check was interrupted by user activity and is not claimed as passed.
