@@ -219,6 +219,9 @@ func loadOne(ctx context.Context, file *os.File, size int64, rel string, limits 
 		}
 		return Attachment{Path: rel, Kind: Image, ContentType: contentType}, nil
 	}
+	if isGIF(header) {
+		return Attachment{}, errors.New("GIF images are not supported by ViewImage; convert the selected file to PNG, JPEG, WebP, BMP, or TIFF")
+	}
 	if strings.EqualFold(filepath.Ext(rel), ".pdf") {
 		return Attachment{}, errors.New("file extension is .pdf but the file does not have a PDF header")
 	}
@@ -333,6 +336,10 @@ func imageType(header []byte) (string, bool) {
 }
 
 func isPDF(header []byte) bool { return bytes.HasPrefix(header, []byte("%PDF-")) }
+
+func isGIF(header []byte) bool {
+	return len(header) >= 6 && (bytes.Equal(header[:6], []byte("GIF87a")) || bytes.Equal(header[:6], []byte("GIF89a")))
+}
 
 func within(root, path string) bool {
 	rel, err := filepath.Rel(root, path)

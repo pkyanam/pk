@@ -108,6 +108,39 @@ func TestLoadBoundsImagesAndAllowsExplicitSymlink(t *testing.T) {
 	}
 }
 
+func TestLoadGIFReturnsViewImageSpecificGuidance(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "animation.gif"), []byte("GIF89a\x01\x00\x01\x00fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(context.Background(), workspace, []string{"animation.gif"}, Limits{})
+	if err == nil || !strings.Contains(err.Error(), "GIF images are not supported by ViewImage") || !strings.Contains(err.Error(), "convert") {
+		t.Fatalf("GIF attachment error=%v; expected actionable ViewImage limitation", err)
+	}
+}
+
+func TestImageSignaturesMatchViewImageSupportedFormats(t *testing.T) {
+	for _, fixture := range []struct {
+		name   string
+		header []byte
+		mime   string
+	}{
+		{name: "png", header: []byte{137, 'P', 'N', 'G', 13, 10, 26, 10}, mime: "image/png"},
+		{name: "jpeg", header: []byte{0xff, 0xd8, 0xff, 0xe0}, mime: "image/jpeg"},
+		{name: "webp", header: []byte("RIFF\x00\x00\x00\x00WEBP"), mime: "image/webp"},
+		{name: "bmp", header: []byte("BM\x00\x00"), mime: "image/bmp"},
+		{name: "tiff-little-endian", header: []byte{'I', 'I', 42, 0}, mime: "image/tiff"},
+		{name: "tiff-big-endian", header: []byte{'M', 'M', 0, 42}, mime: "image/tiff"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			got, ok := imageType(fixture.header)
+			if !ok || got != fixture.mime {
+				t.Fatalf("imageType(%x)=(%q,%v), want %q", fixture.header, got, ok, fixture.mime)
+			}
+		})
+	}
+}
+
 func TestLoadEnforcesCountTotalAndRegularFileBounds(t *testing.T) {
 	workspace := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt"} {
