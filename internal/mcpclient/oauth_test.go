@@ -161,3 +161,39 @@ func TestStoredOAuthRefreshUsesCallerCancellation(t *testing.T) {
 		t.Fatal("OAuth refresh did not stop after caller cancellation")
 	}
 }
+
+func TestConfiguredOAuthRedactionIncludesRotatedStoredToken(t *testing.T) {
+	store := ConfigStore{Home: t.TempDir()}
+	if err := store.AddOAuth(ServerConfig{ID: "remote", URL: "https://example.test/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := store.List()
+	if err != nil || len(servers) != 1 {
+		t.Fatalf("servers=%+v err=%v", servers, err)
+	}
+	config := servers[0]
+	oldSession, err := json.Marshal(oauthSession{Config: oauth2.Config{ClientID: "fixture", Endpoint: oauth2.Endpoint{TokenURL: "https://issuer.test/token"}}, Token: oauth2.Token{AccessToken: "old-access", RefreshToken: "old-refresh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Auth.SecretValue = string(oldSession)
+	rotated, err := json.Marshal(oauthSession{Config: oauth2.Config{ClientID: "fixture", Endpoint: oauth2.Endpoint{TokenURL: "https://issuer.test/token"}}, Token: oauth2.Token{AccessToken: "new-access", RefreshToken: "new-refresh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetOAuthSession(config.Auth.SecretRef, rotated); err != nil {
+		t.Fatal(err)
+	}
+	got := configuredCredentials(config)
+	for _, want := range []string{"old-access", "old-refresh", "new-access", "new-refresh"} {
+		found := false
+		for _, value := range got {
+			if value == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("credential %q missing from redaction values: %v", want, got)
+		}
+	}
+}
