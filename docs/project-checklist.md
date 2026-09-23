@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23. This checklist consolidates the user's project requests through the current overnight work. `[x]` means evidence exists; `[~]` means active or partly delivered; `[ ]` means still owed. Current installed public release is `769d1e2` (`20260923T064043.054390000Z-78a5114c66a9-8501b7b4`); newer checkout changes are not installed unless noted.
+Updated 2026-09-23. This checklist consolidates the user's project requests through the current overnight work. `[x]` means evidence exists; `[~]` means active or partly delivered; `[ ]` means still owed. Current installed public release is `e5aba4a` (`20260923T064827.479283000Z-49b41587e672-dc23d223`); newer checkout changes are not installed unless noted.
 
 ## Product and implementation
 
@@ -107,3 +107,7 @@ Latest installed checkpoint: `769d1e2` includes ACP saved-session loading, names
 - [ ] Configure MCP servers through a guided TUI form, including remote HTTP URLs and account authentication where required. Keep CLI equivalents available to the model.
 - [ ] Let pk configure its own skills/plugins/MCP settings in `~/.pk` using supported commands. Update the bundled pk skill with implemented commands and session-activation instructions.
 - [ ] Support the Cloudflare setup-prompt workflow: fetch official setup guidance, adapt skills and remote MCP registration to pk, and guide required OAuth sign-in. Reading the supplied example is capability research, not permission to change the user's Cloudflare account now. Official prompt requires remote Streamable HTTP endpoints; existing stdio support alone is insufficient.
+
+- [ ] MCP authentication: Streamable HTTP, OAuth 2.0 browser sign-in/PKCE/token refresh and persisted sessions, bearer tokens, API-key/custom-header credentials, and local-server environment credentials. Provide masked/secret-safe guided setup and visible connection/authentication status. Cover Cloudflare official remote setup requirements with protocol fixtures and honest live-auth limits.
+
+Subagent checkpoint update: task-only mode and bounded FIFO queue are installed in `e5aba4a`; the natural-prompt three-child counting smoke passed without file writes. Earlier pending-queue notes describe pre-install review.
