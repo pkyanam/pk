@@ -226,42 +226,42 @@ describe("OpenTUI application", () => {
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
     act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
-    await act(async () => { await setup.mockInput.typeText("/skills search image editing") })
+    await act(async () => { await setup.mockInput.typeText("/skills search googleworkspace cli gmail") })
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     const search = fake.sent.find((item) => item.type === "skill_search")!
     await setup.waitForFrame((frame) => frame.includes("Searching skills.sh"))
-    expect(search.payload?.query).toBe("image editing")
-    act(() => fake.emit({ version: 1, id: search.id, type: "skill_search_results", payload: { query: "image editing", results: [
-      { name: "Image editing", id: "acme/image-editing", source: "acme/image-skills", installs: 1200, url: "https://skills.sh/acme/image-skills" },
+    expect(search.payload?.query).toBe("googleworkspace cli gmail")
+    act(() => fake.emit({ version: 1, id: search.id, type: "skill_search_results", payload: { query: "googleworkspace cli gmail", results: [
+      { name: "GWS Gmail", id: "googleworkspace/cli/gws-gmail", source: "googleworkspace/cli", installs: 1200, url: "https://skills.sh/googleworkspace/cli/gws-gmail" },
     ] } }))
-    await setup.waitForFrame((frame) => frame.includes("skills.sh search results") && frame.includes("Image editing"))
+    await setup.waitForFrame((frame) => frame.includes("skills.sh search results") && frame.includes("GWS Gmail"))
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     const source = fake.sent.find((item) => item.type === "skill_source_list")!
-    expect(source.payload?.source).toBe("acme/image-skills")
-    act(() => fake.emit({ version: 1, id: source.id, type: "skill_source_candidates", payload: { source: "acme/image-skills", candidates: [
-      { name: "image-editor", description: "Edit and inspect images safely.", source: "acme/image-skills", path: "image-editor", url: "https://skills.sh/acme/image-skills/image-editor" },
+    expect(source.payload?.source).toBe("https://skills.sh/googleworkspace/cli/gws-gmail")
+    act(() => fake.emit({ version: 1, id: source.id, type: "skill_source_candidates", payload: { source: "https://skills.sh/googleworkspace/cli/gws-gmail", candidates: [
+      { name: "gws-gmail", description: "Use Google Workspace Gmail commands.", source: "https://github.com/googleworkspace/cli/tree/main/skills/gws-gmail", path: "skills/gws-gmail", url: "https://skills.sh/googleworkspace/cli/gws-gmail" },
     ] } }))
-    await setup.waitForFrame((frame) => frame.includes("Review a skill source") && frame.includes("image-editor"))
+    await setup.waitForFrame((frame) => frame.includes("Review a skill source") && frame.includes("gws-gmail"))
     act(() => setup.mockInput.pressEnter())
-    const review = await setup.waitForFrame((frame) => frame.includes("Review image-editor") && frame.includes("Edit and inspect images safely."))
+    const review = await setup.waitForFrame((frame) => frame.includes("Review gws-gmail") && frame.includes("Use Google Workspace Gmail commands."))
     expect(review).toContain("Install this skill")
     expect(fake.sent.some((item) => item.type === "skill_install")).toBe(false)
     await act(async () => { await setup.mockInput.typeText("i") })
     await setup.flush()
     const install = fake.sent.find((item) => item.type === "skill_install")!
-    expect(install.payload).toEqual({ source: "acme/image-skills", path: "image-editor" })
-    act(() => fake.emit({ version: 1, id: install.id, type: "skill_installed", payload: { skill: { name: "image-editor" }, next_session_only: true } }))
-    const listRequest = await setup.waitForFrame((frame) => frame.includes("Installed image-editor"))
+    expect(install.payload).toEqual({ source: "https://github.com/googleworkspace/cli/tree/main/skills/gws-gmail", path: "skills/gws-gmail" })
+    act(() => fake.emit({ version: 1, id: install.id, type: "skill_installed", payload: { skill: { name: "gws-gmail" }, next_session_only: true } }))
+    const listRequest = await setup.waitForFrame((frame) => frame.includes("Installed gws-gmail"))
     expect(listRequest).toContain("new sessions")
     const installedList = fake.sent.filter((item) => item.type === "skill_installed_list").at(-1)!
-    act(() => fake.emit({ version: 1, id: installedList.id, type: "skill_installations", payload: { skills: [{ name: "image-editor", source: "acme/image-skills" }] } }))
-    const installedFrame = await setup.waitForFrame((frame) => frame.includes("Installed skills") && frame.includes("image-editor"))
-    const row = installedFrame.split("\n").findIndex((line) => line.includes("image-editor"))
+    act(() => fake.emit({ version: 1, id: installedList.id, type: "skill_installations", payload: { skills: [{ name: "gws-gmail", source: "googleworkspace/cli" }] } }))
+    const installedFrame = await setup.waitForFrame((frame) => frame.includes("Installed skills") && frame.includes("gws-gmail"))
+    const row = installedFrame.split("\n").findIndex((line) => line.includes("gws-gmail"))
     await act(async () => { await setup.mockInput.pressKeys(["x"], 100) })
     await setup.flush()
-    expect(fake.sent.some((item) => item.type === "skill_remove" && item.payload?.name === "image-editor")).toBe(true)
+    expect(fake.sent.some((item) => item.type === "skill_remove" && item.payload?.name === "gws-gmail")).toBe(true)
     expect(row).toBeGreaterThanOrEqual(0)
   })
 
@@ -1413,6 +1413,45 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "attach" && item.payload?.session_id === "saved-session")).toBe(true)
     expect(setup.captureCharFrame()).toContain("Attaching to session saved-se…")
+  })
+
+  test("opens the guided MCP configuration panel and displays sanitized remote auth state", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "mcp-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/mcp") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const list = fake.sent.find((item) => item.type === "mcp_list")
+    expect(list).toBeDefined()
+    act(() => fake.emit({ version: 1, id: list!.id, type: "mcp_catalog", payload: { servers: [{ id: "gmail", transport: "http", url: "https://mcp.example.test/gmail", auth_mode: "oauth", auth_status: "authenticated", credential_env: [], command: "", arguments_count: 0, environment_keys: [] }], tools: [], saved_session_tools: true } }))
+    const frame = await setup.waitForFrame((value) => value.includes("MCP connections") && value.includes("gmail"))
+    expect(frame).toContain("OAuth")
+    expect(frame).toContain("authenticated")
+    expect(frame).not.toContain("access_token")
+    expect(setup.captureCharFrame()).not.toContain("No MCP servers configured")
+  })
+
+  test("modal form typing stays out of the message composer and cannot submit a prompt", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "modal-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/mcp") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const list = fake.sent.find((item) => item.type === "mcp_list")!
+    act(() => fake.emit({ version: 1, id: list.id, type: "mcp_catalog", payload: { servers: [], tools: [] } }))
+    await setup.waitForFrame((frame) => frame.includes("MCP connections"))
+    await act(async () => { await setup.mockInput.pressKey("a") })
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("form-only-text") })
+    await setup.flush()
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
   })
 
   test("provider catalog is sanitized and model discovery is read-only", async () => {

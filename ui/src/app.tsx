@@ -4,6 +4,7 @@ import { memo, useEffect, useRef, useState } from "react"
 import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 import { SessionManager, type ManagedSession } from "./session-manager"
+import { MCPManager } from "./mcp-manager"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
@@ -294,6 +295,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | "history" | null>(null)
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
   const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
+  const [mcpManagerOpen, setMcpManagerOpen] = useState(false)
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
@@ -1054,17 +1056,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setMcpServers(servers)
         setMcpTools(tools)
         setMcpSavedTools(data.saved_session_tools === true)
-        if (selector !== "mcp") setSelectionIndex(0)
-        setSelector("mcp")
-        if (event.type === "mcp_updated" && data.next_session_only) addEntry("system", "MCP configuration saved · applies to new sessions. Use /new to start one.")
-        if (!servers.length) addEntry("system", 'No MCP servers configured. Use /mcp add --id ID --command PATH to add one.')
+        if (!mcpManagerOpen) {
+          if (selector !== "mcp") setSelectionIndex(0)
+          setSelector("mcp")
+          if (event.type === "mcp_updated" && data.next_session_only) addEntry("system", "MCP configuration saved · applies to new sessions. Use /new to start one.")
+          if (!servers.length) addEntry("system", 'No MCP servers configured. Use /mcp to open the setup panel.')
+        }
         break
       }
       case "mcp_auth_status": {
         const id = String(data.id ?? "MCP server")
         const status = String(data.status ?? "status updated")
         addEntry("system", `${id} · ${status === "authenticated" ? "connected" : status === "authorizing" ? "waiting for browser consent" : status === "needs_login" ? "local sign-in cleared; sign in again to reconnect" : status}`)
-        if (status !== "authorizing") transport.send("mcp_list" as any)
+        if (status !== "authorizing" && !mcpManagerOpen) transport.send("mcp_list" as any)
         break
       }
       case "providers":
@@ -1623,8 +1627,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "plugins": transport.send("plugins_list" as any); break
       case "plugin_commands": transport.send("plugin_commands_list" as any); break
       case "mcp": {
-          const [operation, ...options] = args
-        if (!operation || operation === "list") transport.send("mcp_list" as any)
+        const [operation, ...options] = args
+        if (!operation || operation === "list") setMcpManagerOpen(true)
         else if (operation === "remove" && options[0]) transport.send("mcp_remove" as any, { id: options[0] })
         else if (operation === "login" && options[0]) transport.send("mcp_login" as any, { id: options[0] })
         else if (operation === "logout" && options[0]) transport.send("mcp_logout" as any, { id: options[0] })
@@ -1906,7 +1910,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     } else if (selector === "skills") {
       if (skillsView === "results") {
         const result = skillSearchResults[index]
-        if (result) requestSkillOperation("skill_source_list", { source: result.source }, `Loading ${result.source}…`)
+        if (result) requestSkillOperation("skill_source_list", { source: result.url }, `Loading ${result.name}…`)
       } else if (skillsView === "candidates") {
         const candidate = skillCandidates[index]
         if (candidate) { setSkillReview(candidate); setSkillsView("review") }
@@ -2007,7 +2011,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   useKeyboard((key) => {
-    if (sessionManagerOpen) return
+    if (sessionManagerOpen || mcpManagerOpen) return
     const isEscape = key.name === "escape" || key.name === "esc"
     const commandModifier = key.super === true || key.meta === true
     if ((commandModifier || key.ctrl) && key.name.toLowerCase() === "v") {
@@ -2264,7 +2268,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea id="composer" ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea id="composer" ref={textarea} focused={!selector && !sessionManagerOpen && !mcpManagerOpen} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
@@ -2348,6 +2352,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           transport.send("attach", { session_id: session.id })
           setEntries([{ id: entryId.current++, role: "system", text: `Attaching to session ${session.id.slice(0, 8)}…` }])
         }}
+      />
+      <MCPManager
+        open={mcpManagerOpen}
+        onClose={() => setMcpManagerOpen(false)}
+        send={(type, payload) => transport.send(type as any, payload)}
+        event={sessionManagerEvent}
       />
     </box>
   )

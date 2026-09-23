@@ -9,11 +9,16 @@ let publish: (event: ServerEvent) => void = () => {}
 let sent: Array<{ id: string; type: string; payload?: Record<string, unknown> }> = []
 let loaded: ManagedSession[] = []
 let sequence = 0
+let closePanel = () => {}
+let reopenPanel = () => {}
 
 function Harness() {
   const [event, setEvent] = useState<ServerEvent>()
+  const [open, setOpen] = useState(true)
   publish = setEvent
-  return <SessionManager open onClose={() => {}} event={event} onLoad={(session) => loaded.push(session)} send={(type, payload) => {
+  closePanel = () => setOpen(false)
+  reopenPanel = () => setOpen(true)
+  return <SessionManager open={open} onClose={() => setOpen(false)} event={event} onLoad={(session) => loaded.push(session)} send={(type, payload) => {
     const id = `request-${++sequence}`
     sent.push({ id, type, payload })
     return id
@@ -26,6 +31,8 @@ afterEach(() => {
   sent = []
   loaded = []
   sequence = 0
+  closePanel = () => {}
+  reopenPanel = () => {}
 })
 
 async function setupPanel() {
@@ -52,6 +59,22 @@ describe("SessionManager", () => {
     await setup.waitForFrame((frame) => frame.includes("Release planning"))
     await act(async () => setup.mockInput.pressEnter())
     expect(loaded).toEqual([sampleSession])
+  })
+
+  test("reopening clears the previous search query before listing again", async () => {
+    const setup = await setupPanel()
+    await act(async () => setup.mockInput.pressKey("/"))
+    await setup.flush()
+    const search = (setup.renderer.root as any).findDescendantById("session-search")
+    act(() => { search.value = "stale-filter"; search.submit() })
+    await setup.flush()
+    expect(sent.filter((item) => item.type === "sessions_list").at(-1)?.payload?.query).toBe("stale-filter")
+    act(() => closePanel())
+    await setup.flush()
+    act(() => reopenPanel())
+    await setup.flush()
+    expect(sent.filter((item) => item.type === "sessions_list").at(-1)?.payload?.query).toBe("")
+    expect((setup.renderer.root as any).findDescendantById("session-search")?.value).toBe("")
   })
 
   test("archives selected sessions into recoverable trash and reports the result", async () => {

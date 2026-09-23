@@ -67,6 +67,7 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
   const [searchMode, setSearchMode] = useState(false)
   const [notice, setNotice] = useState("")
   const pending = useRef(new Map<string, RequestInfo>())
+  const searchInput = useRef<any>(null)
   const latestListRequest = useRef("")
   const opened = useRef(false)
   const visibleRows = Math.max(3, Math.min(12, Math.floor((renderer.height - 20) / 3)))
@@ -101,6 +102,9 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     if (opened.current) return
     opened.current = true
     setTab("sessions")
+    setQuery("")
+    setSearchMode(false)
+    if (searchInput.current) searchInput.current.value = ""
     setSelectedIDs(new Set())
     setSelectedIndex(0)
     refresh("sessions", "")
@@ -206,11 +210,6 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     const name = key.name.toLowerCase()
     if (searchMode) {
       if (name === "escape" || name === "return") { setSearchMode(false); return }
-      if (name === "backspace") { setQuery((value) => value.slice(0, -1)); setSearchDirty(true); return }
-      if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
-        setQuery((value) => `${value}${key.sequence}`.slice(0, maxQueryBytes))
-        setSearchDirty(true)
-      }
       return
     }
     if (confirmPurge) {
@@ -255,7 +254,11 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
       <box onMouseDown={() => setTabAndRefresh("sessions")} style={{ backgroundColor: tab === "sessions" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "sessions" ? colors.accent : colors.muted} content={`Sessions · ${sessions.length}  [1]`} /></box>
       <box onMouseDown={() => setTabAndRefresh("trash")} style={{ backgroundColor: tab === "trash" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "trash" ? colors.accent : colors.muted} content={`Trash · ${trash.length}  [2]`} /></box>
     </box>
-    <text fg={searchMode ? colors.accent : colors.muted} content={`/${query || "Filter title, workspace, or preview…"}${searchMode ? "▏" : ""}  ·  ${searchMode ? "type to search · Enter done" : "press / to search"}`} />
+    <box style={{ flexDirection: "row", gap: 1 }}>
+      <text fg={searchMode ? colors.accent : colors.muted} content="/" />
+      <input id="session-search" ref={searchInput} focused={searchMode} value={query} maxLength={maxQueryBytes} placeholder="Filter title, workspace, or preview…" onInput={(value: string) => { setQuery(value); setSearchDirty(true); setSelectedIndex(0) }} onChange={(value: string) => { setQuery(value); setSearchDirty(true); setSelectedIndex(0) }} onSubmit={() => { const value = String(searchInput.current?.value ?? "").slice(0, maxQueryBytes); setQuery(value); setSearchDirty(false); setSelectedIndex(0); refresh(tab, value); setSearchMode(false) }} />
+      <text fg={colors.dim} content={searchMode ? "Enter done · Esc search off" : "press / to search"} />
+    </box>
     <text fg={colors.dim} content={busy ? notice : notice || `${visibleItems.length === 0 ? "No results" : `Showing ${start + 1}–${Math.min(start + page.length, visibleItems.length)} of ${visibleItems.length}`} · ${selected.length} selected`} />
     <box style={{ flexDirection: "column", flexGrow: 1, minHeight: 3, border: ["top", "bottom"], borderColor: colors.line, paddingTop: 1, paddingBottom: 1 }}>
       {page.length === 0 && <text fg={colors.dim} content={busy ? "Loading…" : tab === "sessions" ? "No saved sessions match this filter." : "Trash is empty. Archived sessions can be restored or permanently removed here."} />}
