@@ -454,13 +454,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const newSessionCommandID = useRef("")
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
-  const pendingClipboardRequests = useRef(new Set<string>())
+  const pendingClipboardRequests = useRef(new Map<string, { target: "composer" | "question"; questionID?: string; sessionID: string; sessionGeneration: number }>())
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const pendingToolsRequest = useRef("")
   const pendingHistoryRequest = useRef("")
   const pendingProviderModelsRequest = useRef("")
   const pendingImageConfigRequest = useRef("")
   const sessionIdentity = useRef(initialSession || "")
+  const sessionGeneration = useRef(0)
   const pendingUsageRequest = useRef<{ id: string; sessionId: string } | null>(null)
   const pendingUsageCancels = useRef(new Set<string>())
   const historySessionID = useRef("")
@@ -488,8 +489,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setSessionUsageLoading(false)
   }
 
-  const updateSessionIdentity = (nextSessionId: string) => {
-    if (sessionIdentity.current !== nextSessionId) {
+  const updateSessionIdentity = (nextSessionId: string, forceGeneration = false) => {
+    if (sessionIdentity.current !== nextSessionId || forceGeneration) {
+      sessionGeneration.current++
+      pendingClipboardRequests.current.clear()
       sessionIdentity.current = nextSessionId
       cancelSessionUsageRequest()
       setSessionUsage(null)
@@ -753,9 +756,21 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   const requestClipboardPaste = () => {
+    if (question?.answering) return
+    if (!question && !composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) return
     const id = transport.send("clipboard_paste" as any)
-    if (id) pendingClipboardRequests.current.add(id)
+    if (id) pendingClipboardRequests.current.set(id, {
+      target: question ? "question" : "composer",
+      ...(question ? { questionID: question.id } : {}),
+      sessionID: sessionIdentity.current,
+      sessionGeneration: sessionGeneration.current,
+    })
     else addEntry("system", "Clipboard paste is unavailable until pk connects.")
+    while (pendingClipboardRequests.current.size > 16) {
+      const oldest = pendingClipboardRequests.current.keys().next().value
+      if (oldest === undefined) break
+      pendingClipboardRequests.current.delete(oldest)
+    }
   }
 
   const trackTool = (data: Record<string, any>) => {
@@ -974,9 +989,31 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "clipboard_files": {
-        if (event.id && !pendingClipboardRequests.current.has(event.id)) break
-        if (event.id) pendingClipboardRequests.current.delete(event.id)
-        for (const file of Array.isArray(data.files) ? data.files : []) {
+        const request = event.id ? pendingClipboardRequests.current.get(event.id) : undefined
+        if (!request) break
+        pendingClipboardRequests.current.delete(event.id!)
+        const targetStillCurrent = request.target === "question"
+          ? Boolean(question && !question.answering && question.id === request.questionID && composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen))
+          : !question && composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)
+        const sameSession = request.sessionID === sessionIdentity.current && request.sessionGeneration === sessionGeneration.current
+        if (!targetStillCurrent || !sameSession) {
+          addEntry("system", "Clipboard result ignored because the active input changed; paste again in the intended field.")
+          break
+        }
+        const files = Array.isArray(data.files) ? data.files : []
+        if (request.target === "question") {
+          const pastedText = [
+            ...files.map((file: any) => typeof file?.path === "string" ? file.path : "").filter(Boolean),
+            typeof data.text === "string" ? data.text : "",
+          ].filter(Boolean).join("\n")
+          if (pastedText) {
+            textarea.current?.insertText(pastedText)
+            setDraft(textarea.current?.plainText ?? `${draft}${pastedText}`)
+          }
+          if (data.message) addEntry("system", String(data.message))
+          break
+        }
+        for (const file of files) {
           const path = typeof file?.path === "string" ? file.path : ""
           if (path) queueFile(path)
         }
@@ -1530,6 +1567,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "error":
         if (event.id && pendingUsageCancels.current.delete(event.id)) break
+        if (event.id && pendingClipboardRequests.current.has(event.id)) pendingClipboardRequests.current.delete(event.id)
         {
           const pending = pendingUsageRequest.current
           const usageError = pending && event.id === pending.id || data.request_type === "session_usage" || data.command_type === "session_usage"
@@ -2128,7 +2166,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setNewSessionPending(Boolean(newSessionCommandID.current))
         setEntries([])
         sessionHasPrompt.current = false
-        updateSessionIdentity("")
+        updateSessionIdentity("", true)
         historySessionID.current = ""
         pendingHistoryRequest.current = ""
         setHistoryEntries([])
@@ -2138,7 +2176,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "attach":
         if (!args[0]) { addEntry("system", "Usage: /attach SESSION_ID"); break }
-        updateSessionIdentity("")
+        updateSessionIdentity("", true)
         cancelHistoryRead()
         historySessionID.current = ""
         pendingHistoryRequest.current = ""
@@ -2159,7 +2197,6 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setMaintenance({ ...maintenance, progress: "Stopping update" })
           addEntry("system", "Stopping the update before activation…")
         } else if (maintenance?.kind === "rollback") addEntry("system", "Rollback cannot be interrupted safely once activation has started; wait for it to finish.")
-        else if (reloadCommandId.current) addEntry("system", "Reload is saving the session; wait for the supervisor handoff to finish.")
         else if (reloadCommandId.current) addEntry("system", "Reload is saving the session; wait for the supervisor handoff to finish.")
         else if (busy) transport.send("cancel")
         else addEntry("system", "No turn is running.")
@@ -2806,7 +2843,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             return
           }
           setSessionManagerOpen(false)
-          updateSessionIdentity("")
+          updateSessionIdentity("", true)
           historySessionID.current = ""
           pendingHistoryRequest.current = ""
           setHistoryEntries([])

@@ -1035,6 +1035,81 @@ describe("OpenTUI application", () => {
     expect(fake.sent.filter((item) => item.type === "clipboard_paste")).toHaveLength(2)
   })
 
+  test("native clipboard response stays literal for the AskUser input that requested it", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "native-question-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, id: "native-question-turn", type: "question", payload: { id: "native-q", text: "Which path?", choices: [] } }))
+    await setup.waitForFrame((frame) => frame.includes("Which path?"))
+    await act(async () => setup.mockInput.pressKey("v", { ctrl: true }))
+    const request = fake.sent.find((item) => item.type === "clipboard_paste")!
+    act(() => fake.emit({ version: 1, id: request.id, type: "clipboard_files", payload: {
+      files: [{ path: "/usr/local/bin/server", kind: "file" }], text: "use this path",
+    } }))
+    await setup.flush()
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("/usr/local/bin/server\nuse this path")
+    expect(setup.captureCharFrame()).not.toContain("Files 1/8")
+    act(() => setup.mockInput.pressEnter())
+    expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.answer === "/usr/local/bin/server\nuse this path")).toBe(true)
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+  })
+
+  test("ignores a delayed native clipboard response after the active input changes", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36, kittyKeyboard: true })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "clipboard-target-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => setup.mockInput.pressKey("v", { ctrl: true }))
+    const modalRequest = fake.sent.find((item) => item.type === "clipboard_paste")!
+    await act(async () => { await setup.mockInput.typeText("/mcp") })
+    act(() => setup.mockInput.pressEnter())
+    const list = fake.sent.find((item) => item.type === "mcp_list")!
+    act(() => fake.emit({ version: 1, id: list.id, type: "mcp_catalog", payload: { servers: [], tools: [] } }))
+    await setup.waitForFrame((frame) => frame.includes("MCP connections"))
+    act(() => fake.emit({ version: 1, id: modalRequest.id, type: "clipboard_files", payload: { files: [{ path: "/tmp/server", kind: "file" }] } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Queued file")
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+
+    await act(async () => setup.mockInput.pressEscape())
+    let frame = await setup.waitForFrame((value) => value.includes("active input changed"))
+    expect(frame).not.toContain("Queued file")
+    act(() => fake.emit({ version: 1, id: "clipboard-question-one", type: "question", payload: { id: "q-one", text: "First question?", choices: [] } }))
+    await setup.waitForFrame((value) => value.includes("First question?"))
+    await act(async () => setup.mockInput.pressKey("v", { ctrl: true }))
+    const questionRequest = fake.sent.filter((item) => item.type === "clipboard_paste").at(-1)!
+    act(() => fake.emit({ version: 1, id: "clipboard-question-two", type: "question", payload: { id: "q-two", text: "Second question?", choices: [] } }))
+    await setup.waitForFrame((value) => value.includes("Second question?"))
+    act(() => fake.emit({ version: 1, id: questionRequest.id, type: "clipboard_files", payload: { files: [{ path: "/tmp/answer", kind: "file" }] } }))
+    await setup.flush()
+    frame = setup.captureCharFrame()
+    expect(frame).not.toContain("Queued file")
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+  })
+
+  test("ignores a native clipboard response from the previous session after /new", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "clipboard-old-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => setup.mockInput.pressKey("v", { ctrl: true }))
+    const stale = fake.sent.find((item) => item.type === "clipboard_paste")!
+    await act(async () => { await setup.mockInput.typeText("/new") })
+    act(() => setup.mockInput.pressEnter())
+    const newRequest = fake.sent.find((item) => item.type === "new")!
+    act(() => fake.emit({ version: 1, id: newRequest.id, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "" } }))
+    await setup.waitForFrame((frame) => frame.includes("A quiet workspace"))
+
+    act(() => fake.emit({ version: 1, id: stale.id, type: "clipboard_files", payload: { files: [{ path: "/tmp/old-session-file", kind: "file" }] } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Files 1/8")
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+  })
+
   test("Shift-Enter inserts a newline without submitting", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
