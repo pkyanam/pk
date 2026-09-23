@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `0069ac3` (`20260923T093828.901078000Z-4db46f2885f4-ee1e45e0`), with failed-stream timer cleanup and including explicit MCP keyboard/mouse focus, bounded saved attachment chips, and lower-allocation assistant previews. All 113 UI tests / 508 assertions and affected Go race suites passed; native Cmux reload and MCP selector Enter behavior passed.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `0069ac3` (`20260923T093828.901078000Z-4db46f2885f4-ee1e45e0`), including failed-stream timer cleanup, explicit MCP keyboard/mouse focus, bounded saved attachment chips, and lower-allocation assistant previews. All 113 UI tests / 508 assertions and affected Go race suites passed; native Cmux reload and MCP selector Enter behavior passed.
 
 ## Product and implementation
 
