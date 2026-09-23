@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/pkyanam/pk/internal/auth"
+	"github.com/pkyanam/pk/internal/benchcontext"
 )
 
 var modelID = "gpt-6-luna"
@@ -452,7 +453,7 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 			args = append(args, "--session", options.sessionID)
 		}
 		cmd = exec.Command(options.binary, args...)
-		cmd.Env = withEnv(os.Environ(), "PK_HOME", options.pkHome, "PK_BENCH_POLICY", options.mode, "PK_BENCH_FAILED_COMMAND_LOG", failedLog)
+		cmd.Env = withEnv(withoutEnvPrefix(os.Environ(), "PK_BENCH_"), "PK_HOME", options.pkHome, "PK_BENCH_POLICY", options.mode, "PK_BENCH_FAILED_COMMAND_LOG", failedLog)
 		if options.replayThresholdBytes > 0 {
 			cmd.Env = withEnv(cmd.Env, "PK_BENCH_REPLAY_THRESHOLD_BYTES", fmt.Sprint(options.replayThresholdBytes), "PK_BENCH_REPLAY_EXCERPT_RUNES", fmt.Sprint(options.replayExcerptRunes))
 		}
@@ -463,7 +464,7 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 			args = append(args, "--session", options.sessionID)
 		}
 		cmd = exec.Command(options.binary, args...)
-		cmd.Env = withEnv(os.Environ(), "PK_HOME", options.pkHome)
+		cmd.Env = withEnv(withoutEnvPrefix(os.Environ(), "PK_BENCH_"), "PK_HOME", options.pkHome)
 		if options.contextMetrics {
 			metricPath := filepath.Join(options.outputDir, fmt.Sprintf("%s-rep%d-%s-%s.context.jsonl", options.engine, options.repetition, options.taskName, options.phase))
 			cmd.Env = withEnv(cmd.Env, "PK_BENCH_CONTEXT_METRICS_FILE", metricPath)
@@ -503,7 +504,7 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 	if options.contextMetrics {
 		if options.engine == "pk" {
 			metricPath := filepath.Join(options.outputDir, fmt.Sprintf("%s-rep%d-%s-%s.context.jsonl", options.engine, options.repetition, options.taskName, options.phase))
-			metricRecords, available, metricErr := readContextMetrics(metricPath, usage.responses)
+			metricRecords, available, metricErr := readContextMetrics(metricPath, responseIDs(usage.clean), usage.responses)
 			if metricErr != nil {
 				return runRecord{}, metricErr
 			}
@@ -884,33 +885,121 @@ func buildPKBenchCLI(ctx context.Context, repo, output string) error {
 	return nil
 }
 
-func readContextMetrics(path string, expectedResponses int) ([]map[string]any, bool, error) {
+func readContextMetrics(path string, expectedResponseIDs []string, expectedResponses int) ([]map[string]any, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false, fmt.Errorf("read benchmark context metrics")
 	}
 	var records []map[string]any
-	seen := make(map[string]bool)
-	available := expectedResponses > 0
+	seenIDs := make(map[string]bool)
+	seenOrdinals := make(map[int]bool)
+	available := len(expectedResponseIDs) > 0 && len(expectedResponseIDs) == expectedResponses
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		var value map[string]any
-		if err := json.Unmarshal(line, &value); err != nil || value["type"] != "benchmark_context" {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.DisallowUnknownFields()
+		var metric benchcontext.Record
+		if err := decoder.Decode(&metric); err != nil || metric.Type != "benchmark_context" || !hasJSONKeys(line, "type", "request_ordinal", "request_failed", "system_prompt", "tool_schemas", "message_roles", "tool_calls", "tool_results", "other_input", "input_items", "input_value_bytes", "usage") {
 			return nil, false, errors.New("invalid benchmark context metrics record")
 		}
-		responseID := stringValue(value["response_id"])
-		if responseID == "" || seen[responseID] {
+		if !validContextMetric(metric) {
+			return nil, false, errors.New("invalid benchmark context metric counts")
+		}
+		if metric.RequestFailed {
 			available = false
 		}
-		seen[responseID] = true
+		if metric.RequestOrdinal < 1 || seenOrdinals[metric.RequestOrdinal] {
+			available = false
+		}
+		seenOrdinals[metric.RequestOrdinal] = true
+		responseID := metric.ResponseID
+		if responseID == "" || seenIDs[responseID] {
+			available = false
+		}
+		seenIDs[responseID] = true
+		var value map[string]any
+		if err := json.Unmarshal(line, &value); err != nil {
+			return nil, false, errors.New("invalid benchmark context metrics record")
+		}
 		records = append(records, value)
 	}
-	if len(records) != expectedResponses {
+	for ordinal := 1; ordinal <= len(records); ordinal++ {
+		if !seenOrdinals[ordinal] {
+			available = false
+		}
+	}
+	if len(expectedResponseIDs) != len(seenIDs) || len(records) != expectedResponses {
 		available = false
 	}
+	for _, id := range expectedResponseIDs {
+		if !seenIDs[id] {
+			available = false
+		}
+	}
 	return records, available, nil
+}
+
+func validContextMetric(record benchcontext.Record) bool {
+	sizes := []benchcontext.Size{record.SystemPrompt, record.ToolSchemas, record.ToolCalls, record.ToolResults, record.OtherInput}
+	for _, size := range sizes {
+		if size.Items < 0 || size.Bytes < 0 {
+			return false
+		}
+	}
+	if record.InputItems < 0 || record.InputValueBytes < 0 {
+		return false
+	}
+	for role, size := range record.MessageRoles {
+		switch role {
+		case "system", "developer", "user", "assistant", "tool", "unknown":
+		default:
+			return false
+		}
+		if size.Items < 0 || size.Bytes < 0 {
+			return false
+		}
+	}
+	u := record.Usage
+	return u.InputTokens >= 0 && u.OutputTokens >= 0 && u.CachedInputTokens >= 0 && u.CacheWriteTokens >= 0
+}
+
+func responseIDs(events []map[string]any) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, event := range events {
+		id := stringValue(event["response_id"])
+		if event["type"] == "usage" && id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func hasJSONKeys(line []byte, keys ...string) bool {
+	var value map[string]json.RawMessage
+	if json.Unmarshal(line, &value) != nil {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := value[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func withoutEnvPrefix(environment []string, prefix string) []string {
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(name, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 // checkUnrealStartup exercises its actual flag parser and strict JSON request

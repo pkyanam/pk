@@ -110,3 +110,26 @@ func TestAdapterFailureAndMalformedUsageDoNotLeakOrClaimAvailability(t *testing.
 		t.Fatalf("failed request or malformed usage reported incorrectly: %+v", record)
 	}
 }
+
+func TestAdapterPreservesExplicitZeroUsageAndResponseOnCancellation(t *testing.T) {
+	response := llm.Response{
+		ID:    "partial-response",
+		Usage: llm.Usage{Raw: json.RawMessage(`{"input_tokens":0,"output_tokens":0,"cache_write_input_tokens":0,"input_tokens_details":{"cached_tokens":0}}`)},
+	}
+	var output bytes.Buffer
+	adapter := &Adapter{Next: fixtureAdapter{response: response, err: context.Canceled}, Output: &output}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err := adapter.Respond(ctx, llm.Request{}, llm.RequestOptions{})
+	if !errors.Is(err, context.Canceled) || got.ID != response.ID {
+		t.Fatalf("response/error=%+v/%v; want partial response and cancellation", got, err)
+	}
+	var record Record
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	usage := record.Usage
+	if !record.RequestFailed || !usage.InputAvailable || usage.InputTokens != 0 || !usage.OutputAvailable || usage.OutputTokens != 0 || !usage.CachedInputAvailable || usage.CachedInputTokens != 0 || !usage.CacheWriteAvailable || usage.CacheWriteTokens != 0 {
+		t.Fatalf("cancelled response lost explicit usage availability: %+v", record)
+	}
+}

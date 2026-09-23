@@ -591,3 +591,9 @@ gates or imply that every backlog item is complete.
 - Wrapper, benchmark-driver, and tagged CLI hook race tests pass. Root preserved the untagged build for ordinary benchmark runs and made zero-response metric sets unavailable rather than a successful capture.
 - Morning deliverables: docs/overnight-report.md, the complete checklist, measured benchmark/performance records, launch artwork gallery and draft X posts, and the local reviewed Cmux/Cap coding video. No social posts or private emails were sent.
 - Not all requested work is complete. Comparative superiority, general cost savings, original freeze diagnosis, native drag/drop, Cloudflare account OAuth, real-editor ACP and broader provider interoperability remain open. The overnight schedule is paused after this handoff; the overall improvement goal remains unachieved.
+
+### Post-handoff — benchmark capture validation
+
+- Hardened optional benchmark metrics ingestion: typed records reject extra content and negative counts; complete coverage requires matching usage response IDs and contiguous request ordinals. Failed requests remain unavailable. Ambient benchmark policy/replay settings are removed before child launch.
+- Added real runner-hook and cancellation coverage plus a fake-child driver test; affected Go race tests and the tagged runner-hook test pass. No paid provider calls were made.
+- Attribution summaries exclude sidecar files and report component JSON-value bytes with explicit overlap caveats. A local duplicate-sidecar fixture passes; historical pilot totals remain unchanged. Production install remains 35d448a because this installment affects benchmark tooling only.

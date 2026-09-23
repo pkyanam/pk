@@ -31,7 +31,8 @@ def read_trace(path, engine):
             if event.get("type") == "tool_call" and event.get("call_id")
         }
         markers = collections.Counter(event.get("type") for event in events)
-        return responses, usage, len(tool_ids), markers
+        metrics = [event for event in events if event.get("type") == "benchmark_context"]
+        return responses, usage, len(tool_ids), markers, metrics
 
     responses = [event for event in events if event.get("kind") == "model_response"]
     def usage(event, index):
@@ -39,7 +40,7 @@ def read_trace(path, engine):
     markers = collections.Counter(event.get("kind") for event in events)
     # The exported Unreal trace strips tool call IDs/names, so status rows
     # cannot be deduplicated into actual calls.
-    return responses, usage, None, markers
+    return responses, usage, None, markers, []
 
 
 def required_counters(path, index, data, input_key, output_key, cached_key):
@@ -53,7 +54,8 @@ def required_counters(path, index, data, input_key, output_key, cached_key):
 
 
 def summarize(directory, engine, pattern):
-    files = sorted(glob.glob(os.path.join(directory, pattern)))
+    files = sorted(path for path in glob.glob(os.path.join(directory, pattern))
+                   if not path.endswith(".context.jsonl"))
     if not files:
         raise SystemExit(f"no {engine} traces matching {pattern!r} in {directory}")
     total = collections.Counter()
@@ -63,9 +65,26 @@ def summarize(directory, engine, pattern):
     tool_status_events = 0
     markers = collections.Counter()
     phase_traces = collections.Counter()
+    component_bytes = collections.defaultdict(list)
+    measured_requests = 0
 
     for path in files:
-        responses, usage_of, calls, trace_markers = read_trace(path, engine)
+        responses, usage_of, calls, trace_markers, metrics = read_trace(path, engine)
+        for metric in metrics:
+            measured_requests += 1
+            for component in ("system_prompt", "tool_schemas", "tool_calls", "tool_results", "other_input"):
+                size = metric.get(component, {})
+                value = size.get("bytes")
+                if type(value) is not int or value < 0:
+                    raise SystemExit(f"{path}: invalid {component} byte count")
+                component_bytes[component].append(value)
+            for role, size in metric.get("message_roles", {}).items():
+                if role not in ("system", "developer", "user", "assistant", "tool", "unknown"):
+                    raise SystemExit(f"{path}: unknown message role in metrics")
+                value = size.get("bytes")
+                if type(value) is not int or value < 0:
+                    raise SystemExit(f"{path}: invalid message-role byte count")
+                component_bytes[f"message_role.{role}"].append(value)
         phase = "verification" if "verification" in os.path.basename(path) else "implementation"
         phase_traces[phase] += 1
         markers.update(trace_markers)
@@ -98,6 +117,13 @@ def summarize(directory, engine, pattern):
     for (phase, index), values in sorted(paired_delta.items()):
         print(f"    {phase} #{index}: n={len(values)}, mean_delta={statistics.mean(values):+.1f}")
     print(f"  traces by phase: {dict(sorted(phase_traces.items()))}")
+    if measured_requests:
+        print(f"  component metadata: {measured_requests} recorded requests (JSON-value bytes, not tokens)")
+        print("  system_prompt overlaps message_role.system; do not add them together")
+        for component, values in sorted(component_bytes.items()):
+            print(f"    {component}: n={len(values)}, bytes_sum={sum(values)}, bytes_mean={statistics.mean(values):.1f}")
+    else:
+        print("  component metadata: unavailable")
 
 
 def main():

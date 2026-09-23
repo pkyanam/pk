@@ -50,3 +50,5 @@ python3 scripts/context-cost-attribution.py \
 ```
 
 The script prints aggregate usage, response-ordinal means by phase, and the sideband/tool evidence available in each export. It does not inspect archived model source, expose prompt contents, or estimate tokens from text.
+
+Capture validation rejects unknown fields and negative counters. Complete coverage requires contiguous request ordinals and an exact match to usage response IDs; failed requests or missing IDs make coverage unavailable. The driver strips inherited `PK_BENCH_*` settings so an ambient ablation cannot silently alter a run. The summary excludes standalone `.context.jsonl` sidecars to avoid counting captures twice, and reports component bytes separately from provider tokens.

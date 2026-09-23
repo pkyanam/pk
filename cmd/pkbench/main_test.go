@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -23,6 +24,84 @@ func TestParsePKUsagePreservesAvailabilityAndSession(t *testing.T) {
 	}
 	if !got.inputAvailable || !got.outputAvailable || !got.cachedAvailable || !got.writesAvailable {
 		t.Fatalf("usage availability = input:%t output:%t cached:%t writes:%t", got.inputAvailable, got.outputAvailable, got.cachedAvailable, got.writesAvailable)
+	}
+}
+
+func TestReadContextMetricsRequiresSafeShapeAndCorrelation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	valid := `{"type":"benchmark_context","request_ordinal":1,"response_id":"r1","request_failed":false,"system_prompt":{"items":1,"bytes":10},"tool_schemas":{"items":0,"bytes":0},"message_roles":{"system":{"items":1,"bytes":10}},"tool_calls":{"items":0,"bytes":0},"tool_results":{"items":0,"bytes":0},"other_input":{"items":0,"bytes":0},"input_items":1,"input_value_bytes":10,"usage":{"input_tokens":5,"input_tokens_available":true,"output_tokens":2,"output_tokens_available":true,"cached_input_tokens":0,"cached_input_tokens_available":true,"cache_write_input_tokens":0,"cache_write_input_tokens_available":false}}`
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(valid + "\n")
+	if records, available, err := readContextMetrics(path, []string{"r1"}, 1); err != nil || !available || len(records) != 1 {
+		t.Fatalf("valid metrics: records=%d available=%t err=%v", len(records), available, err)
+	}
+	if _, available, err := readContextMetrics(path, []string{"different"}, 1); err != nil || available {
+		t.Fatalf("mismatched response correlation: available=%t err=%v", available, err)
+	}
+	badRows := []string{
+		strings.Replace(valid, `"bytes":10`, `"bytes":-10`, 1),
+		strings.TrimSuffix(valid, "}") + `,"prompt":"PRIVATE_RAW_SENTINEL"}`,
+		strings.Replace(valid, `"message_roles":{"system"`, `"message_roles":{"private"`, 1),
+	}
+	for _, bad := range badRows {
+		write(bad + "\n")
+		if _, _, err := readContextMetrics(path, []string{"r1"}, 1); err == nil {
+			t.Fatalf("accepted malformed/raw metrics: %s", bad)
+		}
+	}
+	write(strings.Replace(valid, `"request_ordinal":1`, `"request_ordinal":0`, 1) + "\n")
+	if _, available, err := readContextMetrics(path, []string{"r1"}, 1); err != nil || available {
+		t.Fatalf("invalid ordinal should mark unavailable: available=%t err=%v", available, err)
+	}
+	gap := strings.Replace(valid, `"request_ordinal":1`, `"request_ordinal":2`, 1)
+	write(valid + "\n" + gap + "\n")
+	if _, available, err := readContextMetrics(path, []string{"r1"}, 1); err != nil || available {
+		t.Fatalf("ordinal gap/duplicate ID should mark unavailable: available=%t err=%v", available, err)
+	}
+}
+
+func TestRunPhaseFakeChildCorrelatesMetricsAndStripsAmbientPolicy(t *testing.T) {
+	root := t.TempDir()
+	scriptPath := filepath.Join(root, "fake-pk")
+	script := `#!/bin/sh
+if [ "${PK_BENCH_POLICY+x}" = x ]; then exit 51; fi
+if [ "${PK_BENCH_REPLAY_THRESHOLD_BYTES+x}" = x ]; then exit 52; fi
+printf '%s\n' '{"type":"session","session_id":"s1"}' '{"type":"usage","response_id":"r1","input_tokens":5,"output_tokens":2,"usage_available":true}'
+cat > "$PK_BENCH_CONTEXT_METRICS_FILE" <<'JSON'
+{"type":"benchmark_context","request_ordinal":1,"response_id":"r1","request_failed":false,"system_prompt":{"items":1,"bytes":10},"tool_schemas":{"items":0,"bytes":0},"message_roles":{"system":{"items":1,"bytes":10}},"tool_calls":{"items":0,"bytes":0},"tool_results":{"items":0,"bytes":0},"other_input":{"items":0,"bytes":0},"input_items":1,"input_value_bytes":10,"usage":{"input_tokens":5,"input_tokens_available":true,"output_tokens":2,"output_tokens_available":true,"cached_input_tokens":0,"cached_input_tokens_available":false,"cache_write_input_tokens":0,"cache_write_input_tokens_available":false}}
+JSON
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outputDir := filepath.Join(root, "out")
+	if err := os.Mkdir(outputDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_BENCH_POLICY", "output-cap-4k")
+	t.Setenv("PK_BENCH_REPLAY_THRESHOLD_BYTES", "12345")
+	got, err := runPhase(context.Background(), phaseOptions{
+		engine: "pk", phase: "implementation", prompt: "fake", workspace: root, binary: scriptPath,
+		pkHome: filepath.Join(root, "home"), outputDir: outputDir, taskName: "fixture", repetition: 1,
+		timeout: 5 * time.Second, contextMetrics: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ContextMetricsAvailable || got.ModelResponses != 1 || got.SessionID != "s1" {
+		t.Fatalf("run record=%+v", got)
+	}
+	trace, err := os.ReadFile(filepath.Join(outputDir, "pk-rep1-fixture-implementation.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(trace, []byte(`"type":"benchmark_context"`)) || bytes.Contains(trace, []byte("PRIVATE_RAW_SENTINEL")) {
+		t.Fatalf("unexpected trace: %s", trace)
 	}
 }
 
