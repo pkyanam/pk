@@ -27,9 +27,25 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; taskID?: string; dismissed?: boolean; answerRequestID?: string; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "plugin_commands" | "history" | "usage" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "plugin_commands" | "history" | "usage" | "compact" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
-type SessionUsage = { sessionId: string; responseCount: number; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; uncachedInputTokens?: number; coverage: { input: number; output: number; cachedInput: number; uncachedInput: number } }
+type CompactionUsage = {
+  attempts: number
+  completed: number
+  failed: number
+  unknown_usage_attempts: number
+  input_tokens?: number | null
+  input_calls: number
+  output_tokens?: number | null
+  output_calls: number
+  cached_input_tokens?: number | null
+  cached_input_calls: number
+  cache_write_input_tokens?: number | null
+  cache_write_input_calls: number
+}
+type SessionUsage = { sessionId: string; responseCount: number; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; uncachedInputTokens?: number; coverage: { input: number; output: number; cachedInput: number; uncachedInput: number }; compaction?: CompactionUsage }
+type ContextBudget = { provider_id: string; model_id: string; context_tokens?: number | null; input_tokens?: number | null; output_tokens?: number | null; context_source: string; input_source: string; output_source: string; operational_input_budget_tokens: number; operational_input_source: string; output_reserve_tokens: number; safety_margin_tokens: number; unknown_input_budget_tokens?: number; overrides?: Array<{ provider_id: string; model_id: string; context_tokens?: number | null; input_tokens?: number | null; output_tokens?: number | null }>; history_compaction?: { enabled?: boolean; trigger_ratio?: number; target_ratio?: number; summary_reserve_tokens?: number; max_summary_tokens?: number } }
+type ContextCompaction = { phase: string; reason?: string; estimate?: { tokens?: number; method?: string; confidence?: string }; before_estimate_tokens?: number; after_estimate_tokens?: number; summary_input_tokens?: number; summary_output_tokens?: number; checkpoint_version?: number; error_code?: string }
 type LatestProviderUsage = { input?: number; output?: number; cached?: number; inputAvailable: boolean; outputAvailable: boolean; cachedAvailable: boolean }
 type PluginCommandRun = { id: string; name: string; startedAt: number; cancelRequested?: boolean }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean; source?: string; url?: string; installs?: number; id?: string }
@@ -78,6 +94,34 @@ function savedHistoryPreview(entry: SavedHistoryEntry): string {
   return [entry.text, ...(files.length ? [`Attachments · ${files.join(" · ")}`] : [])].filter(Boolean).join("\n")
 }
 
+function compactionPhaseLabel(phase: string): string {
+  switch (phase) {
+    case "checking": return "Checking context estimate"
+    case "summarizing": return "Summarizing earlier context"
+    case "checkpoint_saved":
+    case "checkpointed": return "Checkpoint saved"
+    case "retrying":
+    case "retry": return "Retrying compaction"
+    case "failed": return "Compaction failed"
+    default: return "Compacting context"
+  }
+}
+
+function formatContextSource(source: unknown): string {
+  switch (String(source ?? "unknown")) {
+    case "provider_reported": return "provider reported"
+    case "official_catalog": return "official catalog"
+    case "user_override": return "your override"
+    case "operational_fallback": return "operational fallback"
+    case "derived": return "derived estimate"
+    default: return "unknown source"
+  }
+}
+
+function formatTokenCount(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value).toLocaleString() : "unavailable"
+}
+
 function parseSavedHistoryEntries(items: unknown): SavedHistoryEntry[] {
   if (!Array.isArray(items)) return []
   return items.flatMap((item: any) => {
@@ -114,7 +158,8 @@ const slashCommands: SlashCommand[] = [
   { name: "/mcp", description: "List, add, or remove MCP servers · configuration only changes new sessions", action: "mcp" },
   { name: "/tools", description: "Inspect the tools available to the active model session", action: "tools" },
   { name: "/history", description: "Browse saved conversation entries from earlier in this session", action: "history" },
-  { name: "/usage", description: "Inspect recorded token totals for this session", action: "usage" },
+  { name: "/usage", description: "Inspect token totals, context budget, and compaction", action: "usage" },
+  { name: "/compact", description: "Compact saved conversation context while idle", action: "compact" },
   { name: "/provider", description: "Connect a named provider, inspect models, or select one for a new session", action: "provider" },
   { name: "/image", description: "Opt in to ImageGen for new sessions · disabled by default", action: "image" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
@@ -263,6 +308,43 @@ function ProviderFilter({ id, value, placeholder, maxLength, onChange }: { id: s
     update(appendBoundedText(current.current, text, maxLength))
   })
   return <text id={id} selectable={false} fg={value ? palette.text : palette.dim} content={value ? `⌕ ${value}` : `⌕ ${placeholder}`} />
+}
+
+function ContextBudgetInput({ id, value, focused, placeholder, onSelect, onChange }: { id: string; value: string; focused: boolean; placeholder: string; onSelect: () => void; onChange: (value: string) => void }) {
+  const current = useRef(value)
+  useEffect(() => { current.current = value }, [value])
+  useKeyboard((key) => {
+    if (!focused) return
+    const name = key.name.toLowerCase()
+    if (name === "backspace" || name === "delete" || name === "del") {
+      key.preventDefault()
+      key.stopPropagation()
+      const next = current.current.slice(0, -1)
+      current.current = next
+      onChange(next)
+      return
+    }
+    if (key.ctrl && name === "u") {
+      key.preventDefault()
+      key.stopPropagation()
+      current.current = ""
+      onChange("")
+      return
+    }
+    if (!key.ctrl && !key.meta && !key.super && !key.option && key.sequence && /^\d+$/.test(key.sequence)) {
+      key.preventDefault()
+      key.stopPropagation()
+      const next = `${current.current}${key.sequence}`.slice(0, 9)
+      current.current = next
+      onChange(next)
+    }
+  })
+  return <text id={id} selectable={false} onMouseDown={(event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    onSelect()
+  }} fg={focused ? palette.text : palette.muted} content={value || (focused ? "_" : placeholder)} />
 }
 
 function visibleTextInCellRange(spans: Array<{ text: string; width: number }>, startCell: number, endCell: number): string {
@@ -497,8 +579,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_presets" | "provider_models" | "image" | "extension_commands" | "history" | "usage" | null>(null)
   const [sessionUsage, setSessionUsage] = useState<SessionUsage | null>(null)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | null>(null)
+  const [contextBudget, setContextBudget] = useState<ContextBudget | null>(null)
+  const [contextBudgetExpanded, setContextBudgetExpanded] = useState(false)
+  const [contextBudgetLoading, setContextBudgetLoading] = useState(false)
+  const [contextBudgetError, setContextBudgetError] = useState("")
+  const [contextBudgetNotice, setContextBudgetNotice] = useState("")
+  const [contextBudgetEditing, setContextBudgetEditing] = useState(false)
+  const [contextBudgetFields, setContextBudgetFields] = useState({ context: "", input: "", output: "", operational: "", reserve: "", margin: "" })
+  const [contextBudgetFieldIndex, setContextBudgetFieldIndex] = useState(0)
+  const contextBudgetInputValues = useRef({ context: "", input: "", output: "", operational: "", reserve: "", margin: "" })
+  const [contextBudgetSaving, setContextBudgetSaving] = useState(false)
+  const [contextCompaction, setContextCompaction] = useState<{ id: string; phase: string; event?: ContextCompaction } | null>(null)
   const [sessionUsageLoading, setSessionUsageLoading] = useState(false)
   const [sessionUsageError, setSessionUsageError] = useState("")
+  const [compactionUsageExpanded, setCompactionUsageExpanded] = useState(false)
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
   const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
   const [mcpManagerOpen, setMcpManagerOpen] = useState(false)
@@ -605,6 +699,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const sessionIdentity = useRef(initialSession || "")
   const sessionGeneration = useRef(0)
   const pendingUsageRequest = useRef<{ id: string; sessionId: string } | null>(null)
+  const pendingContextBudgetRequest = useRef("")
+  const pendingContextBudgetConfigure = useRef("")
+  const pendingCompactRequest = useRef("")
   const pendingUsageCancels = useRef(new Set<string>())
   const usageScroll = useRef<any>(null)
   const historySessionID = useRef("")
@@ -694,19 +791,41 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       cancelSessionUsageRequest()
       setSessionUsage(null)
       setContextUsage(null)
+      setContextBudget(null)
+      pendingContextBudgetRequest.current = ""
+      setContextBudgetLoading(false)
       setSessionUsageError(nextSessionId ? "Session changed; reopen /usage to refresh totals." : "")
+      if (selector === "usage") {
+        const budgetRequest = transport.send("context_budget_status")
+        pendingContextBudgetRequest.current = budgetRequest ?? ""
+        setContextBudgetLoading(Boolean(budgetRequest))
+        if (!budgetRequest) setContextBudgetError("Context budget is unavailable while pk is disconnected.")
+      }
     }
     setSessionId(nextSessionId)
   }
 
   const openSessionUsage = () => {
     cancelSessionUsageRequest()
+    setContextBudgetEditing(false)
+    setContextBudgetExpanded(false)
     const requestedSession = sessionIdentity.current
     setSelector("usage")
     setSelectionIndex(0)
     setSessionUsage(null)
     setContextUsage(null)
+    setCompactionUsageExpanded(false)
     setSessionUsageError("")
+    setContextBudget(null)
+    setContextBudgetError("")
+    setContextBudgetNotice("")
+    setContextBudgetLoading(true)
+    const budgetID = transport.send("context_budget_status")
+    pendingContextBudgetRequest.current = budgetID ?? ""
+    if (!budgetID) {
+      setContextBudgetLoading(false)
+      setContextBudgetError("Context budget is unavailable while pk is disconnected.")
+    }
     if (!requestedSession) {
       pendingUsageRequest.current = null
       setSessionUsageLoading(false)
@@ -721,6 +840,94 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     pendingUsageRequest.current = { id, sessionId: requestedSession }
     setSessionUsageLoading(true)
+  }
+
+  const editContextBudget = () => {
+    if (!contextBudget) {
+      setContextBudgetNotice("Refresh context budget before editing overrides.")
+      return
+    }
+    const existing = contextBudget.overrides?.find((item) => item.provider_id === contextBudget.provider_id && item.model_id === contextBudget.model_id)
+    const initialFields = {
+      context: existing?.context_tokens == null ? "" : String(existing.context_tokens),
+      input: existing?.input_tokens == null ? "" : String(existing.input_tokens),
+      output: existing?.output_tokens == null ? "" : String(existing.output_tokens),
+      operational: contextBudget.unknown_input_budget_tokens == null ? "" : String(contextBudget.unknown_input_budget_tokens),
+      reserve: contextBudget.output_reserve_tokens ? String(contextBudget.output_reserve_tokens) : "",
+      margin: contextBudget.safety_margin_tokens ? String(contextBudget.safety_margin_tokens) : "",
+    }
+    contextBudgetInputValues.current = initialFields
+    setContextBudgetFields(initialFields)
+    setContextBudgetError("")
+    setContextBudgetNotice("Blank model caps clear their override; global blank values keep current defaults.")
+    setContextBudgetFieldIndex(0)
+    setContextBudgetExpanded(false)
+    setContextBudgetEditing(true)
+  }
+
+  const saveContextBudget = () => {
+    if (!contextBudget || contextBudgetSaving) return
+    const fields = contextBudgetInputValues.current
+    setContextBudgetFields({ ...fields })
+    const parseField = (name: string, value: string, allowEmpty: boolean): number | null | undefined => {
+      if (!value.trim()) return allowEmpty ? null : undefined
+      if (!/^\d+$/.test(value.trim())) throw new Error(`${name} must be a whole number of tokens.`)
+      const parsed = Number(value.trim())
+      if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 2_000_000) throw new Error(`${name} must be between 0 and 2,000,000 tokens.`)
+      return parsed
+    }
+    let context: number | null | undefined
+    let input: number | null | undefined
+    let output: number | null | undefined
+    let operational: number | null | undefined
+    let reserve: number | null | undefined
+    let margin: number | null | undefined
+    try {
+      context = parseField("Context limit", fields.context, true)
+      input = parseField("Input limit", fields.input, true)
+      output = parseField("Output limit", fields.output, true)
+      operational = parseField("Fallback input budget", fields.operational, false)
+      reserve = parseField("Output reserve", fields.reserve, false)
+      margin = parseField("Safety margin", fields.margin, false)
+    } catch (error) {
+      setContextBudgetError(error instanceof Error ? error.message : "Enter valid token counts.")
+      return
+    }
+    const override: Record<string, unknown> = { provider_id: contextBudget.provider_id, model_id: contextBudget.model_id }
+    if (context !== undefined) override.context_tokens = context
+    if (input !== undefined) override.input_tokens = input
+    if (output !== undefined) override.output_tokens = output
+    const payload: Record<string, unknown> = { override }
+    if (operational !== undefined && operational !== null) payload.unknown_input_budget_tokens = operational
+    if (reserve !== undefined && reserve !== null) payload.output_reserve_tokens = reserve
+    if (margin !== undefined && margin !== null) payload.safety_margin_tokens = margin
+    const requestID = transport.send("context_budget_configure", payload)
+    pendingContextBudgetConfigure.current = requestID ?? ""
+    if (!requestID) {
+      setContextBudgetError("Could not save context budget while pk is disconnected.")
+      return
+    }
+    setContextBudgetSaving(true)
+    setContextBudgetError("")
+  }
+
+  const compactContext = () => {
+    if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pendingCompactRequest.current) {
+      addEntry("system", "Context compaction is available only when the session is idle.")
+      return
+    }
+    if (!sessionIdentity.current) {
+      addEntry("system", "Start a session before compacting context.")
+      return
+    }
+    const id = transport.send("compact")
+    pendingCompactRequest.current = id ?? ""
+    if (!id) {
+      addEntry("system", "Could not request context compaction while pk is disconnected.")
+      return
+    }
+    setContextCompaction({ id, phase: "Starting" })
+    addEntry("system", "Context compaction requested…")
   }
 
   const showCopyNotice = (text: string) => {
@@ -1424,6 +1631,56 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "release_status":
         setReleaseUpdateAvailable(data.reload_available === true)
         break
+      case "context_budget": {
+        if (!pendingContextBudgetRequest.current || event.id !== pendingContextBudgetRequest.current) break
+        pendingContextBudgetRequest.current = ""
+        setContextBudgetLoading(false)
+        setContextBudget(data as ContextBudget)
+        // New budget data is the section users asked to inspect; keep the
+        // scrollbox anchored at the start instead of sticky-following its end.
+        if (selector === "usage" && usageScroll.current) usageScroll.current.scrollPosition = 0
+        setContextBudgetError("")
+        break
+      }
+      case "context_budget_configured": {
+        if (!pendingContextBudgetConfigure.current || event.id !== pendingContextBudgetConfigure.current) break
+        pendingContextBudgetConfigure.current = ""
+        setContextBudgetSaving(false)
+        setContextBudgetEditing(false)
+        setContextBudget(data as ContextBudget)
+        if (selector === "usage" && usageScroll.current) usageScroll.current.scrollPosition = 0
+        const scope = data.applies_to_current_session === true ? "Current idle session updated" : "Saved for future sessions"
+        const persisted = data.persisted === false ? "" : " · saved"
+        setContextBudgetNotice(`${scope}${persisted}`)
+        setContextBudgetError("")
+        break
+      }
+      case "compact_started":
+        if (!pendingCompactRequest.current || event.id !== pendingCompactRequest.current) break
+        setContextCompaction({ id: event.id, phase: "Preparing compacted context" })
+        break
+      case "compact_progress": {
+        if (!pendingCompactRequest.current || event.id !== pendingCompactRequest.current) break
+        const telemetry = data.context_compaction && typeof data.context_compaction === "object" ? data.context_compaction as ContextCompaction : undefined
+        setContextCompaction({ id: event.id, phase: compactionPhaseLabel(telemetry?.phase ?? String(data.phase ?? "Working")), event: telemetry })
+        break
+      }
+      case "compact_finished":
+      case "compact_failed": {
+        if (!pendingCompactRequest.current || event.id !== pendingCompactRequest.current) break
+        pendingCompactRequest.current = ""
+        const success = event.type === "compact_finished" && data.success !== false
+        const telemetry = data.context_compaction && typeof data.context_compaction === "object" ? data.context_compaction as ContextCompaction : undefined
+        const finished = { id: event.id, phase: success ? "Checkpoint saved" : "Compaction failed", event: telemetry }
+        setContextCompaction(finished)
+        addEntry("system", success ? "Context compaction checkpoint saved." : `Context compaction failed · ${String(data.reason ?? telemetry?.error_code ?? "try again later")}`)
+        if (selector === "usage") {
+          const id = transport.send("context_budget_status")
+          pendingContextBudgetRequest.current = id ?? ""
+          setContextBudgetLoading(Boolean(id))
+        }
+        break
+      }
       case "session_usage": {
         const pending = pendingUsageRequest.current
         if (!pending || event.id !== pending.id) break
@@ -1436,6 +1693,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         }
         const nullableCount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
         const coverage = data.coverage && typeof data.coverage === "object" ? data.coverage : {}
+        const compaction = data.history_compaction_usage && typeof data.history_compaction_usage === "object" ? data.history_compaction_usage as Record<string, unknown> : null
         const responseCount = nullableCount(data.response_count) ?? 0
         setSessionUsage({
           sessionId: String(data.session_id),
@@ -1450,6 +1708,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             cachedInput: nullableCount(coverage.cached_input_responses) ?? 0,
             uncachedInput: nullableCount(coverage.uncached_input_responses) ?? 0,
           },
+          compaction: compaction ? {
+            attempts: nullableCount(compaction.attempts) ?? 0,
+            completed: nullableCount(compaction.completed) ?? 0,
+            failed: nullableCount(compaction.failed) ?? 0,
+            unknown_usage_attempts: nullableCount(compaction.unknown_usage_attempts) ?? 0,
+            input_tokens: nullableCount(compaction.input_tokens) ?? null,
+            input_calls: nullableCount(compaction.input_calls) ?? 0,
+            output_tokens: nullableCount(compaction.output_tokens) ?? null,
+            output_calls: nullableCount(compaction.output_calls) ?? 0,
+            cached_input_tokens: nullableCount(compaction.cached_input_tokens) ?? null,
+            cached_input_calls: nullableCount(compaction.cached_input_calls) ?? 0,
+            cache_write_input_tokens: nullableCount(compaction.cache_write_input_tokens) ?? null,
+            cache_write_input_calls: nullableCount(compaction.cache_write_input_calls) ?? 0,
+          } : undefined,
         })
         setContextUsage(data.context && typeof data.context === "object" ? data.context as ContextUsageSnapshot : null)
         if (data.context && typeof data.context === "object") {
@@ -1961,6 +2233,24 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "error":
         if (event.id && pendingUsageCancels.current.delete(event.id)) break
         if (event.id && pendingClipboardRequests.current.has(event.id)) pendingClipboardRequests.current.delete(event.id)
+        if (event.id && event.id === pendingContextBudgetRequest.current) {
+          pendingContextBudgetRequest.current = ""
+          setContextBudgetLoading(false)
+          setContextBudgetError(String(data.message ?? "Could not load context budget."))
+          break
+        }
+        if (event.id && event.id === pendingContextBudgetConfigure.current) {
+          pendingContextBudgetConfigure.current = ""
+          setContextBudgetSaving(false)
+          setContextBudgetError(String(data.message ?? "Could not save context budget."))
+          break
+        }
+        if (event.id && event.id === pendingCompactRequest.current) {
+          pendingCompactRequest.current = ""
+          setContextCompaction({ id: event.id, phase: "Compaction failed" })
+          addEntry("system", `Context compaction failed · ${String(data.message ?? "try again later")}`)
+          break
+        }
         const pendingTaskQuestion = taskQuestionRef.current
         if (pendingTaskQuestion?.answerRequestID && event.id === pendingTaskQuestion.answerRequestID) {
           const recovered = { ...pendingTaskQuestion, answerRequestID: undefined, answering: false, submittedAnswer: undefined }
@@ -2150,6 +2440,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         pendingPromptFiles.current.clear()
         pendingClipboardWrites.current.clear()
         latestClipboardWriteID.current = ""
+        pendingContextBudgetRequest.current = ""
+        pendingContextBudgetConfigure.current = ""
+        pendingCompactRequest.current = ""
+        setContextBudgetLoading(false)
+        setContextBudgetSaving(false)
+        if (contextCompaction) setContextCompaction({ ...contextCompaction, phase: "Connection closed" })
         setActiveTaskId("")
         addEntry("system", "Agent connection closed. Relaunch pk to reconnect.")
         break
@@ -2658,6 +2954,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "status": transport.send("status"); addEntry("system", `Session ${sessionId || "not started"} · ${model} · ${effort} reasoning`); break
       case "usage": openSessionUsage(); break
+      case "compact": compactContext(); break
       case "login": transport.send("login"); break
       case "task": {
         const [subcommand, ...rest] = args
@@ -2704,7 +3001,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · release a transcript selection to copy it to the clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /commands · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /usage · /history older · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · release a transcript selection to copy it to the clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /commands · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /usage · /compact · /history older · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -3136,8 +3433,28 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       const optionCount = selector === "skills" ? skillOptionCount : count
       if (selector === "usage") {
+        if (contextBudgetEditing) {
+          if (isCancel) {
+            if (isCtrlC) key.preventDefault()
+            setContextBudgetEditing(false)
+            setContextBudgetError("")
+            return
+          }
+          if (key.name === "tab" || key.name === "return" || key.name === "kpenter") {
+            key.preventDefault()
+            if (contextBudgetSaving) return
+            if (contextBudgetFieldIndex < 5) setContextBudgetFieldIndex((index) => (index + 1) % 6)
+            else saveContextBudget()
+            return
+          }
+          return
+        }
         if (key.name === "return") key.preventDefault()
         if (key.name === "r") { key.preventDefault(); openSessionUsage(); return }
+        if (key.name.toLowerCase() === "e") { key.preventDefault(); editContextBudget(); return }
+        if (key.name.toLowerCase() === "c") { key.preventDefault(); compactContext(); return }
+        if (key.name.toLowerCase() === "b") { key.preventDefault(); setContextBudgetExpanded((expanded) => !expanded); return }
+        if (key.name.toLowerCase() === "h" && sessionUsage?.compaction) { key.preventDefault(); setCompactionUsageExpanded((expanded) => !expanded); return }
         if (key.name === "up") { key.preventDefault(); usageScroll.current?.scrollBy(-3, "step"); return }
         if (key.name === "down") { key.preventDefault(); usageScroll.current?.scrollBy(3, "step"); return }
         if (key.name === "pageup") { key.preventDefault(); usageScroll.current?.scrollBy(-8, "step"); return }
@@ -3291,13 +3608,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       ? `${maintenance.kind === "update" ? "Updating pk" : "Rolling back"} · ${maintenance.progress}`
       : reloadPending
         ? "Saving session for reload"
+        : contextCompaction && pendingCompactRequest.current === contextCompaction.id
+          ? `Compacting context · ${contextCompaction.phase}`
     : busy
       ? streamProgress?.label ?? (tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model")
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
   const phaseTime = phaseStartedAt === null || (!busy && !maintenance) ? "" : ` · ${shortTime(clock - phaseStartedAt)}`
   const activityTime = activityStartedAt !== null ? ` · ${shortTime(clock - activityStartedAt)} total` : maintenance ? ` · ${shortTime(clock - maintenance.startedAt)} total` : pluginCommandRun ? ` · ${shortTime(clock - pluginCommandRun.startedAt)} total` : ""
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
-  const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending
+  const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending || Boolean(contextCompaction && pendingCompactRequest.current === contextCompaction.id)
   const usagePart = (label: string, count: number | undefined, available: boolean) => `${label} ${available && count !== undefined ? count.toLocaleString() : "—"}`
   const cacheLabel = usage
     ? renderer.width < 105
@@ -3369,9 +3688,50 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "usage" && <>
           <scrollbox id="usage-scroll" ref={usageScroll} focused style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 1 }}>
+          {contextBudgetLoading ? <text fg={palette.accent} content="Resolving context budget…" />
+            : contextBudgetError ? <text fg={palette.amber} content={contextBudgetError} />
+              : contextBudget ? <box style={{ flexDirection: "column", gap: 1 }}>
+                <text fg={palette.text} onMouseDown={(event) => leftMouseDown(event, () => setContextBudgetExpanded((expanded) => !expanded))} content={`Context budget · ${contextBudgetExpanded ? "B hide details" : "B details"} · ${contextBudget.provider_id || providerID} / ${contextBudget.model_id || model}`} />
+                <text fg={palette.accent} content={`Operational input · ${formatTokenCount(contextBudget.operational_input_budget_tokens)} tokens · ${formatContextSource(contextBudget.operational_input_source)} · context limit ${contextBudget.context_tokens == null ? "unavailable" : formatTokenCount(contextBudget.context_tokens)}`} />
+                {contextBudgetExpanded && <box style={{ flexDirection: "column", gap: 1 }}>
+                <text fg={palette.muted} content={`Context limit · ${formatTokenCount(contextBudget.context_tokens)} tokens · ${formatContextSource(contextBudget.context_source)}`} />
+                <text fg={palette.muted} content={`Input limit · ${formatTokenCount(contextBudget.input_tokens)} tokens · ${formatContextSource(contextBudget.input_source)}`} />
+                <text fg={palette.muted} content={`Output limit · ${formatTokenCount(contextBudget.output_tokens)} tokens · ${formatContextSource(contextBudget.output_source)}`} />
+                <text fg={palette.dim} content={`Output reserve ${formatTokenCount(contextBudget.output_reserve_tokens)} · safety margin ${formatTokenCount(contextBudget.safety_margin_tokens)} tokens`} />
+                {contextBudget.unknown_input_budget_tokens !== undefined && <text fg={palette.dim} content={`Unknown-model fallback · ${formatTokenCount(contextBudget.unknown_input_budget_tokens)} operational tokens`} />}
+                {contextBudget.history_compaction && <text fg={palette.dim} content={`Auto compaction ${contextBudget.history_compaction.enabled ? "on" : "off"}${contextBudget.history_compaction.trigger_ratio !== undefined ? ` · trigger ${Math.round(contextBudget.history_compaction.trigger_ratio * 100)}%` : ""}${contextBudget.history_compaction.target_ratio !== undefined ? ` · target ${Math.round(contextBudget.history_compaction.target_ratio * 100)}%` : ""}`} />}
+                </box>}
+                {contextBudgetNotice && <text fg={palette.accent} content={contextBudgetNotice} />}
+              </box>
+              : <text fg={palette.muted} content="Context budget is not available." />}
+          {contextBudgetEditing && <box style={{ flexDirection: "column", gap: 1, paddingTop: 1, paddingBottom: 1 }}>
+            <text fg={palette.text} content="Configure token limits · blank model caps clear overrides" />
+            {([
+              ["Context limit", "context", "optional per provider/model"],
+              ["Input limit", "input", "optional per provider/model"],
+              ["Output limit", "output", "optional per provider/model"],
+              ["Unknown-model input budget", "operational", "global operational fallback"],
+              ["Output reserve", "reserve", "global reserve"],
+              ["Safety margin", "margin", "global margin"],
+            ] as Array<[string, keyof typeof contextBudgetFields, string]>).map(([label, field, hint], index) => <box key={field} style={{ flexDirection: "row", gap: 1, alignItems: "center" }}>
+              <text fg={palette.muted} content={`${label} ·`} />
+              <ContextBudgetInput id={`context-budget-${field}`} focused={contextBudgetFieldIndex === index} value={contextBudgetFields[field]} placeholder={hint} onSelect={() => setContextBudgetFieldIndex(index)} onChange={(value) => { contextBudgetInputValues.current[field] = value; setContextBudgetFields((current) => ({ ...current, [field]: value })) }} />
+            </box>)}
+            {contextBudgetError && <text fg={palette.amber} content={contextBudgetError} />}
+            <box style={{ flexDirection: "row", gap: 2 }}>
+              <box onMouseDown={(event) => leftMouseDown(event, saveContextBudget)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={palette.accent} content={contextBudgetSaving ? "Saving…" : "Save budget · Enter"} /></box>
+              <box onMouseDown={(event) => leftMouseDown(event, () => { setContextBudgetEditing(false); setContextBudgetError("") })} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={palette.muted} content="Cancel · Esc" /></box>
+            </box>
+          </box>}
+          {!contextBudgetEditing && contextCompaction && <box style={{ flexDirection: "column", paddingTop: 1 }}>
+            <text fg={pendingCompactRequest.current === contextCompaction.id ? palette.accent : palette.muted} content={`Manual compaction · ${contextCompaction.phase}${contextCompaction.event?.reason ? ` · ${contextCompaction.event.reason}` : ""}`} />
+            {contextCompaction.event?.before_estimate_tokens !== undefined && <text fg={palette.dim} content={`Estimated input before · ${formatTokenCount(contextCompaction.event.before_estimate_tokens)} tokens · ${contextCompaction.event.estimate?.method ?? "method unavailable"} · ${contextCompaction.event.estimate?.confidence ?? "confidence unavailable"}`} />}
+            {contextCompaction.event?.after_estimate_tokens !== undefined && <text fg={palette.dim} content={`Estimated input after · ${formatTokenCount(contextCompaction.event.after_estimate_tokens)} tokens`} />}
+            {(contextCompaction.event?.summary_input_tokens !== undefined || contextCompaction.event?.summary_output_tokens !== undefined) && <text fg={palette.dim} content={`Summary usage · input ${formatTokenCount(contextCompaction.event.summary_input_tokens)} · output ${formatTokenCount(contextCompaction.event.summary_output_tokens)} tokens`} />}
+          </box>}
           {sessionUsageLoading ? <text fg={palette.accent} content="Loading recorded usage…" />
             : sessionUsageError ? <text fg={palette.amber} content={sessionUsageError} />
-              : sessionUsage ? <>
+              : sessionUsage && !contextBudgetEditing ? <>
                 <ContextUsage snapshot={contextUsage} />
                 <text fg={palette.muted} content={`Session ${sessionUsage.sessionId.slice(0, 8)} · ${sessionUsage.responseCount} recorded response${sessionUsage.responseCount === 1 ? "" : "s"}`} />
                 {([[
@@ -3384,6 +3744,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
                     <text fg={value === undefined ? palette.dim : palette.accent} content={`${amount} · ${coverageLabel}`} />
                   </box>
                 })}
+                {sessionUsage.compaction && <box style={{ flexDirection: "column", paddingTop: 1 }}>
+                  <text fg={palette.text} onMouseDown={(event) => leftMouseDown(event, () => setCompactionUsageExpanded((expanded) => !expanded))} content={`History compaction usage · ${compactionUsageExpanded ? "H hide details" : "H details"}`} />
+                  {compactionUsageExpanded && <>
+                    <text fg={palette.muted} content={`${sessionUsage.compaction.completed} completed · ${sessionUsage.compaction.failed} failed · ${sessionUsage.compaction.attempts} attempts · ${sessionUsage.compaction.unknown_usage_attempts} with unknown usage`} />
+                    {([[
+                      "Summary input", sessionUsage.compaction.input_tokens, sessionUsage.compaction.input_calls,
+                    ], ["Summary output", sessionUsage.compaction.output_tokens, sessionUsage.compaction.output_calls], ["Summary cached input", sessionUsage.compaction.cached_input_tokens, sessionUsage.compaction.cached_input_calls], ["Summary cache-write input", sessionUsage.compaction.cache_write_input_tokens, sessionUsage.compaction.cache_write_input_calls]] as Array<[string, number | null | undefined, number]>).map(([label, value, calls]) => <box key={label} style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                      <text fg={palette.text} content={label} />
+                      <text fg={value == null ? palette.dim : palette.accent} content={`${value == null ? "Unavailable" : value.toLocaleString()} · ${calls}/${sessionUsage.compaction!.attempts} attempts`} />
+                    </box>)}
+                    <text fg={palette.dim} content="Summary-call usage is separate from ordinary session turns; no cost estimate." />
+                  </>}
+                </box>}
                 <text fg={palette.dim} content="Some totals may cover only responses where the provider reported them. No cost estimate." />
                 <text fg={palette.dim} content="Recorded totals below summarize the session; latest request context above is a separate snapshot." />
               </>
@@ -3392,6 +3765,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </scrollbox>
           <box style={{ flexDirection: "row", gap: 2, paddingTop: 1, flexShrink: 0 }}>
             <box onMouseDown={(event) => leftMouseDown(event, openSessionUsage)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.accent} content="Refresh · R" /></box>
+            {!contextBudgetEditing && <box onMouseDown={(event) => leftMouseDown(event, editContextBudget)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.accent} content="Edit budget · E" /></box>}
+            {!contextBudgetEditing && <box onMouseDown={(event) => leftMouseDown(event, compactContext)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.accent} content="Compact · C" /></box>}
             <box onMouseDown={(event) => leftMouseDown(event, () => { cancelSessionUsageRequest(); setSelector(null); textarea.current?.focus() })} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.muted} content="Close · Esc" /></box>
           </box>
         </>}
@@ -3439,6 +3814,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
         {selector !== "usage" && <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "image" ? "Enter or click to toggle · disabled by default · /new activates changes · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />}
+        {selector === "usage" && <text fg={palette.dim} content={contextBudgetEditing ? "Type token counts · Tab next field · Enter save on last field · Ctrl-U clears current field · Esc cancel" : `B budget · ${sessionUsage?.compaction ? "H summary usage · " : ""}R refresh · E edit · C compact · ↑↓ scroll · Esc close`} />}
       </box>}
       {pluginSourceModalOpen && <box style={{ position: "absolute", left: "18%", right: "18%", top: "30%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.text} content="Add plugin from source" />

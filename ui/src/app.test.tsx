@@ -119,10 +119,16 @@ describe("OpenTUI application", () => {
     } }))
     const firstPage = await setup.waitForFrame((value) => value.includes("Context composition · request 3"))
     expect(firstPage).toContain("2.4 KiB JSON-value bytes")
-    await act(async () => { for (let index = 0; index < 4; index++) setup.mockInput.pressKey("ARROW_DOWN") })
-    const contextPage = await setup.waitForFrame((value) => value.includes("Latest provider usage"))
-    expect(contextPage).toContain(width < 96 ? "■ System ·" : "System prompt")
-    expect(contextPage).toContain("input tokens 300")
+    let contextPage: string
+    if (width < 96) {
+      await act(async () => { for (let index = 0; index < 7; index++) setup.mockInput.pressKey("ARROW_DOWN") })
+      contextPage = await setup.waitForFrame((value) => value.includes("Latest provider usage"))
+      expect(contextPage).toContain("input tokens 300")
+    } else {
+      await act(async () => { for (let index = 0; index < 4; index++) setup.mockInput.pressKey("ARROW_DOWN") })
+      contextPage = await setup.waitForFrame((value) => value.includes("Latest provider usage"))
+      expect(contextPage).toContain("System prompt")
+    }
     if (width >= 105) expect(contextPage).toContain("cache-write tokens —")
     await act(async () => { for (let index = 0; index < 12; index++) setup.mockInput.pressKey("ARROW_DOWN") })
     const frame = await setup.waitForFrame((value) => value.includes("2/3 responses"))
@@ -190,6 +196,115 @@ describe("OpenTUI application", () => {
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     expect(fake.sent.filter((item) => item.type === "session_usage")).toHaveLength(2)
+  })
+
+  test("/usage labels operational fallback separately and configures explicit limits", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="session-budget" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const budgetRequest = fake.sent.find((item) => item.type === "context_budget_status")!
+    act(() => fake.emit({ version: 1, id: budgetRequest.id, type: "context_budget", payload: {
+      provider_id: "native", model_id: "gpt-6-luna", context_tokens: null, input_tokens: null, output_tokens: null,
+      context_source: "unknown", input_source: "unknown", output_source: "unknown",
+      operational_input_budget_tokens: 32768, operational_input_source: "operational_fallback",
+      output_reserve_tokens: 4096, safety_margin_tokens: 2048, unknown_input_budget_tokens: 32768, overrides: [],
+    } }))
+    let frame = await setup.waitForFrame((value) => value.includes("Operational input · 32,768 tokens"))
+    expect(frame).toContain("context limit unavailable")
+    act(() => setup.mockInput.pressKey("b"))
+    frame = await setup.waitForFrame((value) => value.includes("Context limit · unavailable tokens · unknown source"))
+    expect(frame).toContain("32,768 tokens · operational fallback")
+    expect(frame).not.toContain("32,768%")
+
+    const editRow = frame.split("\n").findIndex((line) => line.includes("Edit budget · E"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[editRow]!.indexOf("Edit budget · E"), editRow, 0))
+    frame = await setup.waitForFrame((value) => value.includes("Configure token limits"))
+    const contextRow = frame.split("\n").findIndex((line) => line.includes("Context limit ·"))
+    await act(async () => setup.mockMouse.click(35, contextRow, 0))
+    for (const character of "131072") {
+      await act(async () => { await setup.mockInput.typeText(character) })
+      await setup.flush()
+    }
+    frame = await setup.waitForFrame((value) => value.includes("131072"))
+    await act(async () => { for (let index = 0; index < 5; index++) setup.mockInput.pressKey("TAB") })
+    act(() => setup.mockInput.pressEnter())
+    const configure = fake.sent.find((item) => item.type === "context_budget_configure")!
+    expect(configure.payload).toMatchObject({ override: { provider_id: "native", model_id: "gpt-6-luna", context_tokens: 131072 } })
+    act(() => fake.emit({ version: 1, id: configure.id, type: "context_budget_configured", payload: {
+      provider_id: "native", model_id: "gpt-6-luna", context_tokens: 131072, input_tokens: null, output_tokens: null,
+      context_source: "user_override", input_source: "unknown", output_source: "unknown",
+      operational_input_budget_tokens: 32768, operational_input_source: "operational_fallback",
+      output_reserve_tokens: 4096, safety_margin_tokens: 2048, applies_to_current_session: true, persisted: true,
+    } }))
+    frame = await setup.waitForFrame((value) => value.includes("Current idle session updated · saved"))
+    expect(frame).toContain("context limit 131,072")
+  })
+
+  test("/compact shows correlated progress and checkpoint outcome without transcript text", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="session-compact" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/compact") })
+    act(() => setup.mockInput.pressEnter())
+    const request = fake.sent.find((item) => item.type === "compact")!
+    act(() => fake.emit({ version: 1, id: request.id, type: "compact_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: request.id, type: "compact_progress", payload: { context_compaction: { phase: "summarizing", reason: "manual", before_estimate_tokens: 24000, estimate: { method: "token estimate", confidence: "low" } } } }))
+    const working = await setup.waitForFrame((value) => value.includes("Compacting context · Summarizing earlier context"))
+    expect(working).not.toContain("prompt text")
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    const budgetRequest = fake.sent.filter((item) => item.type === "context_budget_status").at(-1)!
+    act(() => fake.emit({ version: 1, id: budgetRequest.id, type: "context_budget", payload: {
+      provider_id: "native", model_id: "gpt-6-luna", context_tokens: null, input_tokens: null, output_tokens: null,
+      context_source: "unknown", input_source: "unknown", output_source: "unknown",
+      operational_input_budget_tokens: 32768, operational_input_source: "operational_fallback",
+      output_reserve_tokens: 4096, safety_margin_tokens: 2048,
+    } }))
+    const usageProgress = await setup.waitForFrame((value) => value.includes("Estimated input before"))
+    expect(usageProgress).toContain("Estimated input before · 24,000 tokens · token estimate · low")
+    act(() => fake.emit({ version: 1, id: request.id, type: "compact_finished", payload: { success: true, compacted: true, session_id: "session-compact", context_compaction: { phase: "checkpoint_saved", before_estimate_tokens: 24000, after_estimate_tokens: 8000, summary_input_tokens: 1200, summary_output_tokens: 300 } } }))
+    const finished = await setup.waitForFrame((value) => value.includes("Checkpoint saved") && value.includes("Estimated input after · 8,000 tokens"))
+    expect(finished).toContain("Summary usage · input 1,200 · output 300 tokens")
+    expect(finished).toContain("Manual compaction · Checkpoint saved")
+  })
+
+  test("/usage keeps summary-call usage separate and marks partial or missing counters", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="session-summary-usage" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/usage") })
+    act(() => setup.mockInput.pressEnter())
+    const usageRequest = fake.sent.find((item) => item.type === "session_usage")!
+    act(() => fake.emit({ version: 1, id: usageRequest.id, type: "session_usage", payload: {
+      session_id: "session-summary-usage", response_count: 1, input_tokens: 900, output_tokens: 120,
+      coverage: { input_responses: 1, output_responses: 1, cached_input_responses: 0, uncached_input_responses: 0 },
+      history_compaction_usage: {
+        attempts: 3, completed: 2, failed: 1, unknown_usage_attempts: 1,
+        input_tokens: 600, input_calls: 2, output_tokens: null, output_calls: 0,
+        cached_input_tokens: 80, cached_input_calls: 1, cache_write_input_tokens: null, cache_write_input_calls: 0,
+      },
+    } }))
+    let frame = await setup.waitForFrame((value) => value.includes("History compaction usage · H details"))
+    expect(frame).toContain("Input tokens")
+    expect(frame).not.toContain("Summary input")
+    act(() => setup.mockInput.pressKey("h"))
+    frame = await setup.waitForFrame((value) => value.includes("2 completed · 1 failed · 3 attempts · 1 with unknown usage"))
+    expect(frame).toContain("Summary input")
+    expect(frame).toContain("600 · 2/3 attempts")
+    expect(frame).toContain("Summary output")
+    expect(frame).toContain("Unavailable · 0/3 attempts")
+    expect(frame).toContain("Summary cached input")
+    expect(frame).toContain("80 · 1/3 attempts")
+    expect(frame).toContain("900")
+    await act(async () => { for (let index = 0; index < 12; index++) setup.mockInput.pressKey("ARROW_DOWN") })
+    frame = await setup.waitForFrame((value) => value.includes("Summary-call usage is separate from ordinary session turns"))
+    expect(frame).toContain("Summary-call usage is separate from ordinary session turns")
   })
 
   test("closing /usage while loading cancels its read operation", async () => {
