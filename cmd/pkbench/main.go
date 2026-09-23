@@ -73,6 +73,12 @@ type runRecord struct {
 	ToolDescriptionBytesAfter    int64  `json:"tool_description_bytes_after"`
 	ToolDescriptionFieldsChanged int64  `json:"tool_description_fields_changed"`
 	ToolSchemaMetricsAvailable   bool   `json:"tool_schema_metrics_available"`
+	ReplayEligibleResults        int64  `json:"eligible_bash_results"`
+	ReplayCompactedResults       int64  `json:"compacted_bash_results"`
+	ReplayOriginalBytes          int64  `json:"original_result_bytes"`
+	ReplayStoredBytes            int64  `json:"stored_result_bytes"`
+	ReplayMissingCapture         int64  `json:"missing_capture_fallbacks"`
+	ReplayMetricsAvailable       bool   `json:"context_compaction_metrics_available"`
 	InputTokens                  int64  `json:"input_tokens"`
 	InputTokensAvailable         bool   `json:"input_tokens_available"`
 	UncachedInputTokens          int64  `json:"uncached_input_tokens"`
@@ -90,22 +96,23 @@ type runRecord struct {
 }
 
 type suite struct {
-	StartedAt            time.Time   `json:"started_at"`
-	FinishedAt           time.Time   `json:"finished_at"`
-	Model                string      `json:"model"`
-	Effort               string      `json:"effort"`
-	Repetitions          int         `json:"repetitions"`
-	Timeout              string      `json:"per_phase_timeout"`
-	GoVersion            string      `json:"go_version"`
-	GOOS                 string      `json:"goos"`
-	GOARCH               string      `json:"goarch"`
-	PKRevision           string      `json:"pk_revision"`
-	Unreal               string      `json:"upstream_version"`
-	Experiment           string      `json:"experiment,omitempty"`
-	ToolSchemaExperiment bool        `json:"tool_schema_experiment,omitempty"`
-	SourceTreeSHA256     string      `json:"source_tree_sha256,omitempty"`
-	GitDiffSHA256        string      `json:"git_diff_sha256,omitempty"`
-	Records              []runRecord `json:"runs"`
+	StartedAt                  time.Time   `json:"started_at"`
+	FinishedAt                 time.Time   `json:"finished_at"`
+	Model                      string      `json:"model"`
+	Effort                     string      `json:"effort"`
+	Repetitions                int         `json:"repetitions"`
+	Timeout                    string      `json:"per_phase_timeout"`
+	GoVersion                  string      `json:"go_version"`
+	GOOS                       string      `json:"goos"`
+	GOARCH                     string      `json:"goarch"`
+	PKRevision                 string      `json:"pk_revision"`
+	Unreal                     string      `json:"upstream_version"`
+	Experiment                 string      `json:"experiment,omitempty"`
+	ToolSchemaExperiment       bool        `json:"tool_schema_experiment,omitempty"`
+	ReplayCompactionExperiment bool        `json:"replay_compaction_experiment,omitempty"`
+	SourceTreeSHA256           string      `json:"source_tree_sha256,omitempty"`
+	GitDiffSHA256              string      `json:"git_diff_sha256,omitempty"`
+	Records                    []runRecord `json:"runs"`
 }
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -119,6 +126,7 @@ func run(args []string) int {
 	includeUnreal := flags.Bool("unreal", true, "also run the unchanged Unreal v0.1.1 CLI baseline")
 	outputCapExperiment := flags.Bool("output-cap-ablation", false, "run the paired current-vs-4K-default Bash policy experiment only")
 	toolSchemaExperiment := flags.Bool("tool-schema-ablation", false, "run the paired current-vs-compact tool-description experiment only")
+	replayCompactionExperiment := flags.Bool("replay-compaction-ablation", false, "run the paired current-vs-captured-output context replay experiment only")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -129,7 +137,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: pkbench [-repo DIR] [-out DIR] [-repetitions 1|2] [-timeout 90s]")
 		return 2
 	}
-	if *outputCapExperiment && *toolSchemaExperiment {
+	if (*outputCapExperiment && *toolSchemaExperiment) || (*outputCapExperiment && *replayCompactionExperiment) || (*toolSchemaExperiment && *replayCompactionExperiment) {
 		fmt.Fprintln(os.Stderr, "choose at most one benchmark ablation")
 		return 2
 	}
@@ -138,6 +146,9 @@ func run(args []string) int {
 	}
 	if *toolSchemaExperiment {
 		return runToolSchemaExperiment(*repo, *out, *repetitions, *timeout)
+	}
+	if *replayCompactionExperiment {
+		return runReplayCompactionExperiment(*repo, *out, *repetitions, *timeout)
 	}
 	if flags.NArg() != 0 || *repetitions < 1 || *repetitions > 2 || *timeout <= 0 {
 		fmt.Fprintln(os.Stderr, "usage: pkbench [-repo DIR] [-out DIR] [-repetitions 1|2] [-timeout 90s] [-unreal=true]")
@@ -286,18 +297,20 @@ type phaseOptions struct {
 }
 
 type usageSum struct {
-	responses                                                                int
-	input, output, cached, writes                                            int64
-	inputAvailable, outputAvailable, cachedAvailable, writesAvailable        bool
-	explicitLimits, omittedLimits, defaultedLimits                           int64
-	bashOutputBytes, bashErrorBytes, bashOutputTruncated, bashErrorTruncated int64
-	bashRawOutputBytes, bashRawErrorBytes                                    int64
-	bashMetricsAvailable                                                     bool
-	toolDescriptionBytesBefore, toolDescriptionBytesAfter                    int64
-	toolDescriptionFieldsChanged                                             int64
-	toolSchemaMetricsAvailable                                               bool
-	session                                                                  string
-	clean                                                                    []map[string]any
+	responses                                                                                                   int
+	input, output, cached, writes                                                                               int64
+	inputAvailable, outputAvailable, cachedAvailable, writesAvailable                                           bool
+	explicitLimits, omittedLimits, defaultedLimits                                                              int64
+	bashOutputBytes, bashErrorBytes, bashOutputTruncated, bashErrorTruncated                                    int64
+	bashRawOutputBytes, bashRawErrorBytes                                                                       int64
+	bashMetricsAvailable                                                                                        bool
+	toolDescriptionBytesBefore, toolDescriptionBytesAfter                                                       int64
+	toolDescriptionFieldsChanged                                                                                int64
+	toolSchemaMetricsAvailable                                                                                  bool
+	replayEligibleResults, replayCompactedResults, replayOriginalBytes, replayStoredBytes, replayMissingCapture int64
+	replayMetricsAvailable                                                                                      bool
+	session                                                                                                     string
+	clean                                                                                                       []map[string]any
 }
 
 func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
@@ -375,7 +388,10 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		ToolDescriptionBytesAfter:    usage.toolDescriptionBytesAfter,
 		ToolDescriptionFieldsChanged: usage.toolDescriptionFieldsChanged,
 		ToolSchemaMetricsAvailable:   usage.toolSchemaMetricsAvailable,
-		InputTokens:                  usage.input, InputTokensAvailable: usage.inputAvailable,
+		ReplayEligibleResults:        usage.replayEligibleResults, ReplayCompactedResults: usage.replayCompactedResults,
+		ReplayOriginalBytes: usage.replayOriginalBytes, ReplayStoredBytes: usage.replayStoredBytes,
+		ReplayMissingCapture: usage.replayMissingCapture, ReplayMetricsAvailable: usage.replayMetricsAvailable,
+		InputTokens: usage.input, InputTokensAvailable: usage.inputAvailable,
 		UncachedInputTokens:    usage.input - usage.cached,
 		UncachedInputAvailable: usage.inputAvailable && usage.cachedAvailable && usage.cached <= usage.input,
 		OutputTokens:           usage.output, OutputTokensAvailable: usage.outputAvailable,
@@ -481,6 +497,15 @@ func parseOutput(engine string, output []byte) usageSum {
 				sum.toolDescriptionBytesBefore = int64Value(event["tool_description_bytes_before"])
 				sum.toolDescriptionBytesAfter = int64Value(event["tool_description_bytes_after"])
 				sum.toolDescriptionFieldsChanged = int64Value(event["tool_description_fields_changed"])
+			}
+			if typeName == "benchmark_context_compaction" {
+				sum.replayMetricsAvailable = boolValue(event["context_compaction_metrics_available"])
+				metrics := mapValue(event, "context_compaction_metrics")
+				sum.replayEligibleResults += int64Value(metrics["eligible_bash_results"])
+				sum.replayCompactedResults += int64Value(metrics["compacted_bash_results"])
+				sum.replayOriginalBytes += int64Value(metrics["original_result_bytes"])
+				sum.replayStoredBytes += int64Value(metrics["stored_result_bytes"])
+				sum.replayMissingCapture += int64Value(metrics["missing_capture_fallbacks"])
 			}
 			sum.clean = append(sum.clean, sanitizePkEvent(event))
 		} else {
@@ -793,7 +818,10 @@ func writeMarkdown(path string, result suite) error {
 	}
 	fmt.Fprintln(&out)
 	if result.Experiment != "" {
-		if result.ToolSchemaExperiment {
+		if result.ReplayCompactionExperiment {
+			fmt.Fprintln(&out, "Both arms use the production CLI, prompt, model and effort, empty skills, and identical Git-initialized task fixtures. The treatment compacts completed Bash result text over the 4096-byte threshold once, at translation, to a 768-rune head and tail, exact existing stdout/stderr capture paths, and exit code. It falls back to the original result if no capture file exists. The fixtures request ordinary verbose Go test output; they do not pad streams or modify tool output limits. Per-run eligible/compacted counts verify treatment exposure. Stored result bytes are a manipulation check only: provider-reported input, cached-input, output tokens and wall time are the efficiency measures. Holdout tests are restored from pristine fixtures after each run. Small stochastic results are descriptive and do not establish general task quality or cache savings.")
+			fmt.Fprintln(&out, "\n| Engine | Task | Rep | Phase | Responses | Input | Uncached input | Output | Cached | Eligible / compacted | Result bytes (before / stored) | Missing captures | Wall ms | Correct |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|")
+		} else if result.ToolSchemaExperiment {
 			fmt.Fprintln(&out, "Both arms use the product CLI, system prompt, model and effort, task prompts, empty skills, and matching Git-initialized fixtures. The treatment shortens selected static tool descriptions while preserving tool names, translators, parameter types, constraints, and defaults. UTF-8 description-byte metrics are measured from the actual registry definitions; provider-reported usage is the token measure. Input/output/cache counters come from each model response, with uncached input shown only when input and cached counts are available. Correctness is checked against pristine holdout tests, and generated production Go files are archived as `.go.txt` files. This paired experiment measures only these tasks and this description treatment.")
 			fmt.Fprintln(&out, "\n| Engine | Task | Rep | Phase | Responses | Input | Uncached input | Output | Cached | Description bytes (before / after) | Fields changed | Wall ms | Correct |\n|---|---|---:|---|---:|---:|---:|---:|---:|---|---:|---:|:---:|")
 		} else {
@@ -825,7 +853,15 @@ func writeMarkdown(path string, result suite) error {
 		}
 		if result.Experiment != "" {
 			uncached := displayToken(record.UncachedInputTokens, record.UncachedInputAvailable)
-			if result.ToolSchemaExperiment {
+			if result.ReplayCompactionExperiment {
+				eligible, bytes, missing := "—", "—", "—"
+				if record.ReplayMetricsAvailable {
+					eligible = fmt.Sprintf("%d / %d", record.ReplayEligibleResults, record.ReplayCompactedResults)
+					bytes = fmt.Sprintf("%d / %d", record.ReplayOriginalBytes, record.ReplayStoredBytes)
+					missing = fmt.Sprint(record.ReplayMissingCapture)
+				}
+				fmt.Fprintf(&out, "| %s | %s | %d | %s | %d | %s | %s | %s | %s | %s | %s | %s | %d | %s |\n", record.Engine, record.Task, record.Repetition, record.Phase, record.ModelResponses, input, uncached, output, cached, eligible, bytes, missing, record.WallMS, correct)
+			} else if result.ToolSchemaExperiment {
 				descriptions, changed := "—", "—"
 				if record.ToolSchemaMetricsAvailable {
 					descriptions = fmt.Sprintf("%d / %d", record.ToolDescriptionBytesBefore, record.ToolDescriptionBytesAfter)

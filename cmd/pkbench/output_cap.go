@@ -28,13 +28,31 @@ var outputCapTasks = []task{
 	},
 }
 
+// Both tasks are multi-file coding fixtures with realistic, verbose table
+// suites. The shared prompts deliberately request normal `go test -v` evidence;
+// neither fixture pads output or changes max_output_length.
+var replayCompactionTasks = []task{
+	{
+		name:                 "routematch",
+		implementationPrompt: "This workspace is a self-contained Git fixture. Implement routing.Choose and its path-matching helper in routing/types.go and routing/match.go. Only enabled rules match; an empty prefix never matches; prefix '/' matches absolute paths; other prefixes match only an exact path or a path beginning with prefix plus '/'. Choose the longest matching prefix, then higher Priority; preserve input order for a remaining tie. Do not mutate rules. Return false and a zero Rule if no rule matches. Run `go test -v ./...` and fix any failures before you finish.",
+		verificationPrompt:   "Resume this routing task. Run `go test -v ./...`; if any test fails, fix the implementation and rerun until all tests pass.",
+	},
+	{
+		name:                 "eventmerge",
+		implementationPrompt: "This workspace is a self-contained Git fixture. Implement journal.Merge and its event precedence helper in journal/event.go and journal/order.go. Return one event per key, choosing higher Revision first and then later At when revisions tie. For a complete tie, prefer the earliest event in existing, then incoming order. Keep Deleted events as tombstones. Return results sorted by Key and do not mutate either input. Run `go test -v ./...` and fix any failures before you finish.",
+		verificationPrompt:   "Resume this journal task. Run `go test -v ./...`; if any test fails, fix the implementation and rerun until all tests pass.",
+	},
+}
+
 type pairedPolicy struct {
-	resultPrefix    string
-	name            string
-	currentMode     string
-	treatmentEngine string
-	treatmentMode   string
-	toolSchema      bool
+	resultPrefix     string
+	name             string
+	currentMode      string
+	treatmentEngine  string
+	treatmentMode    string
+	toolSchema       bool
+	replayCompaction bool
+	tasks            []task
 }
 
 func runOutputCapExperiment(repo, out string, repetitions int, phaseTimeout time.Duration) int {
@@ -48,6 +66,14 @@ func runToolSchemaExperiment(repo, out string, repetitions int, phaseTimeout tim
 	return runPairedPolicyExperiment(repo, out, repetitions, phaseTimeout, pairedPolicy{
 		resultPrefix: "tool-schema", name: "Static tool-schema descriptions: current vs compact prose",
 		currentMode: "tool-schema-current", treatmentEngine: "pk-compact-schema", treatmentMode: "compact-tool-schema", toolSchema: true,
+	})
+}
+
+func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeout time.Duration) int {
+	return runPairedPolicyExperiment(repo, out, repetitions, phaseTimeout, pairedPolicy{
+		resultPrefix: "replay-compaction", name: "Large Bash result context replay: current vs compact captured result",
+		currentMode: "replay-compaction-current", treatmentEngine: "pk-compact-replayed-output", treatmentMode: "compact-replayed-shell-output",
+		replayCompaction: true, tasks: replayCompactionTasks,
 	})
 }
 
@@ -113,7 +139,7 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 		StartedAt: started, Model: modelID, Effort: effort, Repetitions: repetitions,
 		Timeout: phaseTimeout.String(), GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		PKRevision: gitRevision(ctx, repoPath), Unreal: "not used (paired pk-only policy ablation)",
-		Experiment: policy.name, ToolSchemaExperiment: policy.toolSchema,
+		Experiment: policy.name, ToolSchemaExperiment: policy.toolSchema, ReplayCompactionExperiment: policy.replayCompaction,
 		SourceTreeSHA256: source.TreeSHA256, GitDiffSHA256: source.DiffSHA256,
 	}
 	checkpoint := func() error {
@@ -121,7 +147,11 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 		return writeResults(resultDir, metadata)
 	}
 	for rep := 1; rep <= repetitions; rep++ {
-		tasks := append([]task(nil), outputCapTasks...)
+		sourceTasks := outputCapTasks
+		if len(policy.tasks) != 0 {
+			sourceTasks = policy.tasks
+		}
+		tasks := append([]task(nil), sourceTasks...)
 		if rep%2 == 0 {
 			tasks[0], tasks[1] = tasks[1], tasks[0]
 		}
@@ -131,7 +161,8 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 		}
 		for _, current := range tasks {
 			workspace := filepath.Join(tempRoot, fmt.Sprintf("%s-rep%d-paired", current.name, rep))
-			fixture := filepath.Join(repoPath, "benchmarks", "tasks", strings.TrimSuffix(current.name, "-control"))
+			fixtureName := strings.TrimSuffix(current.name, "-control")
+			fixture := filepath.Join(repoPath, "benchmarks", "tasks", fixtureName)
 			for _, engine := range engines {
 				if err := os.RemoveAll(workspace); err != nil {
 					return fail(fmt.Errorf("reset paired workspace: %w", err))

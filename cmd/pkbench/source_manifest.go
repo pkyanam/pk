@@ -27,7 +27,7 @@ type sourceManifest struct {
 
 func writeSourceManifest(repo, output string) (sourceManifest, error) {
 	manifest := sourceManifest{PKRevision: gitRevision(context.Background(), repo)}
-	roots := []string{"cmd/pk", "cmd/pkbench", "internal/runner", "internal/auth", "benchmarks/tasks/clamp", "benchmarks/tasks/noisyrepo", "benchmarks/experiments", "go.mod", "go.sum"}
+	roots := []string{"cmd/pk", "cmd/pkbench", "internal/runner", "internal/auth", "benchmarks/tasks/clamp", "benchmarks/tasks/noisyrepo", "benchmarks/tasks/routematch", "benchmarks/tasks/eventmerge", "benchmarks/experiments", "go.mod", "go.sum"}
 	var paths []string
 	for _, root := range roots {
 		path := filepath.Join(repo, root)

@@ -1,0 +1,7 @@
+# OMP identity note
+
+Research checked 2026-09-23. In this project’s coding-agent comparison context, **OMP most likely means Oh My Pi**, the terminal coding agent derived from `pi-mono`; it does not mean Open Memory Protocol. The acronym is ambiguous in public search, and several unrelated repositories and downstream forks use it. The closest upstream identity is [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi); current forks include [open-horizon-labs/oh-omp](https://github.com/open-horizon-labs/oh-omp) and [YanwuZeng/omp](https://github.com/YanwuZeng/omp). These repositories should not be treated as one immutable product version.
+
+The upstream project’s own [compaction documentation](https://github.com/can1357/oh-my-pi/blob/main/docs/compaction.md) describes manual compaction, overflow and incomplete-output recovery, threshold-based automatic compaction, mid-turn context maintenance, and idle maintenance. Its [context-file documentation](https://github.com/can1357/oh-my-pi/blob/main/docs/context-files.md) distinguishes session-opening project instructions from sticky rules that are carried on each request. These are implementation and product-documentation observations, not evidence that OMP uses fewer tokens or succeeds more often than pk.
+
+No performance comparison is claimed here. Before a matched pk comparison, pin the intended OMP repository, release/commit, provider/model adapter, tool set, context configuration, prompt, workspace fixture, verifier, and run budget. In particular, results from one fork must not be attributed to another.

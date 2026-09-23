@@ -20,6 +20,8 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 	limit := 0
 	compactSchema := false
 	measureSchema := false
+	compactReplay := false
+	measureReplay := false
 	switch policy {
 	case "current":
 	case "output-cap-4k":
@@ -28,10 +30,15 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 		compactSchema = true
 	case "tool-schema-current":
 		measureSchema = true
+	case "compact-replayed-shell-output":
+		compactReplay = true
+	case "replay-compaction-current":
+		measureReplay = true
 	default:
 		return nil, fmt.Errorf("unknown policy %q", policy)
 	}
 	counters := &experiment.Counters{}
+	replayCounters := &experiment.ReplayCompactionCounters{}
 	var schemaMetrics experiment.ToolSchemaMetrics
 	if path := os.Getenv("PK_BENCH_FAILED_COMMAND_LOG"); path != "" {
 		counters.CaptureFailedCommands(path)
@@ -51,6 +58,13 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 			}
 			return experiment.Decorate(base, 0, counters)
 		}
+		if compactReplay || measureReplay {
+			base = experiment.Decorate(base, 0, counters)
+			if compactReplay {
+				return experiment.CompactCapturedShellResults(base, replayCounters)
+			}
+			return experiment.MeasureCapturedShellResults(base, replayCounters)
+		}
 		return experiment.Decorate(base, limit, counters)
 	}
 	return func() {
@@ -64,6 +78,14 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 				"tool_description_bytes_after":    schemaMetrics.AfterBytes,
 				"tool_description_fields_changed": schemaMetrics.Changed,
 				"tool_schema_metrics_available":   true,
+			})
+		}
+		if compactReplay || measureReplay {
+			_ = json.NewEncoder(options.Output).Encode(map[string]any{
+				"type": "benchmark_context_compaction", "mode": policy,
+				"threshold_bytes":                      experiment.ReplayCompactionThreshold,
+				"context_compaction_metrics":           replayCounters.Snapshot(),
+				"context_compaction_metrics_available": true,
 			})
 		}
 		counts := counters.Snapshot()

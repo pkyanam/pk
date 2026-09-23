@@ -42,6 +42,32 @@ func TestParseToolSchemaMetrics(t *testing.T) {
 	}
 }
 
+func TestParseReplayCompactionMetrics(t *testing.T) {
+	output := `{"type":"benchmark_context_compaction","context_compaction_metrics":{"eligible_bash_results":2,"compacted_bash_results":1,"original_result_bytes":17000,"stored_result_bytes":9000,"missing_capture_fallbacks":1},"context_compaction_metrics_available":true}`
+	got := parseOutput("pk-compact-replayed-output", []byte(output))
+	if !got.replayMetricsAvailable || got.replayEligibleResults != 2 || got.replayCompactedResults != 1 || got.replayOriginalBytes != 17000 || got.replayStoredBytes != 9000 || got.replayMissingCapture != 1 {
+		t.Fatalf("context compaction metrics = %#v", got)
+	}
+}
+
+func TestReplayCompactionSummaryReportsManipulationAndMeasuredUsage(t *testing.T) {
+	passed := true
+	result := suite{Model: "gpt-6-luna", Effort: "medium", Experiment: "replay compact", ReplayCompactionExperiment: true, Records: []runRecord{{Engine: "pk-compact-replayed-output", Task: "fixture", Phase: "verification", ReplayMetricsAvailable: true, ReplayEligibleResults: 2, ReplayCompactedResults: 2, ReplayOriginalBytes: 18000, ReplayStoredBytes: 4000, CorrectnessPassed: &passed}}}
+	path := filepath.Join(t.TempDir(), "summary.md")
+	if err := writeMarkdown(path, result); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Eligible / compacted", "2 / 2", "18000 / 4000", "provider-reported", "do not establish general task quality or cache savings"} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("summary missing %q:\n%s", expected, content)
+		}
+	}
+}
+
 func TestToolSchemaSummaryReportsProviderUsageAndDoesNotAssertSavings(t *testing.T) {
 	passed := true
 	result := suite{
