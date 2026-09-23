@@ -46,7 +46,10 @@ func TestGenerateCopiesOnlyInvocationArtifact(t *testing.T) {
 	if err := os.WriteFile(fixture, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: codexHome, DriverModel: "gpt-6-astra", Effort: "low", Timeout: time.Second}, Request{Prompt: "mint leaf", OutputRoot: root, OutputPath: "images/leaf.png"})
+	// This is a successful fixture, not a timeout test. Leave enough room for
+	// cold Go builds and heavily loaded CI hosts; timeout semantics are tested
+	// separately with a deliberately hung worker below.
+	got, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: codexHome, DriverModel: "gpt-6-astra", Effort: "low", Timeout: 10 * time.Second}, Request{Prompt: "mint leaf", OutputRoot: root, OutputPath: "images/leaf.png"})
 	if err != nil {
 		t.Fatal(err)
 	}

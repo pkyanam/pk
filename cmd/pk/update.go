@@ -200,6 +200,15 @@ func currentExecutable() string {
 }
 
 func installStableLauncher(binaryDir, libDir string) error {
+	var err error
+	binaryDir, err = filepath.Abs(binaryDir)
+	if err != nil {
+		return err
+	}
+	libDir, err = filepath.Abs(libDir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(binaryDir, 0o755); err != nil {
 		return err
 	}
@@ -207,7 +216,7 @@ func installStableLauncher(binaryDir, libDir string) error {
 		return err
 	}
 	launcher := filepath.Join(binaryDir, "pk")
-	contents := "#!/bin/sh\nset -eu\nPK_LIB_DIR=" + shellQuote(libDir) + "\nexport PK_LIB_DIR\nPK_RELEASE_DIR=$(CDPATH= cd -- \"$PK_LIB_DIR/current\" && pwd -P)\nexport PK_RELEASE_DIR\nPK_UI_ENTRY=\"$PK_RELEASE_DIR/ui/dist/main.js\"\nexport PK_UI_ENTRY\nexec \"$PK_RELEASE_DIR/pk\" \"$@\"\n"
+	contents := "#!/bin/sh\nset -eu\nPK_BIN_DIR=" + shellQuote(binaryDir) + "\nexport PK_BIN_DIR\nPK_LIB_DIR=" + shellQuote(libDir) + "\nexport PK_LIB_DIR\nPK_RELEASE_DIR=$(CDPATH= cd -- \"$PK_LIB_DIR/current\" && pwd -P)\nexport PK_RELEASE_DIR\nPK_UI_ENTRY=\"$PK_RELEASE_DIR/ui/dist/main.js\"\nexport PK_UI_ENTRY\nexec \"$PK_RELEASE_DIR/pk\" \"$@\"\n"
 	tmp, err := os.CreateTemp(binaryDir, ".pk-launcher-*")
 	if err != nil {
 		return err
