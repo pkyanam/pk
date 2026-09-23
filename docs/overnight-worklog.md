@@ -584,3 +584,10 @@ gates or imply that every backlog item is complete.
 - Native clipboard replies are bound to their requested input, question and session. Stale replies do not queue attachments or insert text into a different question/session. AskUser path answers remain literal text. The earlier bracketed-paste form fix remains intact.
 - New empty-catalog sessions omit an unavailable SkillUse declaration (244 serialized UTF-8 bytes in the capture). Existing saved tool lists are preserved. Normal installed sessions have the bundled pk skill and therefore retain SkillUse; no general token saving is claimed.
 - A local startup check of `264b3c7` measured a 500 ms first TUI ready frame and 498–502 ms on two subsequent launches, without provider requests. The new trace attribution script reproduces observed pk/Unreal usage and request growth but cannot reconstruct omitted full request components. Evidence links were repaired and checked.
+
+### 08:00 EDT — morning handoff
+
+- Installed production release remains `35d448a`, fully tested. The final source-only benchmark addition provides opt-in count/byte instrumentation with response/usage correlation; it does not save request content and has not been used in a paid/live cohort. Unreal component measurements remain unavailable.
+- Wrapper, benchmark-driver, and tagged CLI hook race tests pass. Root preserved the untagged build for ordinary benchmark runs and made zero-response metric sets unavailable rather than a successful capture.
+- Morning deliverables: docs/overnight-report.md, the complete checklist, measured benchmark/performance records, launch artwork gallery and draft X posts, and the local reviewed Cmux/Cap coding video. No social posts or private emails were sent.
+- Not all requested work is complete. Comparative superiority, general cost savings, original freeze diagnosis, native drag/drop, Cloudflare account OAuth, real-editor ACP and broader provider interoperability remain open. The overnight schedule is paused after this handoff; the overall improvement goal remains unachieved.

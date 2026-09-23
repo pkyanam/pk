@@ -9,14 +9,19 @@ import (
 	"strconv"
 
 	"github.com/pkyanam/pk/cmd/pkbench/experiment"
+	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 func beginBenchmarkRun(options *runner.Options) (func(), error) {
 	policy := os.Getenv("PK_BENCH_POLICY")
-	if policy == "" {
+	metricsPath := os.Getenv("PK_BENCH_CONTEXT_METRICS_FILE")
+	if policy == "" && metricsPath == "" {
 		return func() {}, nil
+	}
+	if policy == "" {
+		policy = "current"
 	}
 	limit := 0
 	compactSchema := false
@@ -60,6 +65,18 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 			replayExcerpt = value
 		}
 	}
+	var metricsFile *os.File
+	if metricsPath != "" {
+		if options.Adapter == nil {
+			return nil, fmt.Errorf("benchmark context metrics require an initialized adapter")
+		}
+		file, err := os.OpenFile(metricsPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("create benchmark context metrics file")
+		}
+		metricsFile = file
+		options.Adapter = &benchcontext.Adapter{Next: options.Adapter, Output: metricsFile}
+	}
 	counters := &experiment.Counters{}
 	replayCounters := &experiment.ReplayCompactionCounters{}
 	var schemaMetrics experiment.ToolSchemaMetrics
@@ -91,6 +108,10 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 		return experiment.Decorate(base, limit, counters)
 	}
 	return func() {
+		if metricsFile != nil {
+			_ = metricsFile.Sync()
+			_ = metricsFile.Close()
+		}
 		if !options.JSONL || options.Output == nil {
 			return
 		}

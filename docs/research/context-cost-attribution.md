@@ -32,7 +32,15 @@ These deltas combine whatever changed in the full request between responses, inc
 
 Tool and sideband evidence is asymmetric. The pk export contains 14 distinct `call_id` values and 12 assistant records. The Unreal export contains 28 `tool_call_status` records, 24 input markers, and 22 turn markers, but its sanitized tool status rows omit IDs, names, and payloads. These are event counts, not equivalent counts of model-visible messages or tool payload tokens. The pk output excerpts are bounded previews, not complete tool results. Neither trace format preserves the exact full serialized model request by component, so repeated messages, schemas, tool output, and orchestration metadata cannot be separated from the aggregate provider input count.
 
-The highest-value next experiment is one instrumented rerun of the same task/settings cohort, without requiring the model to produce exactly 22 responses again. At each provider request, record only component byte counts and item counts for system prompt, tool schemas, current user input, prior assistant messages, prior tool results, and orchestration/sideband content; correlate that metadata with the existing response ID and provider-reported input tokens. Do not persist the request text. This will show whether the larger initial/resumed requests are dominated by static prompt/schema or accumulated conversation/tool payload, without changing model behavior. Then ablate only the largest measured component in a separate paired test. The current exports do not contain enough source material to reconstruct this retrospectively.
+The next experiment is an opt-in instrumented rerun of the same task/settings cohort; it does not require the model to produce exactly 22 responses again. `pkbench` can now build a tagged pk binary that records content-free component item and JSON-value byte counts for each adapter request, correlated with response ID and provider-reported usage. It records system prompt (also included in `message_roles.system`), tool schemas, message roles, tool calls, tool results, and other input. Byte counts cover encoded item values, not transport envelope bytes or tokens. Unreal v0.1.1 has no equivalent adapter instrumentation seam, so these component metrics are explicitly unavailable for that engine. No request text or provider error text is written. The metric records are appended to each pk phase trace.
+
+Run the same task/settings cohort with instrumentation enabled:
+
+```sh
+go run ./cmd/pkbench -context-metrics -tasks clamp,intervals -repetitions 2
+```
+
+The benchmark still makes provider calls and requires the normal pk credentials. The instrumentation is opt-in and does not change model behavior. Use the resulting metrics to choose a single component for a later paired ablation; do not infer a token reduction directly from byte counts.
 
 The existing sanitized traces can be summarized without network access or provider calls:
 

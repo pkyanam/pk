@@ -92,6 +92,7 @@ type runRecord struct {
 	CacheWriteAvailable          bool   `json:"cache_write_input_tokens_available"`
 	ExitCode                     int    `json:"exit_code"`
 	Error                        string `json:"error,omitempty"`
+	ContextMetricsAvailable      bool   `json:"context_metrics_available"`
 	CorrectnessPassed            *bool  `json:"correctness_passed,omitempty"`
 	PrivateFailedCommands        string `json:"private_failed_commands,omitempty"`
 }
@@ -113,6 +114,7 @@ type suite struct {
 	Experiment                 string      `json:"experiment,omitempty"`
 	ToolSchemaExperiment       bool        `json:"tool_schema_experiment,omitempty"`
 	ReplayCompactionExperiment bool        `json:"replay_compaction_experiment,omitempty"`
+	ContextMetricsEnabled      bool        `json:"context_metrics_enabled,omitempty"`
 	ReplayCompactionProfile    string      `json:"replay_compaction_profile,omitempty"`
 	ReplayThresholdBytes       int         `json:"replay_compaction_threshold_bytes,omitempty"`
 	ReplayExcerptRunes         int         `json:"replay_compaction_excerpt_runes,omitempty"`
@@ -176,6 +178,7 @@ func run(args []string) int {
 	replayTasks := flags.String("replay-tasks", "", "comma-separated replay-ablation fixtures (default: routematch,eventmerge)")
 	replayProfile := flags.String("replay-compaction-profile", "standard", "replay compaction treatment: standard, aggressive, or large-output (requires -replay-compaction-ablation)")
 	effortExperiment := flags.Bool("effort-ablation", false, "run the paired Luna low-vs-medium effort experiment only")
+	contextMetrics := flags.Bool("context-metrics", false, "capture count-only pk request component bytes and response usage (Unreal baseline unavailable)")
 	effortTasks := flags.String("effort-tasks", "webhook,jobqueue", "comma-separated effort-ablation fixtures (default: webhook,jobqueue)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -209,6 +212,10 @@ func run(args []string) int {
 	}
 	if selectedExperiments > 0 && (*taskSelection != "" || *totalTimeout != 20*time.Minute) {
 		fmt.Fprintln(os.Stderr, "-tasks and -total-timeout apply only to the matched-engine pilot")
+		return 2
+	}
+	if *contextMetrics && selectedExperiments > 0 {
+		fmt.Fprintln(os.Stderr, "-context-metrics applies only to the matched-engine pilot")
 		return 2
 	}
 	if *replayTasks != "" && !*replayCompactionExperiment {
@@ -284,8 +291,14 @@ func run(args []string) int {
 	}
 	defer os.RemoveAll(tempRoot)
 	pkBinary := filepath.Join(tempRoot, "pk")
-	if err := build(ctx, repoPath, pkBinary, "./cmd/pk"); err != nil {
-		return fail(err)
+	var pkBuildErr error
+	if *contextMetrics {
+		pkBuildErr = buildPKBenchCLI(ctx, repoPath, pkBinary)
+	} else {
+		pkBuildErr = build(ctx, repoPath, pkBinary, "./cmd/pk")
+	}
+	if pkBuildErr != nil {
+		return fail(pkBuildErr)
 	}
 	var unrealBinary string
 	if *includeUnreal {
@@ -316,6 +329,7 @@ func run(args []string) int {
 		StartedAt: started, Model: modelID, Effort: effort, Repetitions: *repetitions,
 		Timeout: timeout.String(), WholeTimeout: totalTimeout.String(), GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		PKRevision: gitRevision(ctx, repoPath), Unreal: "v0.1.1",
+		ContextMetricsEnabled: *contextMetrics,
 	}
 	for _, selected := range selectedTasks {
 		metadata.TaskSelection = append(metadata.TaskSelection, selected.name)
@@ -336,7 +350,7 @@ func run(args []string) int {
 					return fail(err)
 				}
 				sessionID := ""
-				first, firstErr := runPhase(ctx, phaseOptions{engine: engine, phase: "implementation", prompt: current.implementationPrompt, workspace: workspace, timeout: *timeout, binary: pkBinary, unreal: unrealBinary, pkHome: pkHome, authPath: authPath, outputDir: resultDir, skillsDir: emptySkills, taskName: current.name, repetition: rep})
+				first, firstErr := runPhase(ctx, phaseOptions{engine: engine, phase: "implementation", prompt: current.implementationPrompt, workspace: workspace, timeout: *timeout, binary: pkBinary, unreal: unrealBinary, pkHome: pkHome, authPath: authPath, outputDir: resultDir, skillsDir: emptySkills, taskName: current.name, repetition: rep, contextMetrics: *contextMetrics})
 				metadata.Records = append(metadata.Records, first)
 				if err := checkpoint(); err != nil {
 					return fail(err)
@@ -358,7 +372,7 @@ func run(args []string) int {
 					continue
 				}
 				sessionID = first.SessionID
-				second, secondErr := runPhase(ctx, phaseOptions{engine: engine, phase: "verification", prompt: current.verificationPrompt, workspace: workspace, sessionID: sessionID, timeout: *timeout, binary: pkBinary, unreal: unrealBinary, pkHome: pkHome, authPath: authPath, outputDir: resultDir, skillsDir: emptySkills, taskName: current.name, repetition: rep})
+				second, secondErr := runPhase(ctx, phaseOptions{engine: engine, phase: "verification", prompt: current.verificationPrompt, workspace: workspace, sessionID: sessionID, timeout: *timeout, binary: pkBinary, unreal: unrealBinary, pkHome: pkHome, authPath: authPath, outputDir: resultDir, skillsDir: emptySkills, taskName: current.name, repetition: rep, contextMetrics: *contextMetrics})
 				metadata.Records = append(metadata.Records, second)
 				if err := checkpoint(); err != nil {
 					return fail(err)
@@ -394,6 +408,7 @@ type phaseOptions struct {
 	engine, phase, prompt, workspace, sessionID, binary, unreal, mode, effort, pkHome, authPath, outputDir, skillsDir, taskName string
 	repetition                                                                                                                  int
 	replayThresholdBytes, replayExcerptRunes                                                                                    int
+	contextMetrics                                                                                                              bool
 	timeout                                                                                                                     time.Duration
 }
 
@@ -449,6 +464,10 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		}
 		cmd = exec.Command(options.binary, args...)
 		cmd.Env = withEnv(os.Environ(), "PK_HOME", options.pkHome)
+		if options.contextMetrics {
+			metricPath := filepath.Join(options.outputDir, fmt.Sprintf("%s-rep%d-%s-%s.context.jsonl", options.engine, options.repetition, options.taskName, options.phase))
+			cmd.Env = withEnv(cmd.Env, "PK_BENCH_CONTEXT_METRICS_FILE", metricPath)
+		}
 	} else {
 		args := []string{"-workspace", options.workspace, "-session-directory", filepath.Join(filepath.Dir(options.workspace), "unreal-sessions", options.taskName+fmt.Sprintf("-%d", options.repetition))}
 		cmd = exec.Command(options.unreal, args...)
@@ -476,10 +495,24 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		}
 	}
 	usage := parseOutput(options.engine, stdout.Bytes())
+	contextMetricsAvailable := false
 	if usage.session == "" && options.sessionID != "" {
 		usage.session = options.sessionID
 	}
 	rawName := fmt.Sprintf("%s-rep%d-%s-%s.jsonl", options.engine, options.repetition, options.taskName, options.phase)
+	if options.contextMetrics {
+		if options.engine == "pk" {
+			metricPath := filepath.Join(options.outputDir, fmt.Sprintf("%s-rep%d-%s-%s.context.jsonl", options.engine, options.repetition, options.taskName, options.phase))
+			metricRecords, available, metricErr := readContextMetrics(metricPath, usage.responses)
+			if metricErr != nil {
+				return runRecord{}, metricErr
+			}
+			usage.clean = append(usage.clean, metricRecords...)
+			contextMetricsAvailable = available
+		} else if options.engine == "unreal-v0.1.1" {
+			usage.clean = append(usage.clean, map[string]any{"type": "benchmark_context_unavailable", "reason": "Unreal v0.1.1 CLI does not expose a request adapter instrumentation seam"})
+		}
+	}
 	if err := writeJSONLines(filepath.Join(options.outputDir, rawName), usage.clean); err != nil {
 		return runRecord{}, err
 	}
@@ -506,6 +539,7 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		CachedTokens: usage.cached, CachedTokensAvailable: usage.cachedAvailable,
 		CacheWriteTokens: usage.writes, CacheWriteAvailable: usage.writesAvailable, ExitCode: exitCode,
 	}
+	record.ContextMetricsAvailable = contextMetricsAvailable
 	if err != nil {
 		record.Error = sanitizeError(err.Error() + " " + stderr.String())
 		record.Error = cancellationDescription(parent.Err(), ctx.Err(), record.Error)
@@ -839,6 +873,44 @@ func build(ctx context.Context, repo, output, target string) error {
 		return fmt.Errorf("build %s: %s", target, sanitizeError(string(data)))
 	}
 	return nil
+}
+
+func buildPKBenchCLI(ctx context.Context, repo, output string) error {
+	cmd := exec.CommandContext(ctx, "go", "build", "-tags", "pkbench", "-o", output, "./cmd/pk")
+	cmd.Dir = repo
+	if data, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("build pk benchmark adapter: %s", sanitizeError(string(data)))
+	}
+	return nil
+}
+
+func readContextMetrics(path string, expectedResponses int) ([]map[string]any, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("read benchmark context metrics")
+	}
+	var records []map[string]any
+	seen := make(map[string]bool)
+	available := expectedResponses > 0
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var value map[string]any
+		if err := json.Unmarshal(line, &value); err != nil || value["type"] != "benchmark_context" {
+			return nil, false, errors.New("invalid benchmark context metrics record")
+		}
+		responseID := stringValue(value["response_id"])
+		if responseID == "" || seen[responseID] {
+			available = false
+		}
+		seen[responseID] = true
+		records = append(records, value)
+	}
+	if len(records) != expectedResponses {
+		available = false
+	}
+	return records, available, nil
 }
 
 // checkUnrealStartup exercises its actual flag parser and strict JSON request
