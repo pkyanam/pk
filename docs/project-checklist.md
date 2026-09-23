@@ -119,3 +119,9 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 ### Latest installed checkpoint: interactive ImageGen
 
 - Installed clean revision `616102f` adds `/image` opt-in settings with keyboard and mouse, default Astra image worker separate from Luna chat, and saved-driver consistency on resume. Installed RPC enable/new/disable/new registry smoke passed in an isolated home. Existing one-shot live image proof remains the generation evidence; no additional paid image was requested for this configuration check.
+
+### Open session usability fixes from native review
+
+- [ ] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Existing Enter resume and archive lease checks already pass.
+- [ ] Restore compact tool activity on attach/reload/history paging rather than only user/assistant text. Preserve event order, paging bounds, and exclusion of analysis.
+- [ ] Present saved attachment metadata as user-facing files instead of showing generated model-input wrappers; do not silently strip arbitrary user-authored text.
