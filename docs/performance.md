@@ -107,3 +107,13 @@ The startup script now changes the PTY child to the supplied temporary workspace
 ```sh
 python3 scripts/perf-startup.py ~/.local/bin/pk --samples 3 --tui-samples 3
 ```
+
+## Repeated session lists
+
+Revision `c7f0c0d` caches up to 256 session summaries in memory. Log and context-sidecar file identity, size, mode, and modification time must match; reads are checked again before insertion. Active-run and lease status are checked on every listing. Changed or damaged logs are read normally. This avoids repeatedly decoding unchanged transcripts without adding persistent cache files.
+
+On Apple M3 with Go 1.27, the 32-session fixture measured 28.64 ms/op and 44.6 MB/op before this change. A five-iteration root verification after the change measured 9.83 ms/op and 9.16 MB/op including the initial miss, and 1.90 ms/op and 222 KB/op with the cache already populated. These small, shared-machine samples describe local list processing, not provider latency or token savings.
+
+```sh
+go test ./internal/sessionmanager -run '^$' -bench 'BenchmarkList.*LargeSessionLogs$' -benchmem -benchtime=5x
+```

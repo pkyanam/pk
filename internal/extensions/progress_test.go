@@ -4,9 +4,66 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
+
+type lifecycleServeHandler struct{ received chan LifecycleEvent }
+
+func (h lifecycleServeHandler) Initialize(_ context.Context, params InitializeParams) (InitializeResult, error) {
+	result := InitializeResult{APIVersion: ProtocolVersion, ID: params.ID}
+	for _, feature := range params.HostFeatures {
+		if feature == HostFeatureLifecycle {
+			result.Features = []string{HostFeatureLifecycle}
+		}
+	}
+	return result, nil
+}
+func (h lifecycleServeHandler) ExecuteTool(context.Context, ToolExecuteParams) (ToolResult, error) {
+	return ToolResult{}, errors.New("unused")
+}
+func (h lifecycleServeHandler) ExecuteCommand(context.Context, CommandExecuteParams) (string, error) {
+	return "", errors.New("unused")
+}
+func (h lifecycleServeHandler) NotifyLifecycle(_ context.Context, event LifecycleEvent) error {
+	h.received <- event
+	return nil
+}
+
+func TestServeLifecycleRequiresNegotiatedWorkerOptIn(t *testing.T) {
+	event := LifecycleEvent{Type: LifecycleRunStart, SessionID: "session-1", Model: "gpt-6-luna", Workspace: "/workspace", Status: "started"}
+	encoded, _ := json.Marshal(event)
+	request := `{"id":"init","method":"initialize","params":{"api_version":"pk.extensions/v1","id":"observer","host_features":["lifecycle_notifications"]}}` + "\n" +
+		`{"id":"event","method":"lifecycle.notify","params":` + string(encoded) + "}\n"
+	var output bytes.Buffer
+	received := make(chan LifecycleEvent, 1)
+	if err := Serve(context.Background(), strings.NewReader(request), &output, lifecycleServeHandler{received: received}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		if got != event {
+			t.Fatalf("event=%+v want %+v", got, event)
+		}
+	default:
+		t.Fatal("negotiated lifecycle event not delivered")
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 || strings.Contains(lines[1], `"error"`) {
+		t.Fatalf("lifecycle response: %s", output.String())
+	}
+
+	legacy := `{"id":"init","method":"initialize","params":{"api_version":"pk.extensions/v1","id":"observer"}}` + "\n" +
+		`{"id":"event","method":"lifecycle.notify","params":` + string(encoded) + "}\n"
+	output.Reset()
+	if err := Serve(context.Background(), strings.NewReader(legacy), &output, lifecycleServeHandler{received: received}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "lifecycle notifications were not negotiated") {
+		t.Fatalf("legacy worker unexpectedly accepted lifecycle event: %s", output.String())
+	}
+}
 
 type progressServeHandler struct{ announce bool }
 

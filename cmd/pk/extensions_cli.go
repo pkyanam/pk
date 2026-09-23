@@ -69,6 +69,18 @@ func configureCLIExtensionsWithLoadNotices(ctx context.Context, options *runner.
 	}
 	options.DecorateRegistry = composeRegistryDecorators(options.DecorateRegistry, decorators...)
 	options.RemoteJobHandlers = composeRemoteJobHandlers(options.RemoteJobHandlers, handlerFactories...)
+	if host != nil {
+		previousObserver := options.LifecycleObserver
+		options.LifecycleObserver = func(event runner.LifecycleEvent) {
+			if previousObserver != nil {
+				previousObserver(event)
+			}
+			host.NotifyLifecycle(extensions.LifecycleEvent{
+				Type: event.Type, RunID: event.RunID, SessionID: event.SessionID,
+				Model: event.Model, Workspace: event.Workspace, Status: event.Status,
+			})
+		}
+	}
 	return host, nil
 }
 

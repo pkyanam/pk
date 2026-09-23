@@ -42,24 +42,111 @@ func ProcessFactory(parent context.Context, manifest Manifest, workspace string)
 	worker := &processWorker{
 		cmd: cmd, cancel: cancel, stdin: stdin, stderr: stderr,
 		readEvents: make(chan responseEvent, 16), done: make(chan struct{}), readStop: make(chan struct{}),
-		callGate: make(chan struct{}, 1),
+		callGate: make(chan struct{}, 1), lifecycleQueue: make(chan []byte, MaxLifecycleQueue),
 	}
 	go worker.readResponses(stdout)
+	go worker.writeLifecycleNotifications()
 	go func() { _ = cmd.Wait(); close(worker.done) }()
 	return worker, nil
 }
 
 type processWorker struct {
-	cmd        *exec.Cmd
-	cancel     context.CancelFunc
-	stdin      io.WriteCloser
-	stderr     *boundedBuffer
-	readEvents chan responseEvent
-	done       chan struct{}
-	readStop   chan struct{}
-	callGate   chan struct{}
-	closeOnce  sync.Once
-	nextID     atomic.Uint64
+	cmd             *exec.Cmd
+	cancel          context.CancelFunc
+	stdin           io.WriteCloser
+	stderr          *boundedBuffer
+	readEvents      chan responseEvent
+	done            chan struct{}
+	readStop        chan struct{}
+	callGate        chan struct{}
+	lifecycleQueue  chan []byte
+	stdinMu         sync.Mutex
+	lifecycleMu     sync.Mutex
+	lifecycleClosed bool
+	lifecycleWG     sync.WaitGroup
+	closeOnce       sync.Once
+	nextID          atomic.Uint64
+}
+
+// NotifyLifecycle enqueues a one-way JSONL frame. It never waits for the
+// extension to respond and does not acquire the tool-call gate.
+func (w *processWorker) NotifyLifecycle(event LifecycleEvent) bool {
+	params, err := json.Marshal(event)
+	if err != nil {
+		return false
+	}
+	line, err := json.Marshal(Request{Method: "lifecycle.notify", Params: params})
+	if err != nil || len(line) > maxMessageSize {
+		return false
+	}
+	line = append(line, '\n')
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+	if w.lifecycleClosed {
+		return false
+	}
+	select {
+	case <-w.done:
+		return false
+	default:
+	}
+	w.lifecycleWG.Add(1)
+	select {
+	case w.lifecycleQueue <- line:
+		return true
+	default:
+		w.lifecycleWG.Done()
+		return false
+	}
+}
+
+func (w *processWorker) WaitLifecycle(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.lifecycleMu.Lock()
+	w.lifecycleClosed = true
+	w.lifecycleMu.Unlock()
+	done := make(chan struct{})
+	go func() { w.lifecycleWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.done:
+		return errors.New("extension exited before lifecycle notifications drained")
+	}
+}
+
+func (w *processWorker) writeLifecycleNotifications() {
+	defer func() {
+		w.lifecycleMu.Lock()
+		w.lifecycleClosed = true
+		w.lifecycleMu.Unlock()
+		for {
+			select {
+			case <-w.lifecycleQueue:
+				w.lifecycleWG.Done()
+			default:
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-w.done:
+			return
+		case line := <-w.lifecycleQueue:
+			w.stdinMu.Lock()
+			_, err := w.stdin.Write(line)
+			w.stdinMu.Unlock()
+			w.lifecycleWG.Done()
+			if err != nil {
+				return
+			}
+		}
+	}
 }
 
 type responseEvent struct {
@@ -160,7 +247,12 @@ func (w *processWorker) Call(ctx context.Context, method string, params any, res
 	}
 	line = append(line, '\n')
 	writeDone := make(chan error, 1)
-	go func() { _, writeErr := w.stdin.Write(line); writeDone <- writeErr }()
+	go func() {
+		w.stdinMu.Lock()
+		_, writeErr := w.stdin.Write(line)
+		w.stdinMu.Unlock()
+		writeDone <- writeErr
+	}()
 	select {
 	case err = <-writeDone:
 		if err != nil {

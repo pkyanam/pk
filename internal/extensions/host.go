@@ -18,6 +18,8 @@ import (
 
 const (
 	defaultCallTimeout           = 10 * time.Second
+	lifecycleCallTimeout         = 25 * time.Millisecond
+	lifecycleCloseDrain          = 250 * time.Millisecond
 	MaxSlashCommandArgumentBytes = 16 << 10
 	MaxSlashCommandResultBytes   = 64 << 10
 )
@@ -28,10 +30,12 @@ type Report struct {
 }
 
 type loadedExtension struct {
-	manifest Manifest
-	worker   Worker
-	mu       sync.Mutex
-	disabled error
+	manifest        Manifest
+	worker          Worker
+	lifecycle       map[string]bool
+	lifecycleEvents chan LifecycleEvent
+	mu              sync.Mutex
+	disabled        error
 }
 
 // SlashCommand is a discoverable, explicitly invokable command registration.
@@ -63,6 +67,9 @@ type Host struct {
 	closed            bool
 	progressEvents    chan ProgressEvent
 	progressHandler   func(ProgressEvent)
+	lifecycleStop     chan struct{}
+	lifecycleWG       sync.WaitGroup
+	lifecycleDone     chan struct{}
 }
 
 // NewHost loads only the manifests passed by its caller. Invalid or failing
@@ -81,7 +88,7 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 	ctx, cancel := context.WithCancel(parent)
 	host := &Host{ctx: ctx, cancel: cancel, workspace: workspace, callTimeout: defaultCallTimeout,
 		byID: make(map[string]*loadedExtension), tools: make(map[string]*loadedExtension), commands: make(map[string]*loadedExtension),
-		ambiguousCommands: make(map[string]bool), slashCommands: make(map[string]commandBinding), progressEvents: make(chan ProgressEvent, MaxProgressEventsPerCall)}
+		ambiguousCommands: make(map[string]bool), slashCommands: make(map[string]commandBinding), progressEvents: make(chan ProgressEvent, MaxProgressEventsPerCall), lifecycleStop: make(chan struct{}), lifecycleDone: make(chan struct{})}
 	go host.dispatchProgress()
 	report := Report{}
 	for _, manifest := range manifests {
@@ -103,7 +110,7 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 			continue
 		}
 		loaded := &loadedExtension{manifest: manifest, worker: worker}
-		initParams := InitializeParams{APIVersion: ProtocolVersion, ID: manifest.ID, Version: manifest.Version, Workspace: workspace, Capabilities: append([]string(nil), manifest.Capabilities...), HostFeatures: []string{HostFeatureToolProgress}}
+		initParams := InitializeParams{APIVersion: ProtocolVersion, ID: manifest.ID, Version: manifest.Version, Workspace: workspace, Capabilities: append([]string(nil), manifest.Capabilities...), HostFeatures: []string{HostFeatureToolProgress, HostFeatureLifecycle}}
 		var initResult InitializeResult
 		initCtx, initCancel := context.WithTimeout(ctx, defaultCallTimeout)
 		err = worker.Call(initCtx, "initialize", initParams, &initResult)
@@ -116,7 +123,18 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 			report.Disabled = append(report.Disabled, fmt.Errorf("initialize extension %q: %w", manifest.ID, err))
 			continue
 		}
+		if len(manifest.Hooks) > 0 {
+			loaded.lifecycle = make(map[string]bool, len(manifest.Hooks))
+			for _, hook := range manifest.Hooks {
+				loaded.lifecycle[hook.Event] = true
+			}
+			loaded.lifecycleEvents = make(chan LifecycleEvent, MaxLifecycleQueue)
+		}
 		host.byID[manifest.ID] = loaded
+		if loaded.lifecycleEvents != nil {
+			host.lifecycleWG.Add(1)
+			go host.dispatchLifecycle(loaded)
+		}
 		for _, spec := range manifest.Tools {
 			host.tools[spec.Name] = loaded
 		}
@@ -132,6 +150,7 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 		}
 		report.Loaded = append(report.Loaded, manifest.ID)
 	}
+	go func() { host.lifecycleWG.Wait(); close(host.lifecycleDone) }()
 	return host, report, nil
 }
 
@@ -144,6 +163,19 @@ func validateInitialize(manifest Manifest, result InitializeResult) error {
 	}
 	if !sameNames(namesOfCommands(manifest.Commands), result.Commands) {
 		return errors.New("worker command registrations do not match manifest")
+	}
+	features := make(map[string]bool, len(result.Features))
+	for _, feature := range result.Features {
+		if feature != HostFeatureLifecycle && feature != HostFeatureToolProgress {
+			return fmt.Errorf("worker declared unsupported feature %q", feature)
+		}
+		if features[feature] {
+			return fmt.Errorf("worker repeated feature %q", feature)
+		}
+		features[feature] = true
+	}
+	if len(manifest.Hooks) > 0 && !features[HostFeatureLifecycle] {
+		return errors.New("manifest declares lifecycle observers but worker did not opt in with lifecycle_notifications")
 	}
 	return nil
 }
@@ -371,6 +403,84 @@ func (h *Host) enqueueProgress(event ProgressEvent) bool {
 	}
 }
 
+// NotifyLifecycle queues an observer event without waiting for an extension
+// process. It returns false when no opted-in observer declared the event or
+// every relevant bounded queue is full. The event workspace is always replaced
+// with the host's canonical workspace. Events contain metadata only.
+func (h *Host) NotifyLifecycle(event LifecycleEvent) bool {
+	if !validLifecycleEvent(event) {
+		return false
+	}
+	h.mu.RLock()
+	if h.closed {
+		h.mu.RUnlock()
+		return false
+	}
+	event.Workspace = h.workspace
+	accepted := false
+	for _, ext := range h.byID {
+		if ext.lifecycleEvents == nil || !ext.lifecycle[event.Type] {
+			continue
+		}
+		select {
+		case ext.lifecycleEvents <- event:
+			accepted = true
+		default:
+			// Observer backpressure never reaches the run that emitted it.
+		}
+	}
+	h.mu.RUnlock()
+	return accepted
+}
+
+func validLifecycleEvent(event LifecycleEvent) bool {
+	switch event.Type {
+	case LifecycleRunStart, LifecycleResponseComplete, LifecycleRunEnd:
+	default:
+		return false
+	}
+	for _, value := range []string{event.RunID, event.SessionID, event.Model, event.Status} {
+		if !utf8.ValidString(value) || len(value) > 512 {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Host) dispatchLifecycle(ext *loadedExtension) {
+	defer h.lifecycleWG.Done()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-h.lifecycleStop:
+			for {
+				select {
+				case event := <-ext.lifecycleEvents:
+					h.deliverLifecycle(ext, event)
+				default:
+					return
+				}
+			}
+		case event := <-ext.lifecycleEvents:
+			h.deliverLifecycle(ext, event)
+		}
+	}
+}
+
+func (h *Host) deliverLifecycle(ext *loadedExtension, event LifecycleEvent) {
+	if notifier, ok := ext.worker.(LifecycleNotifier); ok {
+		notifier.NotifyLifecycle(event)
+		return
+	}
+	ctx, cancel := context.WithTimeout(h.ctx, lifecycleCallTimeout)
+	defer cancel()
+	var ignored struct{}
+	// Notification failures are isolated from tool/command execution and do
+	// not disable the extension or alter model-visible content.
+	_ = ext.worker.Call(ctx, "lifecycle.notify", event, &ignored)
+}
+
 func (h *Host) dispatchProgress() {
 	for {
 		select {
@@ -490,12 +600,26 @@ func (h *Host) Close() error {
 		return nil
 	}
 	h.closed = true
-	h.cancel()
+	close(h.lifecycleStop)
 	workers := make([]Worker, 0, len(h.byID))
 	for _, ext := range h.byID {
 		workers = append(workers, ext.worker)
 	}
 	h.mu.Unlock()
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), lifecycleCloseDrain)
+	select {
+	case <-h.lifecycleDone:
+	case <-drainCtx.Done():
+	}
+	if drainCtx.Err() == nil {
+		for _, worker := range workers {
+			if drainer, ok := worker.(LifecycleDrainer); ok {
+				_ = drainer.WaitLifecycle(drainCtx)
+			}
+		}
+	}
+	drainCancel()
+	h.cancel()
 	var closeErr error
 	for _, worker := range workers {
 		if err := worker.Close(); err != nil && closeErr == nil {

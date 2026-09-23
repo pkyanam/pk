@@ -26,6 +26,8 @@ type fakeWorker struct {
 	commandCalls  int
 	commandArgs   []string
 	commandResult string
+	features      []string
+	lifecycle     chan LifecycleEvent
 }
 
 func (w *fakeWorker) Call(ctx context.Context, method string, params any, result any) error {
@@ -40,7 +42,19 @@ func (w *fakeWorker) Call(ctx context.Context, method string, params any, result
 		if err := convert(params, &p); err != nil {
 			return err
 		}
-		return convertInto(InitializeResult{APIVersion: ProtocolVersion, ID: p.ID, Tools: w.tools, Commands: w.commands}, result)
+		return convertInto(InitializeResult{APIVersion: ProtocolVersion, ID: p.ID, Tools: w.tools, Commands: w.commands, Features: w.features}, result)
+	case "lifecycle.notify":
+		var event LifecycleEvent
+		if err := convert(params, &event); err != nil {
+			return err
+		}
+		if w.lifecycle != nil {
+			select {
+			case w.lifecycle <- event:
+			default:
+			}
+		}
+		return convertInto(struct{}{}, result)
 	case "tool.execute":
 		var p ToolExecuteParams
 		if err := convert(params, &p); err != nil {
@@ -307,8 +321,13 @@ func TestManifestRejectsUnsupportedDeclarationsAndRelativeExecutableIsStable(t *
 	}
 	manifest = statsManifest("stats-extension", "workspace_stats")
 	manifest.Hooks = []HookSpec{{Event: "agent_start", Mode: "observe"}}
-	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "not supported") {
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported lifecycle event") {
 		t.Fatalf("unsupported hook validation: %v", err)
+	}
+	manifest = statsManifest("stats-extension", "workspace_stats")
+	manifest.Hooks = []HookSpec{{Event: LifecycleRunStart, Mode: "transform"}}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "mode observe") {
+		t.Fatalf("transform hook validation: %v", err)
 	}
 
 	path := filepath.Join(t.TempDir(), "manifest.json")
@@ -327,6 +346,129 @@ func TestManifestRejectsUnsupportedDeclarationsAndRelativeExecutableIsStable(t *
 	}
 	if err := os.Mkdir(filepath.Join(filepath.Dir(path), "pipe"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLifecycleNotificationsRequireWorkerOptInAndDeliverMetadata(t *testing.T) {
+	workspace := t.TempDir()
+	manifest := statsManifest("observer", "observer_tool")
+	manifest.Hooks = []HookSpec{{Event: LifecycleRunStart, Mode: "observe"}, {Event: LifecycleResponseComplete, Mode: "observe"}, {Event: LifecycleRunEnd, Mode: "observe"}}
+	var worker *fakeWorker
+	host, report, err := NewHost(context.Background(), workspace, []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		worker = &fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands), features: []string{HostFeatureLifecycle}, lifecycle: make(chan LifecycleEvent, 8)}
+		return worker, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if len(report.Loaded) != 1 || len(report.Disabled) != 0 {
+		t.Fatalf("load report: %+v", report)
+	}
+	event := LifecycleEvent{Type: LifecycleRunStart, RunID: "run-1", SessionID: "session-1", Model: "gpt-6-luna", Workspace: "/untrusted/override", Status: "started"}
+	if !host.NotifyLifecycle(event) {
+		t.Fatal("opted-in observer did not accept event")
+	}
+	select {
+	case got := <-worker.lifecycle:
+		if got.Type != event.Type || got.RunID != event.RunID || got.SessionID != event.SessionID || got.Model != event.Model || got.Status != event.Status || got.Workspace != workspace {
+			t.Fatalf("lifecycle event=%+v", got)
+		}
+		encoded, _ := json.Marshal(got)
+		if strings.Contains(string(encoded), "prompt") || strings.Contains(string(encoded), "transcript") || strings.Contains(string(encoded), "credential") {
+			t.Fatalf("sensitive lifecycle payload: %s", encoded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle event was not delivered")
+	}
+	if host.NotifyLifecycle(LifecycleEvent{Type: "session_start"}) {
+		t.Fatal("unsupported event was accepted")
+	}
+}
+
+func TestLifecycleManifestRequiresWorkerOptIn(t *testing.T) {
+	manifest := statsManifest("observer", "observer_tool")
+	manifest.Hooks = []HookSpec{{Event: LifecycleRunEnd, Mode: "observe"}}
+	host, report, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		return &fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.Close() }()
+	if len(report.Loaded) != 0 || len(report.Disabled) != 1 || !strings.Contains(report.Disabled[0].Error(), "did not opt in") {
+		t.Fatalf("missing opt-in report: %+v", report)
+	}
+	if host.NotifyLifecycle(LifecycleEvent{Type: LifecycleRunEnd}) {
+		t.Fatal("notification accepted without an observer")
+	}
+}
+
+type stalledLifecycleWorker struct {
+	*fakeWorker
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *stalledLifecycleWorker) Call(ctx context.Context, method string, params any, result any) error {
+	if method != "lifecycle.notify" {
+		return w.fakeWorker.Call(ctx, method, params, result)
+	}
+	select {
+	case w.started <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return nil
+}
+
+func (w *stalledLifecycleWorker) Close() error {
+	select {
+	case <-w.release:
+	default:
+		close(w.release)
+	}
+	return w.fakeWorker.Close()
+}
+
+func TestLifecycleQueueIsNonblockingBoundedAndCloseIsBounded(t *testing.T) {
+	manifest := statsManifest("observer", "observer_tool")
+	manifest.Hooks = []HookSpec{{Event: LifecycleRunEnd, Mode: "observe"}}
+	var worker *stalledLifecycleWorker
+	host, report, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		worker = &stalledLifecycleWorker{fakeWorker: &fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands), features: []string{HostFeatureLifecycle}}, started: make(chan struct{}, 1), release: make(chan struct{})}
+		return worker, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Loaded) != 1 {
+		t.Fatalf("load report: %+v", report)
+	}
+	start := time.Now()
+	dropped := false
+	for i := 0; i < MaxLifecycleQueue+8; i++ {
+		if !host.NotifyLifecycle(LifecycleEvent{Type: LifecycleRunEnd, RunID: fmt.Sprintf("run-%d", i)}) {
+			dropped = true
+		}
+	}
+	if !dropped {
+		t.Fatal("full observer queue did not drop an event")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("enqueue blocked for %s", elapsed)
+	}
+	select {
+	case <-worker.started:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not receive first event")
+	}
+	closeStart := time.Now()
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(closeStart); elapsed > lifecycleCloseDrain+time.Second {
+		t.Fatalf("host close took %s", elapsed)
 	}
 }
 

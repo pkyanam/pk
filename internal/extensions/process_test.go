@@ -44,6 +44,11 @@ func TestExtensionProcessHelper(t *testing.T) {
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 			os.Exit(18)
 		}
+		if mode == "lifecycle-slow" && req.Method == "lifecycle.notify" {
+			_ = os.WriteFile(os.Getenv("PK_EXTENSION_LIFECYCLE_SEEN"), []byte("seen"), 0o600)
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
 		if mode == "wrong-id" {
 			_, _ = fmt.Fprintln(os.Stdout, `{"id":"wrong","result":"ok"}`)
 			return
@@ -76,6 +81,89 @@ func TestExtensionProcessHelper(t *testing.T) {
 			os.Exit(0)
 		}
 		_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"result":"ok"}`+"\n", req.ID)
+	}
+}
+
+func TestProcessWorkerLifecycleIsFireAndForgetBesideToolCalls(t *testing.T) {
+	t.Setenv("PK_EXTENSION_PROCESS_HELPER", "lifecycle-slow")
+	seen := filepath.Join(t.TempDir(), "lifecycle-seen")
+	t.Setenv("PK_EXTENSION_LIFECYCLE_SEEN", seen)
+	worker := testProcessWorker(t)
+	defer worker.Close()
+	notifier, ok := worker.(LifecycleNotifier)
+	if !ok {
+		t.Fatal("process worker does not support one-way lifecycle notifications")
+	}
+	start := time.Now()
+	if !notifier.NotifyLifecycle(LifecycleEvent{Type: LifecycleRunStart, SessionID: "session", Model: "gpt-6-luna", Workspace: t.TempDir()}) {
+		t.Fatal("lifecycle notification was not queued")
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("notification enqueue blocked for %s", elapsed)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(seen); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("process did not receive lifecycle notification")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var result string
+	if err := worker.Call(ctx, "tool.execute", ToolExecuteParams{Name: "tool", CallID: "call"}, &result); err != nil {
+		t.Fatalf("tool call failed after observer notification: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("tool result=%q", result)
+	}
+}
+
+func TestProcessWorkerExitReleasesQueuedLifecycleDrainWaiters(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	worker := &processWorker{done: done, stdin: writer, lifecycleQueue: make(chan []byte, 2)}
+	for i := 0; i < cap(worker.lifecycleQueue); i++ {
+		worker.lifecycleWG.Add(1)
+		worker.lifecycleQueue <- []byte("{}\n")
+	}
+	worker.writeLifecycleNotifications()
+	completed := make(chan struct{})
+	go func() { worker.lifecycleWG.Wait(); close(completed) }()
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("queued lifecycle drain waiter leaked after process exit")
+	}
+}
+
+type failingLifecycleWriter struct{}
+
+func (failingLifecycleWriter) Write([]byte) (int, error) { return 0, errors.New("pipe failed") }
+func (failingLifecycleWriter) Close() error              { return nil }
+
+func TestProcessWorkerStopsNotificationIntakeAfterWriterFailure(t *testing.T) {
+	worker := &processWorker{done: make(chan struct{}), stdin: failingLifecycleWriter{}, lifecycleQueue: make(chan []byte, 1)}
+	if !worker.NotifyLifecycle(LifecycleEvent{Type: LifecycleRunEnd}) {
+		t.Fatal("initial notification was not queued")
+	}
+	worker.writeLifecycleNotifications()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := worker.WaitLifecycle(ctx); err != nil {
+		t.Fatalf("wait after writer failure: %v", err)
+	}
+	if worker.NotifyLifecycle(LifecycleEvent{Type: LifecycleRunEnd}) {
+		t.Fatal("notification accepted after transport writer failed")
 	}
 }
 

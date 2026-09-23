@@ -11,14 +11,23 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
 
 const (
 	HostFeatureToolProgress  = "tool_progress"
+	HostFeatureLifecycle     = "lifecycle_notifications"
 	MaxProgressTextBytes     = 4 << 10
 	MaxProgressEventsPerCall = 64
+	MaxLifecycleQueue        = 16
+)
+
+const (
+	LifecycleRunStart         = "run_start"
+	LifecycleResponseComplete = "response_complete"
+	LifecycleRunEnd           = "run_end"
 )
 
 type ProgressEvent struct {
@@ -112,6 +121,18 @@ type InitializeResult struct {
 	ID         string   `json:"id"`
 	Tools      []string `json:"tools,omitempty"`
 	Commands   []string `json:"commands,omitempty"`
+	Features   []string `json:"features,omitempty"`
+}
+
+// LifecycleEvent contains bounded run metadata only. It intentionally omits
+// prompts, transcript content, tool arguments/results, and credentials.
+type LifecycleEvent struct {
+	Type      string `json:"type"`
+	RunID     string `json:"run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Workspace string `json:"workspace"`
+	Status    string `json:"status,omitempty"`
 }
 
 type ToolCallParams struct {
@@ -166,6 +187,24 @@ type Handler interface {
 	ExecuteCommand(context.Context, CommandExecuteParams) (string, error)
 }
 
+// LifecycleObserver is an optional extension worker interface. Workers must
+// also return HostFeatureLifecycle from Initialize to receive notifications.
+type LifecycleObserver interface {
+	NotifyLifecycle(context.Context, LifecycleEvent) error
+}
+
+// LifecycleNotifier is implemented by transports that can send observer
+// events without consuming the request/response channel used by tools.
+type LifecycleNotifier interface {
+	NotifyLifecycle(LifecycleEvent) bool
+}
+
+// LifecycleDrainer closes notification intake and lets a one-way transport
+// confirm that queued frames reached its output pipe during shutdown drain.
+type LifecycleDrainer interface {
+	WaitLifecycle(context.Context) error
+}
+
 // Serve implements the public v1 worker protocol for extension executables.
 // stdout is reserved for responses; diagnostics belong on stderr.
 func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handler) error {
@@ -177,13 +216,57 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handl
 	writer := bufio.NewWriter(output)
 	var writerMu sync.Mutex
 	progressNegotiated := false
+	lifecycleNegotiated := false
+	lifecycleQueue := make(chan LifecycleEvent, MaxLifecycleQueue)
+	lifecycleDone := make(chan struct{})
+	go func() {
+		defer close(lifecycleDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-lifecycleQueue:
+				if !ok {
+					return
+				}
+				observer, ok := handler.(LifecycleObserver)
+				if !ok {
+					continue
+				}
+				callCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+				_ = observer.NotifyLifecycle(callCtx, event)
+				cancel()
+			}
+		}
+	}()
+	defer func() {
+		close(lifecycleQueue)
+		select {
+		case <-lifecycleDone:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}()
 	for scanner.Scan() {
 		var request Request
 		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
 			return fmt.Errorf("decode extension request: %w", err)
 		}
-		if request.ID == "" || request.Method == "" {
+		if request.Method == "" || (request.ID == "" && request.Method != "lifecycle.notify") {
 			return errors.New("extension request requires id and method")
+		}
+		if request.Method == "lifecycle.notify" && request.ID == "" {
+			var event LifecycleEvent
+			if err := json.Unmarshal(request.Params, &event); err != nil {
+				continue
+			}
+			if lifecycleNegotiated && validLifecycleEvent(event) {
+				select {
+				case lifecycleQueue <- event:
+				default:
+					// Lifecycle notifications are best-effort and bounded.
+				}
+			}
+			continue
 		}
 		response := Response{ID: request.ID}
 		var result any
@@ -198,7 +281,38 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handl
 						progressNegotiated = true
 					}
 				}
-				result, err = handler.Initialize(ctx, params)
+				var initialized InitializeResult
+				initialized, err = handler.Initialize(ctx, params)
+				if err == nil {
+					result = initialized
+					for _, feature := range initialized.Features {
+						if feature == HostFeatureLifecycle {
+							for _, offered := range params.HostFeatures {
+								if offered == HostFeatureLifecycle {
+									lifecycleNegotiated = true
+								}
+							}
+						}
+					}
+				}
+			}
+		case "lifecycle.notify":
+			var event LifecycleEvent
+			err = json.Unmarshal(request.Params, &event)
+			if err == nil {
+				if !validLifecycleEvent(event) {
+					err = errors.New("invalid lifecycle event")
+				} else if !lifecycleNegotiated {
+					err = errors.New("lifecycle notifications were not negotiated")
+				} else {
+					select {
+					case lifecycleQueue <- event:
+					default:
+					}
+				}
+			}
+			if err == nil {
+				result = struct{}{}
 			}
 		case "tool.execute":
 			var params ToolExecuteParams

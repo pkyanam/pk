@@ -52,7 +52,7 @@ type CommandSpec struct {
 
 type HookSpec struct {
 	Event string `json:"event"`
-	Mode  string `json:"mode"` // observe or transform
+	Mode  string `json:"mode"` // observe only
 }
 
 // LoadManifest reads only the named file. The host never discovers extensions
@@ -158,8 +158,20 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("extension %q: %w", m.ID, err)
 		}
 	}
+	seenHooks := make(map[string]bool, len(m.Hooks))
 	for _, spec := range m.Hooks {
-		return fmt.Errorf("extension %q declares hook %q, but lifecycle hooks are not supported by protocol v1", m.ID, spec.Event)
+		if spec.Mode != "observe" {
+			return fmt.Errorf("extension %q hook %q must use mode observe", m.ID, spec.Event)
+		}
+		switch spec.Event {
+		case LifecycleRunStart, LifecycleResponseComplete, LifecycleRunEnd:
+		default:
+			return fmt.Errorf("extension %q declares unsupported lifecycle event %q", m.ID, spec.Event)
+		}
+		if seenHooks[spec.Event] {
+			return fmt.Errorf("extension %q repeats lifecycle event %q", m.ID, spec.Event)
+		}
+		seenHooks[spec.Event] = true
 	}
 	return nil
 }

@@ -63,6 +63,10 @@ type Options struct {
 	Output            io.Writer
 	Diagnostics       io.Writer
 	OnSession         func(string)
+	// LifecycleObserver receives metadata-only run and persisted-response
+	// notifications. Implementations must be nonblocking; it is invoked on the
+	// coordinator observer path.
+	LifecycleObserver func(LifecycleEvent)
 	Store             sessionstore.Store
 	Adapter           llm.Adapter
 	// Inputs, when non-nil, keeps the coordinator alive and submits each prompt
@@ -144,7 +148,7 @@ type RunResult struct {
 // Run executes one prompt, resuming a prior session when SessionID is set.
 // Canceling ctx sends a hard-stop control to the coordinator and lets it settle
 // or cancel active operations before returning.
-func Run(ctx context.Context, options Options) (RunResult, error) {
+func Run(ctx context.Context, options Options) (result RunResult, runErr error) {
 	if strings.TrimSpace(options.Prompt) == "" {
 		return RunResult{}, errors.New("prompt must not be empty")
 	}
@@ -449,6 +453,28 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	for _, definition := range snapshot.Tools {
 		builder.AddTool(definition)
 	}
+	lifecycle := func(eventType, status string) {}
+	if options.LifecycleObserver != nil {
+		runID, err := newID()
+		if err != nil {
+			return RunResult{SessionID: string(id)}, fmt.Errorf("generate lifecycle run ID: %w", err)
+		}
+		lifecycle = func(eventType, status string) {
+			options.LifecycleObserver(LifecycleEvent{Type: eventType, RunID: runID, SessionID: string(id), Model: options.Model, Workspace: options.Workspace, Status: status})
+		}
+		lifecycle(LifecycleRunStart, "running")
+		defer func() {
+			status := "completed"
+			if runErr != nil {
+				if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+					status = "cancelled"
+				} else {
+					status = "failed"
+				}
+			}
+			lifecycle(LifecycleRunEnd, status)
+		}()
+	}
 	var emitted strings.Builder
 	var emittedMu sync.Mutex
 	var inputGate *inputBoundaryGate
@@ -494,7 +520,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	// QueueInputs only governs how steering is admitted at model/tool
 	// boundaries. It must not turn a foreground prompt into an indefinitely
 	// live run: only KeepAlive suppresses the assistant-idle stop.
-	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, recordOutputErr)
+	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, recordOutputErr, func() { lifecycle(LifecycleResponseComplete, "persisted") })
 	observerID := store.AddObserver(observer)
 	defer store.RemoveObserver(observerID)
 	current := coordinator.New(coordinator.Dependencies{
@@ -589,7 +615,7 @@ func checkPreallocatedSessionCollision(ctx context.Context, store sessionstore.S
 	return nil
 }
 
-func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, recordOutputErr func(error)) sessionstore.Observer {
+func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, recordOutputErr func(error), onResponseComplete func()) sessionstore.Observer {
 	var mu sync.Mutex
 	toolCalls := make(map[string]toolCallMetadata)
 	return func(id session.ID, item sessionstore.Item) {
@@ -609,6 +635,9 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			return
 		} else if item.Kind == sessionstore.ItemModelResponse {
 			response := item.Data.(sessionstore.ModelResponse).Response
+			if onResponseComplete != nil {
+				onResponseComplete()
+			}
 			if inputGate != nil {
 				callIDs := make([]string, 0)
 				for _, output := range response.Output {
