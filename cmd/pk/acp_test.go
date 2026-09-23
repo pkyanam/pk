@@ -14,6 +14,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/acp"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
 
@@ -109,7 +110,10 @@ func TestACPCommandRunsPromptThroughRunnerWithInjectedAdapter(t *testing.T) {
 func TestACPReplayLoadsRunnerSessionAndChecksWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	sessions := filepath.Join(t.TempDir(), "sessions")
-	model := &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "history-answer", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "saved answer"}}}}}}}
+	model := &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "history-answer", Stop: llm.StopComplete, Output: []llm.Item{
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "analysis", Text: "private reasoning"}},
+		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "saved answer"}},
+	}}}}}
 	result, err := runner.Run(context.Background(), runner.Options{Prompt: "saved question", Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium", Adapter: model})
 	if err != nil {
 		t.Fatal(err)
@@ -127,5 +131,46 @@ func TestACPReplayLoadsRunnerSessionAndChecksWorkspace(t *testing.T) {
 	}
 	if err := replayACPSession(context.Background(), sessions, result.SessionID, t.TempDir(), func(acp.Update) error { return nil }); err == nil {
 		t.Fatal("loaded session into a different workspace")
+	}
+}
+
+func TestACPReplayRejectsActiveSession(t *testing.T) {
+	workspace := t.TempDir()
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	result, err := runner.Run(context.Background(), runner.Options{Prompt: "saved question", Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium", Adapter: &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "answer", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "done"}}}}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := sessionlock.Acquire(sessions, result.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	err = replayACPSession(context.Background(), sessions, result.SessionID, workspace, func(acp.Update) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "currently active") {
+		t.Fatalf("replay active session error=%v", err)
+	}
+}
+
+func TestACPRunnerWriterBuffersSplitJSONLines(t *testing.T) {
+	var updates []acp.Update
+	writer := &acpRunnerWriter{emit: func(update acp.Update) error {
+		updates = append(updates, update)
+		return nil
+	}, seenTools: make(map[string]bool)}
+	line := `{"type":"assistant","phase":"final_answer","response_id":"r1","text":"done"}` + "\n"
+	first := []byte(line[:len(line)/2])
+	second := []byte(line[len(line)/2:])
+	if _, err := writer.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 0 {
+		t.Fatalf("partial event emitted early: %+v", updates)
+	}
+	if _, err := writer.Write(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || updates[0].Kind != "assistant" || updates[0].Text != "done" || updates[0].MessageID != "r1" {
+		t.Fatalf("split event updates=%+v", updates)
 	}
 }

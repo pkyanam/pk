@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -19,6 +19,7 @@ import (
 	"github.com/pkyanam/pk/internal/acp"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/operation"
@@ -101,6 +102,14 @@ func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reade
 }
 
 func replayACPSession(ctx context.Context, sessionDir, id, workspace string, emit func(acp.Update) error) error {
+	lease, err := sessionlock.Acquire(sessionDir, id)
+	if err != nil {
+		if errors.Is(err, sessionlock.ErrBusy) {
+			return fmt.Errorf("session is currently active")
+		}
+		return fmt.Errorf("lock session for replay: %w", err)
+	}
+	defer lease.Release()
 	store, err := localfile.New(sessionDir)
 	if err != nil {
 		return err
@@ -152,7 +161,7 @@ func replayACPSession(ctx context.Context, sessionDir, id, workspace string, emi
 					switch output.Type {
 					case llm.ItemMessage:
 						message, ok := output.Data.(llm.Message)
-						if !ok || message.Role != llm.RoleAssistant || message.Text == "" {
+						if !ok || message.Role != llm.RoleAssistant || message.Phase == "analysis" || message.Text == "" {
 							continue
 						}
 						messageID, err := newACPMessageID()
@@ -256,14 +265,33 @@ type acpRunnerWriter struct {
 	emit      func(acp.Update) error
 	seenTools map[string]bool
 	failed    error
+	pending   []byte
 }
 
 func (w *acpRunnerWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	scanner := bufio.NewScanner(strings.NewReader(string(p)))
-	scanner.Buffer(make([]byte, 4096), 1<<20)
-	for scanner.Scan() {
+	w.pending = append(w.pending, p...)
+	for {
+		newline := bytes.IndexByte(w.pending, '\n')
+		if newline < 0 {
+			if len(w.pending) > 1<<20 {
+				w.pending = nil
+				if w.failed == nil {
+					w.failed = errors.New("ACP runner event exceeded 1 MiB")
+				}
+			}
+			break
+		}
+		if newline > 1<<20 {
+			if w.failed == nil {
+				w.failed = errors.New("ACP runner event exceeded 1 MiB")
+			}
+			w.pending = w.pending[newline+1:]
+			continue
+		}
+		line := w.pending[:newline]
+		w.pending = w.pending[newline+1:]
 		var event struct {
 			Type       string `json:"type"`
 			CallID     string `json:"call_id"`
@@ -273,7 +301,7 @@ func (w *acpRunnerWriter) Write(p []byte) (int, error) {
 			ResponseID string `json:"response_id"`
 			Error      string `json:"error_excerpt"`
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
 			continue
 		}
 		switch event.Type {
@@ -314,9 +342,6 @@ func (w *acpRunnerWriter) Write(p []byte) (int, error) {
 				}
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return len(p), err
 	}
 	if w.failed != nil {
 		return len(p), w.failed

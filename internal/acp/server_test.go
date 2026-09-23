@@ -230,3 +230,29 @@ func TestPromptBlocksRejectUnsupportedInputAndJoinSupportedText(t *testing.T) {
 		t.Fatal("expected unsupported image block to be rejected")
 	}
 }
+
+func TestInitializeRequiresVersionAndNegotiatesHighestSupported(t *testing.T) {
+	out := &testWriter{lines: make(chan []byte, 2)}
+	server, err := NewServer(strings.NewReader(""), out, Config{Run: func(context.Context, Turn, func(Update) error) (TurnResult, error) {
+		return TurnResult{}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingVersion := request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "initialize", Params: json.RawMessage(`{}`)}
+	if err := server.handle(context.Background(), missingVersion); err == nil {
+		t.Fatal("initialize accepted missing protocolVersion")
+	}
+	if server.isInitialized() {
+		t.Fatal("invalid initialize changed connection state")
+	}
+	futureVersion := request{JSONRPC: "2.0", ID: json.RawMessage("2"), Method: "initialize", Params: json.RawMessage(`{"protocolVersion":2}`)}
+	if err := server.handle(context.Background(), futureVersion); err != nil {
+		t.Fatal(err)
+	}
+	response := nextMessage(t, out)
+	result := response["result"].(map[string]any)
+	if result["protocolVersion"] != float64(ProtocolVersion) {
+		t.Fatalf("negotiated protocol version=%v", result["protocolVersion"])
+	}
+}

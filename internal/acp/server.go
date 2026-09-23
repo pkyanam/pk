@@ -203,6 +203,9 @@ func (s *Server) handle(ctx context.Context, req request) error {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return rpcErrf(-32602, "invalid initialize parameters")
 		}
+		if p.ProtocolVersion < 1 {
+			return rpcErrf(-32602, "initialize requires a positive protocolVersion")
+		}
 		s.mu.Lock()
 		s.initialized = true
 		s.mu.Unlock()
