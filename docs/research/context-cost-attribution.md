@@ -52,3 +52,13 @@ python3 scripts/context-cost-attribution.py \
 The script prints aggregate usage, response-ordinal means by phase, and the sideband/tool evidence available in each export. It does not inspect archived model source, expose prompt contents, or estimate tokens from text.
 
 Capture validation rejects unknown fields and negative counters. Complete coverage requires contiguous request ordinals and an exact match to usage response IDs; failed requests or missing IDs make coverage unavailable. The driver strips inherited `PK_BENCH_*` settings so an ambient ablation cannot silently alter a run. The summary excludes standalone `.context.jsonl` sidecars to avoid counting captures twice, and reports component bytes separately from provider tokens.
+
+Validate the full tagged CLI locally without provider credentials or charges:
+
+```sh
+python3 scripts/benchmark-capture-smoke.py
+```
+
+This builds a temporary binary, configures an isolated loopback Chat Completions provider, and removes its temporary workspace afterward. It checks one captured response, correspondence with the tool count on the HTTP request, explicit zero cache availability, private file permissions, and absence of prompt/response sentinel text. The observed fixture exposed nine schemas (4,004 JSON-value bytes) and one system message (2,819 bytes); these are fixture measurements, not token costs or a comparative benchmark.
+
+Accounting boundary: each record represents one harness `llm.Adapter.Respond` call. Transport retries inside a provider adapter are not separate records; usage describes the returned response and can omit usage billed for failed/retried HTTP attempts. These records are not an invoice reconciliation ledger.

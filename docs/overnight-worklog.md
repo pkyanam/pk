@@ -597,3 +597,8 @@ gates or imply that every backlog item is complete.
 - Hardened optional benchmark metrics ingestion: typed records reject extra content and negative counts; complete coverage requires matching usage response IDs and contiguous request ordinals. Failed requests remain unavailable. Ambient benchmark policy/replay settings are removed before child launch.
 - Added real runner-hook and cancellation coverage plus a fake-child driver test; affected Go race tests and the tagged runner-hook test pass. No paid provider calls were made.
 - Attribution summaries exclude sidecar files and report component JSON-value bytes with explicit overlap caveats. A local duplicate-sidecar fixture passes; historical pilot totals remain unchanged. Production install remains 35d448a because this installment affects benchmark tooling only.
+
+### Post-handoff — full CLI capture smoke
+
+- Added a reproducible local SSE provider smoke for the benchmark-tagged CLI, with temporary PK_HOME, workspace and provider config. One request passed through the actual run/provider/runner path; nine tool declarations matched the HTTP request.
+- Verified explicit zero cached-input availability, response correlation, 0600 capture permissions, and absence of prompt/response text in metrics. All usage numbers are synthetic; no live model request or cost-improvement claim.
