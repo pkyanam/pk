@@ -92,7 +92,7 @@ func TestParseReplayCompactionMetrics(t *testing.T) {
 
 func TestReplayCompactionSummaryReportsManipulationAndMeasuredUsage(t *testing.T) {
 	passed := true
-	result := suite{Model: "gpt-6-luna", Effort: "medium", Experiment: "replay compact", ReplayCompactionExperiment: true, ReplayThresholdBytes: 1_024, ReplayExcerptRunes: 256, Records: []runRecord{{Engine: "pk-compact-replayed-output-aggressive", Task: "fixture", Phase: "verification", ReplayMetricsAvailable: true, ReplayEligibleResults: 2, ReplayCompactedResults: 2, ReplayOriginalBytes: 18000, ReplayStoredBytes: 4000, CorrectnessPassed: &passed}}}
+	result := suite{Model: "gpt-6-luna", Effort: "medium", Experiment: "replay compact", ReplayCompactionExperiment: true, ReplayCompactionProfile: "large-output", ReplayThresholdBytes: 16_384, ReplayExcerptRunes: 2_048, Records: []runRecord{{Engine: "pk-compact-replayed-output-large", Task: "fixture", Phase: "verification", ReplayMetricsAvailable: true, ReplayEligibleResults: 2, ReplayCompactedResults: 2, ReplayOriginalBytes: 36000, ReplayStoredBytes: 12000, CorrectnessPassed: &passed}}}
 	path := filepath.Join(t.TempDir(), "summary.md")
 	if err := writeMarkdown(path, result); err != nil {
 		t.Fatal(err)
@@ -101,10 +101,30 @@ func TestReplayCompactionSummaryReportsManipulationAndMeasuredUsage(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"Replay compaction threshold: 1024 bytes", "Replay head/tail excerpt: 256 runes each", "configured 1024-byte threshold", "256-rune head and tail", "Eligible / compacted", "2 / 2", "18000 / 4000", "provider-reported", "do not establish general task quality or cache savings"} {
+	for _, expected := range []string{"Replay compaction profile: `large-output`", "Replay compaction threshold: 16384 bytes", "Replay head/tail excerpt: 2048 runes each", "configured 16384-byte threshold", "2048-rune head and tail", "Eligible / compacted", "2 / 2", "36000 / 12000", "provider-reported", "do not establish general task quality or cache savings"} {
 		if !strings.Contains(string(content), expected) {
 			t.Fatalf("summary missing %q:\n%s", expected, content)
 		}
+	}
+}
+
+func TestLargeReplayProfileMetadataIsPersisted(t *testing.T) {
+	result := suite{
+		ReplayCompactionExperiment: true,
+		ReplayCompactionProfile:    "large-output",
+		ReplayThresholdBytes:       16_384,
+		ReplayExcerptRunes:         2_048,
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["replay_compaction_profile"] != "large-output" || got["replay_compaction_threshold_bytes"] != float64(16_384) || got["replay_compaction_excerpt_runes"] != float64(2_048) {
+		t.Fatalf("profile metadata not recorded exactly: %s", data)
 	}
 }
 

@@ -72,6 +72,7 @@ type pairedPolicy struct {
 	treatmentMode        string
 	toolSchema           bool
 	replayCompaction     bool
+	replayProfile        string
 	replayThresholdBytes int
 	replayExcerptRunes   int
 	tasks                []task
@@ -109,7 +110,7 @@ func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeo
 	return runPairedPolicyExperiment(repo, out, repetitions, phaseTimeout, pairedPolicy{
 		resultPrefix: "replay-compaction", name: "Large Bash result context replay: current vs compact captured result",
 		currentMode: "replay-compaction-current", treatmentEngine: treatmentEngine, treatmentMode: treatmentMode,
-		replayThresholdBytes: threshold, replayExcerptRunes: excerpt,
+		replayProfile: profile, replayThresholdBytes: threshold, replayExcerptRunes: excerpt,
 		replayCompaction: true, tasks: tasks, wholeTimeout: replayWholeTimeout(tasks),
 	})
 }
@@ -120,8 +121,10 @@ func replayCompactionProfile(profile string) (threshold, excerpt int, engine, mo
 		return 4_096, 768, "pk-compact-replayed-output", "compact-replayed-shell-output", nil
 	case "aggressive":
 		return 1_024, 256, "pk-compact-replayed-output-aggressive", "compact-replayed-shell-output-aggressive", nil
+	case "large-output":
+		return 16_384, 2_048, "pk-compact-replayed-output-large", "compact-replayed-shell-output-large", nil
 	default:
-		return 0, 0, "", "", fmt.Errorf("unknown replay compaction profile %q (available: standard, aggressive)", profile)
+		return 0, 0, "", "", fmt.Errorf("unknown replay compaction profile %q (available: standard, aggressive, large-output)", profile)
 	}
 }
 
@@ -262,7 +265,8 @@ func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout t
 		Timeout: phaseTimeout.String(), GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		PKRevision: gitRevision(ctx, repoPath), Unreal: "not used (paired pk-only policy ablation)",
 		Experiment: policy.name, ToolSchemaExperiment: policy.toolSchema, ReplayCompactionExperiment: policy.replayCompaction,
-		ReplayThresholdBytes: policy.replayThresholdBytes, ReplayExcerptRunes: policy.replayExcerptRunes,
+		ReplayCompactionProfile: policy.replayProfile,
+		ReplayThresholdBytes:    policy.replayThresholdBytes, ReplayExcerptRunes: policy.replayExcerptRunes,
 		EffortAblationExperiment: len(policy.effortArms) > 0,
 		SourceTreeSHA256:         source.TreeSHA256, GitDiffSHA256: source.DiffSHA256,
 	}

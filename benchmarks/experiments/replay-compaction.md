@@ -35,10 +35,29 @@ go run ./cmd/pkbench -replay-compaction-ablation -repetitions 2 -timeout 90s
 To test a more aggressive, still reversible replay policy, add
 `-replay-compaction-profile aggressive`. It lowers the eligibility threshold
 to 1,024 bytes and keeps a 256-rune head and tail. The default `standard`
-profile remains 4,096 bytes and 768 runes. The selected profile is recorded
-in the result JSON and Markdown. Both profiles retain the full capture paths
-and can reread the unchanged capture files; neither changes tools or shell
-output limits.
+profile remains 4,096 bytes and 768 runes. The opt-in `large-output` profile
+sets a 16,384-byte threshold and a 2,048-rune head and tail; it is intended to
+leave smaller source reads intact while testing compaction on larger results.
+The selected profile, threshold, and excerpt size are recorded in result JSON
+and Markdown. All profiles retain the full capture paths and can reread the
+unchanged capture files; none changes tools or shell output limits.
+
+### Large-output profile preflight
+
+The aggressive replay cohort's saved summary reports 33 eligible results in
+control (123,534 original result bytes) and 110 eligible/compacted results in
+the 1,024-byte treatment (580,340 original bytes, 108,578 stored). Its JSONL
+event excerpts do not retain each result's exact byte length, so these records
+cannot establish how many results would meet a 16,384-byte threshold.
+
+The deterministic webhook and job-queue fixtures provide a conservative
+source-read check: their all-Go source sets are 4,336 and 6,529 bytes (11,041
+and 11,998 bytes including tests). Local `go test -v ./...` output is 3,066
+and 1,877 bytes. These ordinary fixture reads fall below the large-output
+threshold. No model calls have been run for this profile; do not claim that it
+was exercised or that it saves tokens. Its eligible/compacted/original/stored
+byte and missing-capture counters are the manipulation check for any later
+approved run. A run with zero eligible results is inconclusive for this dose.
 
 Use `-replay-tasks clamp,webhook` for the separately reviewed simple-control
 and multi-file webhook cohort. `-replay-tasks` is valid only with this ablation;

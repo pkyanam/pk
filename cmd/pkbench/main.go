@@ -113,6 +113,7 @@ type suite struct {
 	Experiment                 string      `json:"experiment,omitempty"`
 	ToolSchemaExperiment       bool        `json:"tool_schema_experiment,omitempty"`
 	ReplayCompactionExperiment bool        `json:"replay_compaction_experiment,omitempty"`
+	ReplayCompactionProfile    string      `json:"replay_compaction_profile,omitempty"`
 	ReplayThresholdBytes       int         `json:"replay_compaction_threshold_bytes,omitempty"`
 	ReplayExcerptRunes         int         `json:"replay_compaction_excerpt_runes,omitempty"`
 	EffortAblationExperiment   bool        `json:"effort_ablation_experiment,omitempty"`
@@ -173,7 +174,7 @@ func run(args []string) int {
 	toolSchemaExperiment := flags.Bool("tool-schema-ablation", false, "run the paired current-vs-compact tool-description experiment only")
 	replayCompactionExperiment := flags.Bool("replay-compaction-ablation", false, "run the paired current-vs-captured-output context replay experiment only")
 	replayTasks := flags.String("replay-tasks", "", "comma-separated replay-ablation fixtures (default: routematch,eventmerge)")
-	replayProfile := flags.String("replay-compaction-profile", "standard", "replay compaction treatment: standard or aggressive (requires -replay-compaction-ablation)")
+	replayProfile := flags.String("replay-compaction-profile", "standard", "replay compaction treatment: standard, aggressive, or large-output (requires -replay-compaction-ablation)")
 	effortExperiment := flags.Bool("effort-ablation", false, "run the paired Luna low-vs-medium effort experiment only")
 	effortTasks := flags.String("effort-tasks", "webhook,jobqueue", "comma-separated effort-ablation fixtures (default: webhook,jobqueue)")
 	if err := flags.Parse(args); err != nil {
@@ -229,8 +230,8 @@ func run(args []string) int {
 		return runToolSchemaExperiment(*repo, *out, *repetitions, *timeout)
 	}
 	if *replayCompactionExperiment {
-		if *replayProfile != "standard" && *replayProfile != "aggressive" {
-			fmt.Fprintln(os.Stderr, "-replay-compaction-profile must be standard or aggressive")
+		if _, _, _, _, profileErr := replayCompactionProfile(*replayProfile); profileErr != nil {
+			fmt.Fprintln(os.Stderr, profileErr)
 			return 2
 		}
 		return runReplayCompactionExperiment(*repo, *out, *repetitions, *timeout, *replayTasks, *replayProfile)
@@ -927,7 +928,7 @@ func writeMarkdown(path string, result suite) error {
 	if result.Experiment != "" {
 		fmt.Fprintf(&out, "- Experiment: %s\n- Source tree SHA-256: `%s`\n- Tracked diff SHA-256: `%s`\n", result.Experiment, result.SourceTreeSHA256, result.GitDiffSHA256)
 		if result.ReplayCompactionExperiment {
-			fmt.Fprintf(&out, "- Replay compaction threshold: %d bytes\n- Replay head/tail excerpt: %d runes each\n", result.ReplayThresholdBytes, result.ReplayExcerptRunes)
+			fmt.Fprintf(&out, "- Replay compaction profile: `%s`\n- Replay compaction threshold: %d bytes\n- Replay head/tail excerpt: %d runes each\n", result.ReplayCompactionProfile, result.ReplayThresholdBytes, result.ReplayExcerptRunes)
 		}
 	}
 	fmt.Fprintln(&out)

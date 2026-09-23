@@ -94,6 +94,10 @@ func TestReplayCompactionProfilesAreExplicitAndReproducible(t *testing.T) {
 	if err != nil || threshold != 1_024 || excerpt != 256 || engine != "pk-compact-replayed-output-aggressive" || mode != "compact-replayed-shell-output-aggressive" {
 		t.Fatalf("aggressive profile = %d/%d %q %q, %v", threshold, excerpt, engine, mode, err)
 	}
+	threshold, excerpt, engine, mode, err = replayCompactionProfile("large-output")
+	if err != nil || threshold != 16_384 || excerpt != 2_048 || engine != "pk-compact-replayed-output-large" || mode != "compact-replayed-shell-output-large" {
+		t.Fatalf("large-output profile = %d/%d %q %q, %v", threshold, excerpt, engine, mode, err)
+	}
 	if _, _, _, _, err := replayCompactionProfile("unknown"); err == nil {
 		t.Fatal("unknown profile should fail clearly")
 	}

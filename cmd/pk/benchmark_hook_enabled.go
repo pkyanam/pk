@@ -37,6 +37,8 @@ func beginBenchmarkRun(options *runner.Options) (func(), error) {
 		compactReplay = true
 	case "compact-replayed-shell-output-aggressive":
 		compactReplay = true
+	case "compact-replayed-shell-output-large":
+		compactReplay = true
 	case "replay-compaction-current":
 		measureReplay = true
 	default:
