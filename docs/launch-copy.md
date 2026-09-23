@@ -20,6 +20,13 @@ https://github.com/pkyanam/pk
 Use skills, explicitly enabled plugins, and MCP tools in pk. Choose the built-in ChatGPT/Codex provider or configure an OpenAI-compatible endpoint.
 https://github.com/pkyanam/pk
 
+**D — Your workspace. Your choice.**
+
+Meet pk: a terminal coding harness with no first-party usage analytics. Keep session history on your machine, choose your model provider, and connect the tools you want.
+
+Your selected provider still receives the context needed to do the work. Privacy starts with making those boundaries clear.
+https://github.com/pkyanam/pk
+
 ## Four-post thread
 
 **1/4**
@@ -54,3 +61,7 @@ https://github.com/pkyanam/pk
 - Plugins and MCP servers are explicitly configured; do not imply a bundled marketplace or that arbitrary plugin programs are sandboxed. Bash and extension processes use pk's operating-system permissions.
 - Do not claim open-source or other licensing terms until the repository has a selected license.
 - These are drafts. Do not post them or use them in an external campaign without explicit authorization.
+
+## Privacy positioning
+
+Lead with control and transparency, not browser comparisons or claims of anonymity. pk stores history locally and does not operate a telemetry service. Model requests, search, and configured integrations still contact their respective services. Link the [data-handling disclosure](privacy.md) beside privacy claims. Local files are protected by filesystem permissions, not encrypted by pk.
