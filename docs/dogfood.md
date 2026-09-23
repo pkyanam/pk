@@ -1,0 +1,13 @@
+# pk agent dogfood check
+
+Run `scripts/dogfood-pk.py` to exercise the installed `pk -p` path on a disposable Go workspace. It checks the real RPC tool catalog without a model call, asks Luna/low to fix a deliberately broken `Clamp`, add tests, and run `go test ./...`, then adds a separate holdout test and runs it after pk exits. The script reports unique Bash calls separately from JSONL status events, the local holdout result, wall time, and usage totals with provider-reported coverage when available. It removes the workspace and session data when it exits and prints no prompt, model output, session ID, or credential.
+
+Prerequisites are `pk` and Go on `PATH`, plus an existing Codex auth file. The auth file is explicitly read by pk; the script does not copy or refresh it. The temporary home omits saved pk provider, plugin, MCP, TinyFish, and personal-skill configuration. The tool catalog and usage queries are local RPC calls; the model request uses the configured Codex service. This is not an OS sandbox: Bash retains the invoking user's ordinary machine permissions. The prompt asks the agent to stay in the fixture and avoid network access; do not use the script as an isolation boundary for untrusted code.
+
+```sh
+python3 scripts/dogfood-pk.py --output "$HOME/.local/state/pk/dogfood.json"
+```
+
+Use `--pk PATH` to select a build, `--codex-auth-file PATH` to select an existing auth file, or `--timeout SECONDS` to bound the one model prompt (default 240 seconds). `--output` retains the sanitized JSON summary outside the disposable workspace; without it, the summary is printed to stdout. A failed check is reported as failure; the script does not automatically retry a paid prompt. Usage can be unavailable or partial when the provider omits counters; null values mean unknown, not zero. This is a small smoke regression, not a benchmark or a general quality claim.
+
+On 2026-09-23, the first prompt attempt was marked failed because the initial checker did not find a completed `go test ./...` call; it retained no raw JSONL, so that outcome cannot distinguish a missing test run from a checker false negative. The second and final Luna/low prompt passed the immutable holdout and was matched to one completed test call. It took 25.0 seconds. The saved summary at `/tmp/pk-dogfood-20260923.json` reports eight Bash status events, not unique calls, and unavailable usage: that run preceded the script's fix to wait for the asynchronous local usage RPC. A delayed-response local preflight now verifies the RPC wait, but no third model prompt was run to refresh the saved observation. Do not use this smoke as token-cost evidence.
