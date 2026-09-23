@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `af75c3a` (`20260923T141955.975433000Z-8545ecbc9436-e8fcb63b`). The managed updater passed its build/test gates. Source `961fdba` added an opt-in subagent-schema benchmark and recorded live results; production still uses five subagent tools. Native reload/history/copy checks belong to earlier checkpoints below and were not repeated for this install. Earlier release references in dated checkpoints are historical.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `05538d2` (`20260923T142909.128525000Z-abe2a9e02177-d42f20f4`). The managed updater passed its build/test gates. Source `961fdba` added an opt-in subagent-schema benchmark and recorded live results; production still uses five subagent tools. Native reload/history/copy checks belong to earlier checkpoints below and were not repeated for this install. Earlier release references in dated checkpoints are historical.
 
 ## Product and implementation
 

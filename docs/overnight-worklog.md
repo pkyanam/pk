@@ -703,3 +703,11 @@ gates or imply that every backlog item is complete.
 - TUI multi-file paste preserves escaped backslashes, apostrophes, and Unicode filenames. Remote file URI authorities are rejected instead of being rewritten into unrelated local paths; localhost URI decoding remains supported.
 - Focused parser tests and attachment tests pass; attachment race tests passed before the additional portable missing-home case, which passed normal validation. Clipboard documentation now describes native selection-release copying with OSC 52 fallback.
 - Native Finder cross-window drag/drop remains unverified. This installment fixes concrete path handling defects, not the unresolved original freeze or all native terminal transports.
+
+### 10:29 EDT — clipboard responsiveness and first updater speed fix
+
+- Installed clean 05538d2 as 20260923T142909.128525000Z-abe2a9e02177-d42f20f4 using the new source updater. Go checks, build, one UI check/test pass, and production dependency setup completed; running user sessions were not interrupted.
+- 46ae6ba moves native clipboard work off the RPC reader with a five-second deadline and one reserved native operation slot. Stalled reader/writer fixtures verify unrelated status requests remain serviceable and the slot recovers after native completion; focused race tests pass. The original reported freeze is not established as clipboard-related.
+- UI ignores stale copy replies, bounds pending tracking, and distinguishes busy from timed-out operations that may finish late. Ten focused copy/paste tests pass (41 assertions); existing React act warnings remain in several fixture paths.
+- 05538d2 removes redundant pre-build dependency setup/UI checks, retaining build and post-build validation. Update tests assert UI validation once. No timing comparison claimed.
+- User requested prebuilt GitHub Releases for fast routine updates. GitHub release list was empty and installer is source-only; task_runtime is implementing paired platform artifacts/checksums/download update support. Checklist retains this as open until delivered and measured.
