@@ -571,3 +571,9 @@ gates or imply that every backlog item is complete.
 - `6eb9fe3` makes concurrent subagent shutdown callers wait for child/event drain. A held-callback regression and affected race suites pass; root added a cancellation barrier and failure cleanup to the test.
 - `91361d1` rejects Chat Completions streams that end successfully with no assistant content or tools. Explicit refusal/output-limit outcomes retain their status and usage, and providers emitting useful content without a finish reason remain compatible. Local provider fixtures and affected race suites pass. This does not diagnose the user's earlier native Codex waiting symptom.
 - A separate TUI regression is checking whether global attachment paste intercepts paths meant for setup fields or AskUser answers. These new code changes are not installed yet; the active release remains `b06e1ab`.
+
+### 07:36 EDT — reliability installment installed
+
+- Clean GitHub `264b3c7` activated as `20260923T113445.615501000Z-35dab041a348-3590899b` after full Go/UI suites, typecheck and build. Affected provider/subagent/helperregistry race tests passed.
+- Native Cmux reload restored the saved demo transcript. In `/mcp` → Add → Executable path, pasting `/usr/local/bin/server` appeared in the focused field, with no queued attachment. The Computer Use paste call reported a clipboard-read timeout, but the subsequent screenshot verified the complete value. The form was canceled without saving configuration or calling a model.
+- Renderer regressions also verify AskUser path answers remain literal text and normal chat file paste still queues attachments. Both new tests failed without the guard and passed with it.
