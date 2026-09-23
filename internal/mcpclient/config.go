@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 const (
@@ -28,15 +30,16 @@ var serverIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,31}$`)
 // If WorkingDirectory is empty, the server runs from the user's home directory,
 // never from the pk workspace by default.
 type ServerConfig struct {
-	ID               string            `json:"id"`
-	URL              string            `json:"url,omitempty"`
-	Auth             HTTPAuthConfig    `json:"auth,omitempty"`
-	Command          string            `json:"command"`
-	Args             []string          `json:"args,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`
-	WorkingDirectory string            `json:"working_directory,omitempty"`
-	OAuthLogin       bool              `json:"-"`
-	SecretStoreHome  string            `json:"-"`
+	ID               string                        `json:"id"`
+	URL              string                        `json:"url,omitempty"`
+	Auth             HTTPAuthConfig                `json:"auth,omitempty"`
+	Command          string                        `json:"command"`
+	Args             []string                      `json:"args,omitempty"`
+	Env              map[string]string             `json:"env,omitempty"`
+	WorkingDirectory string                        `json:"working_directory,omitempty"`
+	OAuthLogin       bool                          `json:"-"`
+	SecretStoreHome  string                        `json:"-"`
+	OAuthFetcher     auth.AuthorizationCodeFetcher `json:"-"`
 }
 
 // HTTPAuthConfig names environment variables containing credentials. Secret

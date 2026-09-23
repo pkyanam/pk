@@ -79,7 +79,11 @@ func NewHost(ctx context.Context, configs []ServerConfig) (*Host, Report, error)
 		seenIDs[config.ID] = true
 		loaded, tools, err := connectServer(ctx, config)
 		if err != nil {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("MCP server %q: %v", config.ID, err))
+			message := err.Error()
+			if config.URL != "" && config.Auth.Mode != "" && config.Auth.Mode != "none" {
+				message = "authenticated remote connection failed; details suppressed"
+			}
+			report.Warnings = append(report.Warnings, fmt.Sprintf("MCP server %q: %s", config.ID, message))
 			continue
 		}
 		host.servers[config.ID] = loaded

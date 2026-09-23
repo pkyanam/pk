@@ -50,13 +50,16 @@ func newOAuthHandler(config ServerConfig) (auth.OAuthHandler, net.Listener, *htt
 		listener = ln
 		redirectURL = "http://" + ln.Addr().String() + "/oauth/callback"
 		fetcher = oauthCallbackFetcher(ln, openAuthURL)
+		if config.OAuthFetcher != nil {
+			fetcher = config.OAuthFetcher
+		}
 	} else {
 		fetcher = func(context.Context, *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 			return nil, errors.New("OAuth session needs authorization; run `pk mcp login <server-id>`")
 		}
 	}
 	newTokenSource := func(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) (oauth2.TokenSource, error) {
-		return &persistingTokenSource{source: cfg.TokenSource(ctx, token), config: *cfg, token: token, save: func(updated oauthSession) error { return saveOAuthSession(config, updated) }}, nil
+		return &persistingTokenSource{source: cfg.TokenSource(ctx, token), config: *cfg, save: func(updated oauthSession) error { return saveOAuthSession(config, updated) }}, nil
 	}
 	var initial oauth2.TokenSource
 	if config.Auth.SecretValue != "" {

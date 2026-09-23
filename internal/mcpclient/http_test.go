@@ -100,3 +100,19 @@ func TestRemoteURLAndAuthValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthenticatedRemoteDiagnosticsSuppressServerBodies(t *testing.T) {
+	t.Setenv("PK_MCP_ERROR_TOKEN", "secret-never-display")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("server echoed secret-never-display"))
+	}))
+	defer server.Close()
+	_, report, err := NewHost(t.Context(), []ServerConfig{{ID: "private", URL: server.URL + "/mcp", Auth: HTTPAuthConfig{Mode: "bearer_env", BearerEnv: "PK_MCP_ERROR_TOKEN"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Warnings) != 1 || strings.Contains(report.Warnings[0], "secret-never-display") || strings.Contains(report.Warnings[0], "server echoed") {
+		t.Fatalf("diagnostic leaked remote auth response: %#v", report.Warnings)
+	}
+}
