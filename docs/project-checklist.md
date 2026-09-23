@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `2e365e8` (`20260923T093118.840648000Z-7bd1d5efc551-b59e58a0`), including explicit MCP keyboard/mouse focus, bounded saved attachment chips, and lower-allocation assistant previews. All 113 UI tests / 508 assertions and affected Go race suites passed; native Cmux reload and MCP selector Enter behavior passed.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `0069ac3` (`20260923T093828.901078000Z-4db46f2885f4-ee1e45e0`), with failed-stream timer cleanup and including explicit MCP keyboard/mouse focus, bounded saved attachment chips, and lower-allocation assistant previews. All 113 UI tests / 508 assertions and affected Go race suites passed; native Cmux reload and MCP selector Enter behavior passed.
 
 ## Product and implementation
 
@@ -100,7 +100,7 @@ The 08:00 EDT, 23 September target was the requested handoff deadline, not evide
 - [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy, Finder Cmd+C/Cmd+V of a spaced image path, and Preview raw-pixel paste are verified; Luna inspected both image routes with `ViewImage`. Native GUI drag/drop remains unverified. Keep those limits distinct from the tested paste routes.
 - [x] Finish the local focused coding demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization; a broader montage remains optional.
 
-Latest installed checkpoint: `2e365e8` (`20260923T093118.840648000Z-7bd1d5efc551-b59e58a0`). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
+Latest installed checkpoint: `0069ac3` (`20260923T093828.901078000Z-4db46f2885f4-ee1e45e0`). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
