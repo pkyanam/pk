@@ -26,7 +26,7 @@ type StreamDraft = { outerId: string; requestId: string; attempt: number; itemId
 type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number }
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
-type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
+type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; taskID?: string; dismissed?: boolean; answerRequestID?: string; answering?: boolean; submittedAnswer?: string }
 type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "plugin_commands" | "history" | "usage" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type SessionUsage = { sessionId: string; responseCount: number; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; uncachedInputTokens?: number; coverage: { input: number; output: number; cachedInput: number; uncachedInput: number } }
@@ -573,7 +573,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [reloadPending, setReloadPending] = useState(false)
   const [copyNotice, setCopyNotice] = useState("")
   const [activeTaskId, setActiveTaskId] = useState("")
+  const activeTaskIDRef = useRef("")
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
+  const visibleQuestion = question && !question.dismissed ? question : null
+  const taskQuestionRef = useRef<PendingQuestion | null>(null)
+  const resolvedTaskQuestionIDs = useRef(new Set<string>())
   const [questionIndex, setQuestionIndex] = useState(0)
   const [queuedFiles, setQueuedFiles] = useState<string[]>([])
   const queuedFilesRef = useRef<string[]>([])
@@ -587,7 +591,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
   const pendingSteerFiles = useRef(new Map<string, { files: string[]; inputId?: string; loaded?: boolean; summary?: string }>())
-  const pendingClipboardRequests = useRef(new Map<string, { target: "composer" | "question"; questionID?: string; sessionID: string; sessionGeneration: number }>())
+  const pendingClipboardRequests = useRef(new Map<string, { target: "composer" | "question"; questionID?: string; questionTaskID?: string; sessionID: string; sessionGeneration: number }>())
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const latestClipboardWriteID = useRef("")
   const pendingToolsRequest = useRef("")
@@ -979,12 +983,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   const requestClipboardPaste = () => {
+    if (question?.taskID && question.dismissed) return
     if (question?.answering) return
     if (!question && !composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) return
     const id = transport.send("clipboard_paste" as any)
     if (id) pendingClipboardRequests.current.set(id, {
       target: question ? "question" : "composer",
       ...(question ? { questionID: question.id } : {}),
+      ...(question?.taskID ? { questionTaskID: question.taskID } : {}),
       sessionID: sessionIdentity.current,
       sessionGeneration: sessionGeneration.current,
     })
@@ -1166,6 +1172,56 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setStreamProgress(null)
         enterPhase(activeToolIds.current.size ? "tools" : "model")
         break
+      case "task_question": {
+        const taskID = String(data.task_id ?? "")
+        const questionID = String(data.question_id ?? "")
+        if (!taskID || !questionID || taskID !== activeTaskIDRef.current || (data.status && data.status !== "pending")) break
+        if (resolvedTaskQuestionIDs.current.has(`${taskID}\u0000${questionID}`)) break
+        if (taskQuestionRef.current?.taskID === taskID && taskQuestionRef.current.id === questionID) break
+        const kind = data.kind === "confirmation" ? "confirmation" : "question"
+        const supplied = Array.isArray(data.choices) ? data.choices.filter((item: unknown) => typeof item === "string" && item.trim()).map(String) : []
+        const choices = supplied.length ? supplied : kind === "confirmation" ? ["Yes", "No"] : []
+        if (data.session_id) updateSessionIdentity(String(data.session_id))
+        setBusy(true)
+        setActivityStartedAt((current) => current ?? Date.now())
+        pendingQuestionId.current = questionID
+        enterPhase(`question:${questionID}`)
+        const pending: PendingQuestion = { taskID, id: questionID, text: String(data.text ?? "The task needs an answer."), choices, kind }
+        taskQuestionRef.current = pending
+        setQuestion(pending)
+        setQuestionIndex(0)
+        break
+      }
+      case "task_question_answered": {
+        const taskID = String(data.task_id ?? "")
+        const questionID = String(data.question_id ?? "")
+        const pending = taskQuestionRef.current
+        if (!pending || activeTaskIDRef.current !== taskID || pending.taskID !== taskID || pending.id !== questionID) break
+        resolvedTaskQuestionIDs.current.add(`${taskID}\u0000${questionID}`)
+        if (resolvedTaskQuestionIDs.current.size > 256) resolvedTaskQuestionIDs.current.delete(resolvedTaskQuestionIDs.current.values().next().value!)
+        taskQuestionRef.current = null
+        setQuestion(null)
+        pendingQuestionId.current = null
+        setStreamProgress(null)
+        setBusy(true)
+        setActivityStartedAt((current) => current ?? Date.now())
+        enterPhase("model")
+        break
+      }
+      case "task_question_cancelled": {
+        const taskID = String(data.task_id ?? "")
+        const questionID = String(data.question_id ?? "")
+        const pending = taskQuestionRef.current
+        if (!pending || activeTaskIDRef.current !== taskID || pending.taskID !== taskID || pending.id !== questionID) break
+        resolvedTaskQuestionIDs.current.add(`${taskID}\u0000${questionID}`)
+        if (resolvedTaskQuestionIDs.current.size > 256) resolvedTaskQuestionIDs.current.delete(resolvedTaskQuestionIDs.current.values().next().value!)
+        taskQuestionRef.current = null
+        setQuestion(null)
+        pendingQuestionId.current = null
+        setStreamProgress(null)
+        enterPhase("model")
+        break
+      }
       case "turn_started":
         sessionHasPrompt.current = true
         setBusy(true)
@@ -1270,7 +1326,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (!request) break
         pendingClipboardRequests.current.delete(event.id!)
         const targetStillCurrent = request.target === "question"
-          ? Boolean(question && !question.answering && question.id === request.questionID && composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen))
+          ? Boolean(question && !question.dismissed && !question.answering && question.id === request.questionID && question.taskID === request.questionTaskID && composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen))
           : !question && composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)
         const sameSession = request.sessionID === sessionIdentity.current && request.sessionGeneration === sessionGeneration.current
         if (!targetStillCurrent || !sameSession) {
@@ -1839,7 +1895,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "task_attached": {
         const taskBusy = ["running", "queued", "awaiting", "canceling"].includes(String(data.status))
-        setActiveTaskId(String(data.task_id ?? data.id ?? ""))
+        const taskID = String(data.task_id ?? data.id ?? "")
+        activeTaskIDRef.current = taskID
+        taskQuestionRef.current = null
+        setQuestion(null)
+        pendingQuestionId.current = null
+        setActiveTaskId(taskID)
         if (data.session_id) updateSessionIdentity(String(data.session_id))
         if (data.workspace) setMessage(String(data.workspace))
         setBusy(taskBusy)
@@ -1849,7 +1910,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "task_resumed":
-        setActiveTaskId(String(data.task_id ?? data.id ?? ""))
+        activeTaskIDRef.current = String(data.task_id ?? data.id ?? "")
+        taskQuestionRef.current = null
+        setQuestion(null)
+        setActiveTaskId(activeTaskIDRef.current)
         setBusy(true)
         setActivityStartedAt((current) => current ?? Date.now())
         enterPhase("model")
@@ -1865,11 +1929,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.status || data.tool) addEntry("system", String(data.message ?? `${data.status ?? "running"} ${data.tool ?? ""}`))
         break
       case "task_finished":
+        if (data.task_id && activeTaskIDRef.current && String(data.task_id) !== activeTaskIDRef.current) break
         finishPendingSteers("The task ended before this message was accepted.")
         clearStreamDraft()
         toolProgress.current.clear()
         if (data.text) addEntry("assistant", String(data.text))
         addEntry("system", `Task ${String(data.status ?? "finished")}`)
+        activeTaskIDRef.current = ""
+        taskQuestionRef.current = null
         setActiveTaskId("")
         setActivityStartedAt(null)
         enterPhase("idle")
@@ -1882,6 +1949,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         addEntry("system", `Detached from session ${sessionId || ""}`)
         updateSessionIdentity("")
         setBusy(false)
+        activeTaskIDRef.current = ""
+        taskQuestionRef.current = null
+        setQuestion(null)
+        setActiveTaskId("")
         setActivityStartedAt(null)
         enterPhase("idle")
         setTools([])
@@ -1890,6 +1961,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "error":
         if (event.id && pendingUsageCancels.current.delete(event.id)) break
         if (event.id && pendingClipboardRequests.current.has(event.id)) pendingClipboardRequests.current.delete(event.id)
+        const pendingTaskQuestion = taskQuestionRef.current
+        if (pendingTaskQuestion?.answerRequestID && event.id === pendingTaskQuestion.answerRequestID) {
+          const recovered = { ...pendingTaskQuestion, answerRequestID: undefined, answering: false, submittedAnswer: undefined }
+          taskQuestionRef.current = recovered
+          setQuestion((current) => current && current.taskID === pendingTaskQuestion.taskID && current.id === pendingTaskQuestion.id ? recovered : current)
+          addEntry("system", `Task answer was not accepted · ${String(data.message ?? "Try submitting the answer again.")}`)
+          break
+        }
         {
           const pending = pendingUsageRequest.current
           const usageError = pending && event.id === pending.id || data.request_type === "session_usage" || data.command_type === "session_usage"
@@ -2058,6 +2137,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           ? { ...entry, toolState: "interrupted", text: entry.text || "Agent connection closed before this tool finished." }
           : entry))
         setTools([])
+        activeTaskIDRef.current = ""
+        taskQuestionRef.current = null
         setQuestion(null)
         setMaintenance(null)
         setPluginCommandRun(null)
@@ -2137,12 +2218,22 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const sendPrompt = () => {
     const value = textarea.current?.plainText ?? draft
     const text = value.trim()
+    if (question?.taskID && question.dismissed) {
+      const reopened = { ...question, dismissed: false }
+      taskQuestionRef.current = reopened
+      setQuestion(reopened)
+      return
+    }
     if (question) {
       if (question.answering) return
       const answer = text || question.choices[questionIndex] || ""
       if (!answer) return
-      transport.send("answer_question" as any, { id: question.id, answer })
-      setQuestion({ ...question, answering: true, submittedAnswer: answer })
+      const requestID = question.taskID
+        ? transport.send("task_question_answer", { task_id: question.taskID, question_id: question.id, answer })
+        : transport.send("answer_question", { id: question.id, answer })
+      const submitting = { ...question, answerRequestID: requestID, answering: true, submittedAnswer: answer }
+      if (question.taskID) taskQuestionRef.current = submitting
+      setQuestion(submitting)
       clearComposer(true)
       return
     }
@@ -2789,8 +2880,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const submitQuestionAnswer = (answer: string) => {
     if (!question || question.answering || !answer) return
-    transport.send("answer_question" as any, { id: question.id, answer })
-    setQuestion({ ...question, answering: true, submittedAnswer: answer })
+    const requestID = question.taskID
+      ? transport.send("task_question_answer", { task_id: question.taskID, question_id: question.id, answer })
+      : transport.send("answer_question", { id: question.id, answer })
+    const submitting = { ...question, answerRequestID: requestID, answering: true, submittedAnswer: answer }
+    if (question.taskID) taskQuestionRef.current = submitting
+    setQuestion(submitting)
     clearComposer(true)
   }
 
@@ -2894,13 +2989,48 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       toggleLastToolGroup()
       return
     }
-    if (question) {
+    if (question?.taskID && question.dismissed) {
+      if (key.name === "return" || key.name === "kpenter") {
+        key.preventDefault()
+        const reopened = { ...question, dismissed: false }
+        taskQuestionRef.current = reopened
+        setQuestion(reopened)
+        return
+      }
+      if (isEscape) {
+        key.preventDefault()
+        addEntry("system", `Task ${question.taskID} is still waiting for your answer · press Enter or click status to reopen, or use /task cancel to stop it.`)
+        return
+      }
+      if (isCtrlC) {
+        key.preventDefault()
+        addEntry("system", `Task ${question.taskID} is still waiting for your answer · press Enter or click status to reopen, or use /task cancel to stop it.`)
+        return
+      }
+    }
+    if (question && !question.dismissed) {
       if (question.answering) return
       if (isCancel) {
         if (isCtrlC) key.preventDefault()
-        transport.send("cancel_question" as any, { id: question.id })
-        setQuestion(null)
-        addEntry("system", "Question canceled; stopping this turn…")
+        if (question.taskID) {
+          if (isEscape) {
+            key.preventDefault()
+            const dismissed = { ...question, dismissed: true }
+            taskQuestionRef.current = dismissed
+            setQuestion(dismissed)
+            addEntry("system", `Task ${question.taskID} is still waiting for your answer · press Enter or click status to reopen, or use /task cancel to stop it.`)
+          } else {
+            key.preventDefault()
+            const dismissed = { ...question, dismissed: true }
+            taskQuestionRef.current = dismissed
+            setQuestion(dismissed)
+            addEntry("system", `Task ${question.taskID} is still waiting for your answer · use /task cancel to stop it.`)
+          }
+        } else {
+          transport.send("cancel_question" as any, { id: question.id })
+          setQuestion(null)
+          addEntry("system", "Question canceled; stopping this turn…")
+        }
         return
       }
       if (key.name === "up" || key.name === "down") {
@@ -3154,8 +3284,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
   const cwd = message || workspace
   const visibleFileCount = Math.max(1, Math.floor((renderer.width - 26) / 20))
+  const taskQuestionDismissed = Boolean(question?.taskID && question.dismissed)
   const activityLabel = question
-    ? "Waiting for your answer"
+    ? taskQuestionDismissed ? "Waiting for your answer · click to reopen" : "Waiting for your answer"
     : maintenance
       ? `${maintenance.kind === "update" ? "Updating pk" : "Rolling back"} · ${maintenance.progress}`
       : reloadPending
@@ -3208,10 +3339,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
         </box>}
         <box style={{ flexDirection: "row", height: 1 }}>
-          <text selectable={false} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
+          <text selectable={false} onMouseDown={taskQuestionDismissed ? (event) => leftMouseDown(event, () => setQuestion((current) => current?.taskID ? { ...current, dismissed: false } : current)) : undefined} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea id="composer" ref={textarea} focused={composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea id="composer" ref={textarea} focused={composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen) && !taskQuestionDismissed} placeholder={question ? taskQuestionDismissed ? "Task is waiting for an answer · click status or press Enter to reopen" : "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
@@ -3230,7 +3361,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-      <text selectable={false} fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
+      <text selectable={false} fg={palette.dim} content={`${question ? taskQuestionDismissed ? "Enter reopen question" : "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
           <text selectable={false} fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
@@ -3361,14 +3492,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.dim} content={providerPresetSaving ? "Saving credential privately…" : "Enter saves · click Save provider · Esc cancels"} />
         </>}
       </box>}
-      {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
-        <text fg={palette.text} content={question.text} />
-        {question.choices.map((choice, index) => <box key={`${question.id}-${index}`} onMouseOver={() => !question.answering && setQuestionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => submitQuestionAnswer(choice))} style={{ flexDirection: "row", gap: 1, backgroundColor: index === questionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
-          <text fg={question.answering ? palette.dim : index === questionIndex ? palette.accent : palette.muted} content={index === questionIndex && !question.answering ? "›" : " "} />
-          <text fg={question.answering ? palette.dim : index === questionIndex ? palette.text : palette.muted} content={choice} />
+      {visibleQuestion && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.accent} content={visibleQuestion.taskID ? "Task needs an answer" : visibleQuestion.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
+        <text fg={palette.text} content={visibleQuestion.text} />
+        {visibleQuestion.choices.map((choice, index) => <box key={`${visibleQuestion.id}-${index}`} onMouseOver={() => !visibleQuestion.answering && setQuestionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => submitQuestionAnswer(choice))} style={{ flexDirection: "row", gap: 1, backgroundColor: index === questionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
+          <text fg={visibleQuestion.answering ? palette.dim : index === questionIndex ? palette.accent : palette.muted} content={index === questionIndex && !visibleQuestion.answering ? "›" : " "} />
+          <text fg={visibleQuestion.answering ? palette.dim : index === questionIndex ? palette.text : palette.muted} content={choice} />
         </box>)}
-        <text fg={palette.dim} content={question.answering ? "Sending answer…" : question.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
+        <text fg={palette.dim} content={visibleQuestion.answering ? "Sending answer…" : visibleQuestion.taskID ? visibleQuestion.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc hide · /task cancel stops task" : "Type an answer · Enter submit · Esc hide · /task cancel stops task" : visibleQuestion.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
       </box>}
       <SessionManager
         open={sessionManagerOpen}

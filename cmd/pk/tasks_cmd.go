@@ -10,17 +10,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/tasks"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 func taskStore() tasks.Store { return tasks.Store{Root: filepath.Join(pkHome(), "tasks")} }
 
 func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: pk task create|list|status|attach|cancel|resume ...")
+		fmt.Fprintln(errOut, "usage: pk task create|list|status|attach|answer|cancel-question|cancel|resume ...")
 		return 2
 	}
 	switch args[0] {
@@ -131,8 +134,39 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			fmt.Fprintf(errOut, "pk task status: %v\n", err)
 			return 1
 		}
-		b, _ := json.MarshalIndent(t, "", "  ")
+		questions, err := taskStore().ListQuestions(t.ID)
+		if err != nil {
+			fmt.Fprintf(errOut, "pk task status: %v\n", err)
+			return 1
+		}
+		b, _ := json.MarshalIndent(struct {
+			tasks.Task
+			PendingQuestions []tasks.Question `json:"pending_questions"`
+		}{Task: t, PendingQuestions: questions}, "", "  ")
 		fmt.Fprintln(out, string(b))
+		return 0
+	case "answer":
+		if len(args) < 4 {
+			fmt.Fprintln(errOut, "usage: pk task answer ID QUESTION_ID ANSWER")
+			return 2
+		}
+		answer := strings.Join(args[3:], " ")
+		if err := taskStore().AnswerQuestion(args[1], args[2], answer); err != nil {
+			fmt.Fprintf(errOut, "pk task answer: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(out, "Answer recorded for question %s on task %s.\n", args[2], args[1])
+		return 0
+	case "cancel-question":
+		if len(args) != 3 {
+			fmt.Fprintln(errOut, "usage: pk task cancel-question ID QUESTION_ID")
+			return 2
+		}
+		if err := taskStore().CancelQuestion(args[1], args[2]); err != nil {
+			fmt.Fprintf(errOut, "pk task cancel-question: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(out, "Canceled task %s because question %s was canceled.\n", args[1], args[2])
 		return 0
 	case "attach":
 		if len(args) < 2 || len(args) > 3 {
@@ -146,7 +180,39 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 				return 2
 			}
 		}
-		if _, err := taskStore().Follow(ctx, args[1], after, out); err != nil && !errors.Is(err, context.Canceled) {
+		task, err := taskStore().Get(args[1])
+		if err != nil {
+			fmt.Fprintf(errOut, "pk task attach: %v\n", err)
+			return 1
+		}
+		pending, err := taskStore().ListQuestions(args[1])
+		if err != nil {
+			fmt.Fprintf(errOut, "pk task attach: %v\n", err)
+			return 1
+		}
+		shownQuestions := make(map[string]bool, len(pending))
+		for _, question := range pending {
+			shownQuestions[question.ID] = true
+			printTaskQuestion(out, args[1], question)
+		}
+		questionCursor := task.LastEvent
+		if _, err := taskStore().FollowEvents(ctx, args[1], after, out, func(event tasks.Event) {
+			switch event.Type {
+			case "task_question":
+				if event.Seq > questionCursor && !shownQuestions[event.QuestionID] {
+					shownQuestions[event.QuestionID] = true
+					printTaskQuestion(out, args[1], tasks.Question{ID: event.QuestionID, SessionID: event.SessionID, Text: event.QuestionText, Choices: event.QuestionChoices, Kind: event.QuestionKind})
+				}
+			case "task_question_answered":
+				if event.Seq > questionCursor {
+					fmt.Fprintf(out, "Answer recorded for question %s.\n", event.QuestionID)
+				}
+			case "task_question_cancelled":
+				if event.Seq > questionCursor {
+					fmt.Fprintf(out, "Question %s canceled; task cancellation requested.\n", event.QuestionID)
+				}
+			}
+		}); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(errOut, "pk task attach: %v\n", err)
 			return 1
 		}
@@ -180,12 +246,38 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 	}
 }
 
+func printTaskQuestion(out io.Writer, taskID string, question tasks.Question) {
+	fmt.Fprintf(out, "\nQuestion %s (%s): %s\n", question.ID, question.Kind, question.Text)
+	for _, choice := range question.Choices {
+		fmt.Fprintf(out, "  - %s\n", choice)
+	}
+	fmt.Fprintf(out, "Answer with: pk task answer %s %s ANSWER\n", taskID, question.ID)
+}
+
 func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) int {
 	if len(args) != 1 {
 		fmt.Fprintln(diagnostics, "pk: invalid task worker arguments")
 		return 2
 	}
 	err := tasks.RunWorker(ctx, args[0], func(ctx context.Context, taskOptions tasks.WorkerOptions, output io.Writer) error {
+		broker := interaction.NewBroker(ctx, taskOptions.SessionID)
+		defer broker.Close()
+		var sessionMu sync.RWMutex
+		sessionID := taskOptions.SessionID
+		priorOnSession := taskOptions.OnSession
+		onSession := func(id string) {
+			sessionMu.Lock()
+			sessionID = id
+			sessionMu.Unlock()
+			if priorOnSession != nil {
+				priorOnSession(id)
+			}
+		}
+		questionBridgeDone := bridgeTaskQuestions(broker, taskStore(), args[0], func() string {
+			sessionMu.RLock()
+			defer sessionMu.RUnlock()
+			return sessionID
+		})
 		inputs := make(chan runner.Input, 32)
 		go func() {
 			defer close(inputs)
@@ -200,7 +292,7 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 				}
 			}
 		}()
-		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: taskOptions.OnSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: onSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
 		client, providerSnapshot, err := prepareCLIAdapter(ctx, &o, taskOptions.UseCodex, taskOptions.CodexPath)
 		if err != nil {
 			return err
@@ -209,7 +301,10 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 			defer closer.Close()
 		}
 		o.Adapter = client
-		if _, err := configureCLIExtensions(ctx, &o, nil, nil, diagnostics, tinyFishRegistryExtension(ctx)); err != nil {
+		if _, err := configureCLIExtensions(ctx, &o, nil, nil, diagnostics,
+			cliRegistryExtension{Decorate: func(base tool.Registry) tool.Registry {
+				return interaction.DecorateRegistry(base, broker)
+			}}, tinyFishRegistryExtension(ctx)); err != nil {
 			return err
 		}
 		mcpHost, err := configureCLIMCP(ctx, &o, diagnostics)
@@ -235,7 +330,9 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 			}
 			return fmt.Errorf("configure task subagents: %w", err)
 		}
-		_, err = runner.Run(ctx, o)
+		_, err = runner.Run(broker.Context(), o)
+		broker.Close()
+		<-questionBridgeDone
 		subagentManager.Close()
 		if mcpHost != nil {
 			if closeErr := mcpHost.Close(); err == nil && closeErr != nil {
@@ -249,4 +346,33 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 		return 1
 	}
 	return 0
+}
+
+func bridgeTaskQuestions(broker *interaction.Broker, store tasks.Store, taskID string, sessionID func() string) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx := broker.Context()
+		for {
+			select {
+			case question := <-broker.Questions():
+				currentSessionID := question.SessionID
+				if sessionID != nil {
+					currentSessionID = sessionID()
+				}
+				answer, err := store.AskQuestion(ctx, taskID, tasks.Question{
+					ID: question.ID, SessionID: currentSessionID, Text: question.Text,
+					Choices: question.Choices, Kind: question.Kind,
+				})
+				if err != nil {
+					_ = broker.Cancel(question.ID)
+					continue
+				}
+				_ = broker.Answer(question.ID, answer)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return done
 }

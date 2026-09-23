@@ -2159,10 +2159,34 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		if previousCancel != nil {
 			previousCancel()
 		}
-		_ = s.emit(msg.ID, "task_attached", taskPayload(task))
+		pendingQuestions, questionsErr := store.ListQuestions(id)
+		if questionsErr != nil {
+			cancel()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": questionsErr.Error(), "recoverable": true})
+			return
+		}
+		attachedPayload := taskPayload(task)
+		attachedPayload["pending_questions"] = taskQuestionsPayload(id, pendingQuestions)
+		questionEventCursor := task.LastEvent
+		_ = s.emit(msg.ID, "task_attached", attachedPayload)
 		go func() {
 			writer := taskOutputWriter{server: s, requestID: msg.ID, taskID: id}
-			_, followErr := store.Follow(followCtx, id, 0, writer)
+			_, followErr := store.FollowEvents(followCtx, id, 0, writer, func(event tasks.Event) {
+				if event.Seq <= questionEventCursor {
+					return // Older pending questions are already included in task_attached.
+				}
+				switch event.Type {
+				case "task_question":
+					_ = s.emit(msg.ID, "task_question", map[string]any{
+						"task_id": id, "question_id": event.QuestionID, "session_id": event.SessionID,
+						"text": event.QuestionText, "choices": event.QuestionChoices, "kind": event.QuestionKind, "status": "pending",
+					})
+				case "task_question_answered":
+					_ = s.emit(msg.ID, "task_question_answered", map[string]any{"task_id": id, "question_id": event.QuestionID})
+				case "task_question_cancelled":
+					_ = s.emit(msg.ID, "task_question_cancelled", map[string]any{"task_id": id, "question_id": event.QuestionID})
+				}
+			})
 			defer func() {
 				s.mu.Lock()
 				if s.taskFollowRequest == msg.ID {
@@ -2187,6 +2211,36 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 			_ = s.emit(msg.ID, "task_finished", payload)
 		}()
+	case "task_status":
+		id := get("task_id")
+		store := tasks.Store{Root: filepath.Join(pkHome(), "tasks")}
+		task, err := store.Get(id)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		questions, err := store.ListQuestions(id)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		payload := taskPayload(task)
+		payload["pending_questions"] = taskQuestionsPayload(id, questions)
+		_ = s.emit(msg.ID, "task_status", payload)
+	case "task_question_answer":
+		taskID, questionID, answer := get("task_id"), get("question_id"), get("answer")
+		if err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).AnswerQuestion(taskID, questionID, answer); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "task_question_answered", map[string]any{"task_id": taskID, "question_id": questionID})
+	case "task_question_cancel":
+		taskID, questionID := get("task_id"), get("question_id")
+		if err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).CancelQuestion(taskID, questionID); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "task_question_cancelled", map[string]any{"task_id": taskID, "question_id": questionID})
 	case "task_cancel":
 		id := get("task_id")
 		if err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Cancel(id); err != nil {
@@ -2268,6 +2322,17 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	default:
 		_ = s.emit(msg.ID, "error", map[string]any{"message": "unknown command type " + msg.Type, "recoverable": true})
 	}
+}
+
+func taskQuestionsPayload(taskID string, questions []tasks.Question) []map[string]any {
+	payload := make([]map[string]any, 0, len(questions))
+	for _, question := range questions {
+		payload = append(payload, map[string]any{
+			"task_id": taskID, "question_id": question.ID, "session_id": question.SessionID,
+			"text": question.Text, "choices": question.Choices, "kind": question.Kind, "status": "pending",
+		})
+	}
+	return payload
 }
 
 // workspaceAttachmentPaths converts absolute paths inside the selected workspace

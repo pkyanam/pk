@@ -121,9 +121,10 @@ identity. Use `/new` to adopt the updated prompt; legacy sessions keep their sav
 
 When a foreground session needs a user decision, `AskUser` presents its choices above the composer;
 select with Up/Down and Enter, or type a freeform answer. Escape cancels the pending question and the
-current turn. This is a clarification flow, not a tool permission gate. Detached tasks do not expose
-model-generated questions, so include necessary choices in their initial prompt or steer them while
-attached.
+current turn. This is a clarification flow, not a tool permission gate. Newly created detached tasks
+can also ask questions: attach through `/tasks` to answer them. For a detached-task question, Escape
+dismisses the question while the worker keeps waiting; reopen it with Enter or the activity indicator.
+Use `/task cancel ID` to stop the task explicitly.
 
 To attach explicitly selected files to a foreground prompt, queue a path with `/file` (quote a path
 containing spaces). You can also enter a bare path and press Enter to send it with the default
@@ -200,8 +201,8 @@ and exits. Use `pk run -p PROMPT --jsonl` for assistant and tool-call events as 
 From the TUI, `/task new PROMPT` creates a fresh `pk-work/task-*` workspace below the current project.
 To choose another destination, use `/task new --workspace "/path with spaces" PROMPT`. `/tasks`
 opens the task picker; select a task and press Enter to follow its output. While attached, enter a
-follow-up prompt to steer the task. Keep detached task prompts self-contained: they have no durable
-request/reply flow for a model-generated blocking question.
+follow-up prompt to steer the task. A model-generated question is saved with the task and waits for
+an explicit answer, even if the UI disconnects. Reattaching restores the pending question.
 Use `/task resume ID` for an interrupted task and `/task cancel ID` to stop its worker.
 
 From a shell, `pk task create` starts a worker process and returns immediately. If the workspace path
@@ -219,6 +220,11 @@ pk task list
 pk task status TASK_ID
 pk task attach TASK_ID
 ```
+
+`status` and `attach` show pending questions and their IDs. From another shell, answer with
+`pk task answer TASK_ID QUESTION_ID "your answer"`. Retrying the same answer is safe; a different
+answer cannot overwrite an accepted one. Answers are stored privately with local task data. Older
+sessions retain their saved tool registry, so start a new task to acquire newly added tools.
 
 `attach` streams stored output until the task finishes. Ctrl-C stops following and leaves the worker
 running. Cancel the worker explicitly with `pk task cancel TASK_ID`; cancellation sends a graceful

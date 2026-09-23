@@ -38,18 +38,18 @@ from running to terminal, keeping completed results visible. Common secret field
 assignments are redacted from previews; this is a defensive display filter, not a complete secret
 detector. The Go `pk run --jsonl` interface exposes these runner events for scripts.
 
-Detached tasks can receive explicit follow-up prompts through their task host. They do not have a
-persisted typed `awaiting_input` request/reply state for model-generated questions or tool approvals;
-model-generated questions are available only in foreground sessions through a request-ID-correlated
-`AskUser` broker. Answers are fed back into the same tool call; canceling the request cancels the
-turn. `AskUser` is for clarifying decisions, not permission to execute a tool. See
+Detached tasks receive follow-up prompts and persisted `AskUser` questions through their task host.
+Questions and explicit answers are keyed by task and tool-call ID, stored privately, and restored on
+attach. The task remains running while waiting; dismissal does not cancel it. Foreground questions
+use an in-memory broker and Escape cancels the turn. Both hosts feed answers into the original tool
+call. See [durable task questions](task-questions.md) for recovery and lifecycle boundaries. `AskUser` is for clarifying decisions, not permission to execute a tool. See
 [the harness interaction note](research/harness-interactions.md).
 
 `internal/runner` composes the pinned Unreal Agent session coordinator, durable session storage,
 operation manager, tool registry, and model adapter. The `llm.Adapter` boundary isolates model
 requests. The upstream local operation manager executes durable Bash and image operations; pk also
 registers explicit remote-job handlers for supported extensions. The base tool registry exposes
-Bash, ViewImage, and SkillUse. Host setup may add foreground AskUser, explicitly configured
+Bash, ViewImage, and SkillUse. Host setup may add AskUser in interactive or detached-task hosts, explicitly configured
 extensions, MCP servers, image generation, and parent-managed subagent tools through registry
 decorators. These are opt-in integrations, not binaries discovered by scanning a workspace.
 

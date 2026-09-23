@@ -40,25 +40,28 @@ function snapshot(overrides: Partial<ContextUsageSnapshot> = {}): ContextUsageSn
 describe("context usage grid", () => {
   test("allocates a stable byte-proportional grid without inventing capacity", () => {
     const counts = contextGridCellCounts(categories)
-    expect(Object.values(counts).reduce((sum, value) => sum + value, 0)).toBe(120)
+    expect(Object.values(counts).reduce((sum, value) => sum + value, 0)).toBe(42)
     expect(counts.messages).toBeGreaterThan(counts.system_prompt)
     expect(contextGridCellCounts(categories.map((category) => ({ ...category, bytes: 0 }))).messages).toBe(0)
   })
 
-  test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("renders byte estimates and separate provider counters at $width × $height", async ({ width, height }) => {
+  test.each([{ width: 44, height: 30 }, { width: 80, height: 24 }, { width: 120, height: 36 }])("renders spaced byte cells and separate provider counters at $width × $height", async ({ width, height }) => {
     const setup = await testRender(<ContextUsage snapshot={snapshot()} />, { width, height })
     renderers.push(setup)
     const frame = await setup.waitForFrame((value) => value.includes("Context composition · request 4"))
     const compact = frame.replace(/\s+/g, " ")
-    expect(compact).toContain("Estimated split by serialized JSON-value bytes")
-    expect(compact).toContain("not token attribution")
-    expect(compact).toContain("System prompt")
-    expect(compact).toContain("Tool definitions")
-    expect(compact).toContain("Tool calls")
-    expect(compact).toContain("Tool results")
+    expect(compact).toContain("Share of request bytes · not token usage")
+    expect(compact).toContain(width < 96 ? "System ·" : "System prompt")
+    expect(compact).toContain(width < 96 ? "Definitions ·" : "Tool definitions")
+    expect(compact).toContain(width < 96 ? "Calls ·" : "Tool calls")
+    expect(compact).toContain(width < 96 ? "Results ·" : "Tool results")
     expect(compact).toContain("Messages")
     expect(compact).toContain("Latest provider usage · input tokens 3,800 · cached tokens 0 · cache-write tokens 512 · output tokens 244")
     expect(compact).toContain("Context window capacity · unavailable (no validated limit)")
+    const gridLines = frame.split("\n").filter((line) => line.includes("■"))
+    expect(gridLines.length).toBeGreaterThan(0)
+    expect(gridLines.every((line) => !line.includes("■■"))).toBe(true)
+    expect(gridLines.every((line) => line.length <= width + 1)).toBe(true)
     expect(frame.split("\n")).toHaveLength(height + 1)
   })
 

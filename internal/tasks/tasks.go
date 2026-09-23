@@ -101,13 +101,17 @@ type Task struct {
 }
 
 type Event struct {
-	Seq       uint64    `json:"seq"`
-	At        time.Time `json:"at"`
-	Type      string    `json:"type"`
-	Text      string    `json:"text,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	SessionID string    `json:"session_id,omitempty"`
-	InputID   string    `json:"input_id,omitempty"`
+	Seq             uint64    `json:"seq"`
+	At              time.Time `json:"at"`
+	Type            string    `json:"type"`
+	Text            string    `json:"text,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	InputID         string    `json:"input_id,omitempty"`
+	QuestionID      string    `json:"question_id,omitempty"`
+	QuestionText    string    `json:"question_text,omitempty"`
+	QuestionChoices []string  `json:"question_choices,omitempty"`
+	QuestionKind    string    `json:"question_kind,omitempty"`
 }
 
 type Store struct{ Root string }
@@ -466,12 +470,22 @@ func (s Store) Cancel(id string) error {
 	if t.Status != StatusRunning {
 		return errors.New("task is not running")
 	}
+	if err = cancelPendingQuestionsLocked(dir); err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(dir, "cancel.request"), []byte(time.Now().UTC().Format(time.RFC3339Nano)), 0o600)
 }
 
 // Follow writes output events newer than afterSeq and waits until a terminal state.
 // It returns the last sequence observed; reconnect by passing that cursor again.
 func (s Store) Follow(ctx context.Context, id string, afterSeq uint64, out io.Writer) (uint64, error) {
+	return s.FollowEvents(ctx, id, afterSeq, out, nil)
+}
+
+// FollowEvents is Follow with a callback for each persisted event. The callback
+// runs in cursor order and should not block for long; reconnect using the
+// returned cursor if the method returns an error.
+func (s Store) FollowEvents(ctx context.Context, id string, afterSeq uint64, out io.Writer, onEvent func(Event)) (uint64, error) {
 	dir, err := s.taskDir(id)
 	if err != nil {
 		return afterSeq, err
@@ -484,6 +498,9 @@ func (s Store) Follow(ctx context.Context, id string, afterSeq uint64, out io.Wr
 		}
 		for _, event := range events {
 			afterSeq = event.Seq
+			if onEvent != nil {
+				onEvent(event)
+			}
 			if event.Type == "output" && out != nil {
 				if _, e = io.WriteString(out, event.Text); e != nil {
 					return afterSeq, e

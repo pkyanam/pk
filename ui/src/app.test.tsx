@@ -121,7 +121,7 @@ describe("OpenTUI application", () => {
     expect(firstPage).toContain("2.4 KiB JSON-value bytes")
     await act(async () => { for (let index = 0; index < 4; index++) setup.mockInput.pressKey("ARROW_DOWN") })
     const contextPage = await setup.waitForFrame((value) => value.includes("Latest provider usage"))
-    expect(contextPage).toContain("System prompt")
+    expect(contextPage).toContain(width < 96 ? "■ System ·" : "System prompt")
     expect(contextPage).toContain("input tokens 300")
     if (width >= 105) expect(contextPage).toContain("cache-write tokens —")
     await act(async () => { for (let index = 0; index < 12; index++) setup.mockInput.pressKey("ARROW_DOWN") })
@@ -1998,6 +1998,48 @@ describe("OpenTUI application", () => {
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.id === "confirm-18" && item.payload?.answer === "No")).toBe(true)
+  })
+
+  test("attached task AskUser is dismissible, reopens, and submits only to its durable task IDs", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "attach-question-task", type: "task_attached", payload: { task_id: "task-question-7", status: "running", session_id: "session-task-question" } }))
+    act(() => fake.emit({ version: 1, id: "replay-question-1", type: "task_question", payload: { task_id: "task-question-7", question_id: "tool-call-17", session_id: "session-task-question", text: "Which environment should this task use?", choices: ["Staging", "Production"], kind: "question", status: "pending" } }))
+    let frame = await setup.waitForFrame((value) => value.includes("Task needs an answer") && value.includes("Which environment"))
+    expect(frame).toContain("Staging")
+    await act(async () => setup.mockInput.pressKeys(["ESCAPE"], 100))
+    frame = await setup.waitForFrame((value) => !value.includes("Task needs an answer"))
+    expect(frame).toContain("Waiting for your answer · click to reopen")
+    expect(frame).toContain("use /task cancel to stop it")
+    expect(fake.sent.some((item) => item.type === "task_cancel" || item.type === "task_question_answer")).toBe(false)
+
+    act(() => fake.emit({ version: 1, id: "replay-question-duplicate", type: "task_question", payload: { task_id: "task-question-7", question_id: "tool-call-17", session_id: "session-task-question", text: "Which environment should this task use?", choices: ["Staging", "Production"], kind: "question", status: "pending" } }))
+    frame = await setup.waitForFrame((value) => value.includes("Waiting for your answer · click to reopen"))
+    expect(frame).not.toContain("Task needs an answer")
+
+    await act(async () => setup.mockInput.pressEnter())
+    frame = await setup.waitForFrame((value) => value.includes("Which environment"))
+    expect(frame).toContain("Task needs an answer")
+    await act(async () => { await setup.mockInput.typeText("Staging") })
+    let answer: (typeof fake.sent)[number] | undefined
+    act(() => {
+      setup.mockInput.pressEnter()
+      answer = fake.sent.filter((item) => item.type === "task_question_answer").at(-1)
+      expect(answer?.payload).toEqual({ task_id: "task-question-7", question_id: "tool-call-17", answer: "Staging" })
+      fake.emit({ version: 1, id: answer!.id, type: "task_question_answered", payload: { task_id: "task-question-7", question_id: "tool-call-17" } })
+    })
+    frame = await setup.waitForFrame((value) => !value.includes("Task needs an answer"))
+    expect(frame).toContain("Waiting for model")
+    act(() => fake.emit({ version: 1, id: "late-answered-replay", type: "task_question", payload: { task_id: "task-question-7", question_id: "tool-call-17", text: "Already answered", status: "pending" } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Already answered")
+
+    act(() => fake.emit({ version: 1, id: "attach-other-task", type: "task_attached", payload: { task_id: "task-question-8", status: "running", session_id: "session-task-question-8" } }))
+    act(() => fake.emit({ version: 1, id: "late-old-question", type: "task_question", payload: { task_id: "task-question-7", question_id: "old-call", text: "Stale question", status: "pending" } }))
+    frame = await setup.waitForFrame((value) => value.includes("Following task task-question-8"))
+    expect(frame).not.toContain("Stale question")
   })
 
   test("mouse click answers the selected model question option", async () => {

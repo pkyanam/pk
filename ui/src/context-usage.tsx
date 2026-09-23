@@ -1,3 +1,5 @@
+import { useTerminalDimensions } from "@opentui/react"
+
 export type ContextCategoryID = "system_prompt" | "tool_schemas" | "tool_calls" | "tool_results" | "messages" | "other_input"
 
 export type ContextCategory = {
@@ -29,19 +31,19 @@ export type ContextUsageSnapshot = {
 }
 
 const categoryInfo: Record<ContextCategoryID, { label: string; color: string }> = {
-  system_prompt: { label: "System prompt", color: "#9db8d8" },
-  tool_schemas: { label: "Tool definitions", color: "#8ab4a1" },
-  tool_calls: { label: "Tool calls", color: "#b6d89c" },
-  tool_results: { label: "Tool results", color: "#d3ac72" },
-  messages: { label: "Messages", color: "#c8a4d4" },
-  other_input: { label: "Other input", color: "#858e96" },
+  system_prompt: { label: "System prompt", color: "#75b8ff" },
+  tool_schemas: { label: "Tool definitions", color: "#45d3b2" },
+  tool_calls: { label: "Tool calls", color: "#b6e66b" },
+  tool_results: { label: "Tool results", color: "#ffb45e" },
+  messages: { label: "Messages", color: "#d69aff" },
+  other_input: { label: "Other input", color: "#ff7896" },
 }
 
 const categoryOrder: ContextCategoryID[] = ["system_prompt", "tool_schemas", "tool_calls", "tool_results", "messages", "other_input"]
-const gridColumns = 24
-const gridRows = 5
+const gridRows = 3
+const defaultGridColumns = 14
 
-export function contextGridCellCounts(categories: ContextCategory[], cells = gridColumns * gridRows): Record<ContextCategoryID, number> {
+export function contextGridCellCounts(categories: ContextCategory[], cells = defaultGridColumns * gridRows): Record<ContextCategoryID, number> {
   const counts: Record<ContextCategoryID, number> = {
     system_prompt: 0, tool_schemas: 0, tool_calls: 0, tool_results: 0, messages: 0, other_input: 0,
   }
@@ -86,48 +88,63 @@ function orderedCategories(categories: ContextCategory[]): ContextCategory[] {
 }
 
 export function ContextUsage({ snapshot }: { snapshot?: ContextUsageSnapshot | null }) {
+  const { width } = useTerminalDimensions()
   if (snapshot?.pending) {
     return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
       <text fg="#e5e8eb" content={snapshot.request_ordinal > 0 ? `Context composition · request ${snapshot.request_ordinal}` : "Context composition"} />
-      <text fg="#d3ac72" content="No completed response is recorded for this request. It may still be running or have been interrupted." />
-      <text fg="#858e96" content="Latest provider usage · input tokens — · cached tokens — · cache-write tokens — · output tokens —" />
-      <text fg="#5d666e" content="Context window capacity · unavailable (no validated limit)" />
+      <text fg="#ffc06d" content="No completed response is recorded for this request. It may still be running or have been interrupted." />
+      <text fg="#b0bac5" content="Latest provider usage · input tokens — · cached tokens — · cache-write tokens — · output tokens —" />
+      <text fg="#a6b3c0" content="Context window capacity · unavailable (no validated limit)" />
     </box>
   }
   if (!snapshot?.available) {
     return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
       <text fg="#e5e8eb" content="Context composition" />
-      <text fg="#858e96" content="No saved context snapshot is available for this session." />
-      <text fg="#5d666e" content="Usage totals and context composition are separate measurements." />
+      <text fg="#b0bac5" content="No saved context snapshot is available for this session." />
+      <text fg="#a6b3c0" content="Usage totals and context composition are separate measurements." />
     </box>
   }
 
   const categories = orderedCategories(snapshot.categories ?? [])
   const total = categories.reduce((sum, category) => sum + Math.max(0, category.bytes), 0)
-  const counts = contextGridCellCounts(categories)
-  const cells = categoryOrder.flatMap((id) => Array.from({ length: counts[id] }, (_, index) => ({ id, key: `${id}-${index}` })))
-  while (cells.length < gridColumns * gridRows) cells.push({ id: "other_input", key: `empty-${cells.length}` })
+  const gridColumns = width < 56 ? 6 : width < 96 ? 10 : defaultGridColumns
+  const gridCells = gridColumns * gridRows
+  const compactLegend = width < 96
+  const counts = contextGridCellCounts(categories, gridCells)
+  const cells: Array<{ id: ContextCategoryID | null; key: string }> = categoryOrder.flatMap((id) => Array.from({ length: counts[id] }, (_, index) => ({ id, key: `${id}-${index}` })))
+  while (cells.length < gridCells) cells.push({ id: null, key: `empty-${cells.length}` })
   const rows = Array.from({ length: gridRows }, (_, row) => cells.slice(row * gridColumns, (row + 1) * gridColumns))
   const usage = snapshot.latest_provider_usage
   const heading = snapshot.request_ordinal > 0 ? `Context composition · request ${snapshot.request_ordinal}` : "Context composition"
 
   return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
     <text fg="#e5e8eb" content={heading} />
-    <text fg="#858e96" content="Estimated split by serialized JSON-value bytes · not token attribution or provider wire size." />
-    <text fg="#858e96" content={`Context input · ${snapshot.total_bytes == null ? "—" : `${formatBytes(snapshot.total_bytes)} JSON-value bytes`}`} />
-    <box id="context-usage-grid" style={{ flexDirection: "column" }}>
+    <text fg="#b0bac5" content="Share of request bytes · not token usage" />
+    <text fg="#c3ccd6" content={`Context input · ${snapshot.total_bytes == null ? "—" : `${formatBytes(snapshot.total_bytes)} JSON-value bytes`}`} />
+    <box id="context-usage-grid" style={{ flexDirection: "column", gap: 1 }}>
       {rows.map((row, rowIndex) => <text key={`row-${rowIndex}`} selectable={false}>
-        {row.map((cell) => <span key={cell.key} fg={cell.id === "other_input" && total === 0 ? "#343a40" : categoryInfo[cell.id].color}>█</span>)}
+        {row.map((cell) => <span key={cell.key} fg={cell.id ? categoryInfo[cell.id].color : "#59616b"}>{cell.id ? "■" : "·"} </span>)}
       </text>)}
     </box>
     <box style={{ flexDirection: "column" }}>
       {categories.map((category) => <text key={category.id}>
         <span fg={categoryInfo[category.id].color}>■ </span>
-        <span fg="#e5e8eb">{categoryInfo[category.id].label}</span>
-        <span fg="#858e96"> · {formatBytes(category.bytes)} · {percentage(category.bytes, total)} · {category.items} items</span>
+        <span fg={categoryInfo[category.id].color}>{compactLegend ? shortCategoryLabel(category.id) : categoryInfo[category.id].label}</span>
+        <span fg="#c3ccd6"> · {formatBytes(category.bytes)} · {percentage(category.bytes, total)} · {compactLegend ? category.items : `${category.items} ${category.items === 1 ? "item" : "items"}`}</span>
       </text>)}
     </box>
-    <text fg="#858e96" content={`Latest provider usage · input tokens ${formatTokens(usage.input_tokens, usage.input_tokens_available)} · cached tokens ${formatTokens(usage.cached_input_tokens, usage.cached_input_tokens_available)} · cache-write tokens ${formatTokens(usage.cache_write_input_tokens, usage.cache_write_input_tokens_available)} · output tokens ${formatTokens(usage.output_tokens, usage.output_tokens_available)}`} />
-    <text fg="#5d666e" content={snapshot.context_limit_tokens == null ? "Context window capacity · unavailable (no validated limit)" : `Context window capacity · ${snapshot.context_limit_tokens.toLocaleString()} tokens`} />
+    <text fg="#c3ccd6" content={`Latest provider usage · input tokens ${formatTokens(usage.input_tokens, usage.input_tokens_available)} · cached tokens ${formatTokens(usage.cached_input_tokens, usage.cached_input_tokens_available)} · cache-write tokens ${formatTokens(usage.cache_write_input_tokens, usage.cache_write_input_tokens_available)} · output tokens ${formatTokens(usage.output_tokens, usage.output_tokens_available)}`} />
+    <text fg="#a6b3c0" content={snapshot.context_limit_tokens == null ? "Context window capacity · unavailable (no validated limit)" : `Context window capacity · ${snapshot.context_limit_tokens.toLocaleString()} tokens`} />
   </box>
+}
+
+function shortCategoryLabel(id: ContextCategoryID): string {
+  switch (id) {
+    case "system_prompt": return "System"
+    case "tool_schemas": return "Definitions"
+    case "tool_calls": return "Calls"
+    case "tool_results": return "Results"
+    case "messages": return "Messages"
+    case "other_input": return "Other"
+  }
 }
