@@ -1,0 +1,11 @@
+{
+  "api_version": "pk.extensions/v1",
+  "id": "run-observer",
+  "version": "0.1.0",
+  "executable": "./run-observer",
+  "hooks": [
+    { "event": "run_start", "mode": "observe" },
+    { "event": "response_complete", "mode": "observe" },
+    { "event": "run_end", "mode": "observe" }
+  ]
+}
