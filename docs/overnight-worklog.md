@@ -367,3 +367,12 @@ gates or imply that every backlog item is complete.
 - User requested a root `install.sh` and README curl one-liner. A clean-directory installer test is in progress using separate install directories; do not claim it published until its commit and public URL are verified.
 - WebSearch/WebFetch ship using TinyFish's documented free APIs, which require a key. Easy secure setup and authenticated live validation remain outstanding; no paid proxy or undisclosed fallback is used.
 - Rich session panel, guided MCP/plugin setup, native attachment checks, further benchmark evidence, and real Cmux/Cap video remain required before the 08:00 report.
+
+## 03:53 EDT — public installer verified; skill selection regressions
+
+- `828b0d4` publishes the README curl installer. A clean-directory public-URL install into isolated paths succeeded, matched the committed script, and reported the exact clean source revision/hash. Existing user installations were untouched.
+- `32be5bf` commits scoped transcript selection copying, keyboard/mouse session management with recoverable bulk archive/restore and explicit purge, plus cancellable asynchronous history loading. UI checkpoint: 80 tests/366 assertions, typecheck and build passed; full isolated Go race/vet verification is running. Not yet installed.
+- User screenshots identify two skills browser regressions: Vercel candidate source `@main` was parsed as a skill selector, and Google Workspace Gmail search results opened the whole repository, hitting the 64-candidate limit. Backend and UI owners are fixing exact selected-skill round trips with real public-source checks.
+- `e697977` adds the jobqueue fixture and immutable holdout checks. One bounded 8-phase Luna/low full-versus-compact cohort is running from that clean source in isolation; no additional runs authorized beyond the recorded cap.
+- Official Monid CLI/skill setup succeeded. A hidden-input local credential helper is ready and the user has been asked to enter their key privately. No authenticated Monid free-search request has run yet.
+- Guided MCP UI, plugin source picker, native attachments, launch capture/video, and morning report remain active work. Current installed revision remains `fd31672`.
