@@ -108,6 +108,9 @@ func TestStageBuildsPairedReleaseFromReadOnlySourceCopy(t *testing.T) {
 	if err := validateRelease(release); err != nil {
 		t.Fatalf("release failed validation: %v", err)
 	}
+	if info, err := os.Stat(release.Path); err != nil || info.Mode().Perm()&0o222 != 0 {
+		t.Fatalf("published release root is not sealed: info=%v err=%v", info, err)
+	}
 	if _, err := os.Stat(filepath.Join(source, "bin")); !os.IsNotExist(err) {
 		t.Fatalf("build modified original source bin directory: %v", err)
 	}
@@ -170,6 +173,9 @@ func TestImportArtifactsFromSourceRecordsExactDirtyProvenance(t *testing.T) {
 	}
 	if release.Revision != "cafe123" || !release.DirtyKnown || !release.Dirty || release.Source != "https://github.com/pkyanam/pk.git" || release.GitRepository != release.Source || release.SourceHash != wantHash || len(release.SourceHash) != 64 {
 		t.Fatalf("source metadata=%+v; want sanitized repository, revision, dirty state, and matching hash", release)
+	}
+	if info, err := os.Stat(release.Path); err != nil || info.Mode().Perm()&0o222 != 0 {
+		t.Fatalf("imported release root is not sealed: info=%v err=%v", info, err)
 	}
 	if strings.Contains(release.Source, "secret") || strings.Contains(release.GitRepository, "secret") {
 		t.Fatalf("repository credentials leaked into metadata: %+v", release)

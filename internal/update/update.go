@@ -176,7 +176,7 @@ func (manager Manager) importArtifacts(binaryPath, uiDirectory string, provenanc
 	if err := sealTree(stagePath); err != nil {
 		return Release{}, err
 	}
-	if err := os.Rename(stagePath, finalPath); err != nil {
+	if err := publishSealedRelease(stagePath, finalPath); err != nil {
 		return Release{}, err
 	}
 	return release, nil
@@ -306,10 +306,29 @@ func (manager Manager) stage(ctx context.Context, source, gitRepository, gitRef,
 	if err := sealTree(stagePath); err != nil {
 		return Release{}, err
 	}
-	if err := os.Rename(stagePath, finalPath); err != nil {
+	if err := publishSealedRelease(stagePath, finalPath); err != nil {
 		return Release{}, fmt.Errorf("publish staged release: %w", err)
 	}
 	return release, nil
+}
+
+// publishSealedRelease moves a complete, content-sealed staging directory into
+// its final name, then seals the root directory. Some filesystems (including
+// macOS/APFS) reject renaming a directory whose own permissions are read-only.
+// The temporary directory remains private and unreferenced while writable; the
+// contents are already sealed, and no current pointer is changed here.
+func publishSealedRelease(stagePath, finalPath string) error {
+	if err := os.Chmod(stagePath, 0o700); err != nil {
+		return fmt.Errorf("prepare staged release for publish: %w", err)
+	}
+	if err := os.Rename(stagePath, finalPath); err != nil {
+		return err
+	}
+	if err := os.Chmod(finalPath, 0o555); err != nil {
+		removeTree(finalPath)
+		return fmt.Errorf("seal published release directory: %w", err)
+	}
+	return nil
 }
 
 func (manager Manager) runCommand(ctx context.Context, directory, name string, args ...string) error {
