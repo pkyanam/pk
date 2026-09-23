@@ -888,6 +888,7 @@ func newToolRegistry(workspace, operationDir string, dirs []string) (tool.Regist
 		skills = append(skills, discovered...)
 		warnings = append(warnings, errs...)
 	}
+	skills = deduplicateSkillFiles(skills)
 	for _, skill := range skills {
 		if _, err := registry.RegisterSkill(skill); err != nil {
 			warnings = append(warnings, err)
