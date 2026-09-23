@@ -26,15 +26,16 @@ beforeEach(async () => {
 function fakeTransport() {
   let handler = (_event: ServerEvent) => {}
   const sent: Array<{ id: string; type: string; payload?: Record<string, unknown> }> = []
+  const starts: Array<Record<string, unknown>> = []
   let sequence = 0
   const transport = {
     setEventHandler(next: typeof handler) { handler = next },
-    async start() {},
+    async start(config?: Record<string, unknown>) { if (config) starts.push(config) },
     send(type: string, payload?: Record<string, unknown>) { const id = `fake-${++sequence}`; sent.push({ id, type, payload }); return id },
     emit(event: ServerEvent) { handler(event) },
     async close() {},
   }
-  return { transport: transport as unknown as PkTransport, sent, emit: transport.emit }
+  return { transport: transport as unknown as PkTransport, sent, starts, emit: transport.emit }
 }
 
 describe("OpenTUI application", () => {
@@ -313,6 +314,110 @@ describe("OpenTUI application", () => {
     expect(fake.sent.filter((item) => item.type === "prompt")).toHaveLength(2)
     expect(fake.sent.filter((item) => item.type === "prompt")[1]?.payload?.text).toBe("second follow-up")
     expect(composer.plainText).toBe("")
+  })
+
+  test("queues a steering message on the active turn and updates its delivery state without resetting progress", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", capabilities: ["steer"] } }))
+    await act(async () => { await setup.mockInput.typeText("Start a long task") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "model_progress", payload: { request_id: "streaming", attempt: 1, phase: "assistant_delta", item_id: "text-1", text_delta: "Working through the first step." } }))
+    await setup.waitForFrame((frame) => frame.includes("Working through the first step."))
+    await act(async () => { await setup.mockInput.typeText("Also check the edge cases") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const steer = fake.sent.find((item) => item.type === "steer")!
+    expect(steer.payload?.text).toBe("Also check the edge cases")
+    expect(fake.sent.filter((item) => item.type === "prompt")).toHaveLength(1)
+    let frame = await setup.waitForFrame((value) => value.includes("you · queued · waiting for a boundary"))
+    expect(frame).toContain("Working through the first step.")
+    expect(frame).toContain("Receiving response")
+    act(() => fake.emit({ version: 1, id: steer.id, type: "input_queued", payload: { id: "inbox-1", session_id: "session-1" } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("you · queued · waiting for a boundary")
+    act(() => fake.emit({ version: 1, id: steer.id, type: "input_accepted", payload: { id: "inbox-1", session_id: "session-1" } }))
+    frame = await setup.waitForFrame((value) => value.includes("you · accepted by active turn"))
+    expect(frame).toContain("Working through the first step.")
+    expect(frame).toContain("Receiving response")
+    expect(frame).not.toContain("Thinking…")
+    await act(async () => { await setup.mockInput.pressKeys(["ESCAPE"], 100) })
+    expect(fake.sent.some((item) => item.type === "cancel")).toBe(true)
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+  })
+
+  test("only offers steering when the start handshake advertises the capability", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await setup.flush()
+    expect(fake.starts[0]?.steering).toBe(true)
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", capabilities: [] } }))
+    await act(async () => { await setup.mockInput.typeText("Initial task") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    await act(async () => { await setup.mockInput.typeText("do not send yet") })
+    act(() => setup.mockInput.pressEnter())
+    const frame = await setup.waitForFrame((value) => value.includes("does not support mid-turn steering"))
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("do not send yet")
+    expect(frame).toContain("Esc stop")
+    expect(fake.sent.some((item) => item.type === "steer")).toBe(false)
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+  })
+
+  test("keeps a steering draft and queued attachments when active-turn input cannot carry files", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", capabilities: ["steer"] } }))
+    await act(async () => { await setup.mockInput.typeText("/file report.pdf") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("Initial foreground task") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    await act(async () => { await setup.mockInput.typeText("This needs no file yet") })
+    act(() => setup.mockInput.pressEnter())
+    const frame = await setup.waitForFrame((value) => value.includes("Steering messages cannot include queued file attachments"))
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("This needs no file yet")
+    expect(frame).toContain("Files 1/8")
+    expect(fake.sent.some((item) => item.type === "steer")).toBe(false)
+    expect(fake.sent.filter((item) => item.type === "prompt")).toHaveLength(1)
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+  })
+
+  test("a rejected steering message is visible and restored to the composer without ending the active turn", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", capabilities: ["steer"] } }))
+    await act(async () => { await setup.mockInput.typeText("Initial task") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    await act(async () => { await setup.mockInput.typeText("Please check this") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const steer = fake.sent.find((item) => item.type === "steer")!
+    act(() => fake.emit({ version: 1, id: steer.id, type: "input_rejected", payload: { id: "inbox-rejected", message: "The turn is shutting down." } }))
+    const frame = await setup.waitForFrame((value) => value.includes("The turn is shutting down."))
+    expect(frame).toContain("you · not accepted")
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("Please check this")
+    expect(frame).toContain("Waiting for model")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
   })
 
   test("queues quoted file paths, shows removable chips, and sends only explicit files", async () => {

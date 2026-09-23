@@ -60,6 +60,14 @@ type Options struct {
 	// KeepAlive keeps this run open after an assistant response so later Inputs
 	// can continue the same coordinator. The default returns at assistant idle.
 	KeepAlive bool
+	// QueueInputs opts into boundary-safe, text-only interactive steering. The
+	// runner holds new inputs while a model response or its tools are active, then
+	// persists them into the coordinator inbox after the boundary. The run stays
+	// available after an assistant response until the stream closes. Closing the
+	// stream asks the coordinator to stop once current work settles. This does
+	// not cancel active tools; cancellation remains tied to ctx. The queue is
+	// bounded to 64 inputs; rejected entries receive an Accepted error.
+	QueueInputs bool
 	// ContextSnapshots can persist prefix snapshots for custom session stores.
 	// Local sessions use a private sidecar store when this is nil.
 	ContextSnapshots ContextSnapshotStore
@@ -107,6 +115,9 @@ type RunResult struct {
 func Run(ctx context.Context, options Options) (RunResult, error) {
 	if strings.TrimSpace(options.Prompt) == "" {
 		return RunResult{}, errors.New("prompt must not be empty")
+	}
+	if options.QueueInputs && options.Inputs == nil {
+		return RunResult{}, errors.New("queued steering requires an input stream")
 	}
 	if options.Adapter == nil {
 		return RunResult{}, errors.New("LLM adapter is required")
@@ -325,6 +336,10 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	}
 	var emitted strings.Builder
 	var emittedMu sync.Mutex
+	var inputGate *inputBoundaryGate
+	if options.QueueInputs {
+		inputGate = newInputBoundaryGate()
+	}
 	var inputAckMu sync.Mutex
 	inputAcks := make(map[inbox.ID][]func(error))
 	inputAcked := make(map[inbox.ID]struct{}, len(restored.ExternalInputIDs))
@@ -360,7 +375,8 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		recordOutputErr(writeJSONLine(options.Output, map[string]any{"type": "session", "session_id": id}))
 		recordOutputErr(writeJSONLine(options.Output, map[string]any{"type": "model", "session_id": id, "model": options.Model, "effort": options.Effort}))
 	}
-	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, recordOutputErr)
+	interactiveInputs := options.KeepAlive || options.QueueInputs
+	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !interactiveInputs, inputAcks, inputAcked, &inputAckMu, inputGate, recordOutputErr)
 	observerID := store.AddObserver(observer)
 	defer store.RemoveObserver(observerID)
 	current := coordinator.New(coordinator.Dependencies{
@@ -391,7 +407,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("submit prompt: %w", err)
 	}
 	if options.Inputs != nil {
-		go pumpInputs(runCtx, inputs, options.Inputs, options.KeepAlive, inputAcks, inputAcked, &inputAckMu, recordOutputErr)
+		go pumpInputs(runCtx, inputs, options.Inputs, interactiveInputs, inputGate, builder, store, id, stopRun, inputAcks, inputAcked, &inputAckMu, recordOutputErr)
 	}
 	select {
 	case err := <-done:
@@ -431,7 +447,7 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	return RunResult{SessionID: string(id), Text: text}, nil
 }
 
-func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, recordOutputErr func(error)) sessionstore.Observer {
+func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, recordOutputErr func(error)) sessionstore.Observer {
 	var mu sync.Mutex
 	toolCalls := make(map[string]toolCallMetadata)
 	return func(id session.ID, item sessionstore.Item) {
@@ -451,6 +467,15 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			return
 		} else if item.Kind == sessionstore.ItemModelResponse {
 			response := item.Data.(sessionstore.ModelResponse).Response
+			if inputGate != nil {
+				callIDs := make([]string, 0)
+				for _, output := range response.Output {
+					if output.Type == llm.ItemToolCall {
+						callIDs = append(callIDs, output.Data.(llm.ToolCall).CallID)
+					}
+				}
+				inputGate.modelResponse(runCtx, callIDs)
+			}
 			if jsonl {
 				if event := usageJSONEvent(id, response); event != nil {
 					recordOutputErr(emitJSONLine(&mu, out, event))
@@ -468,6 +493,9 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			}
 		} else if item.Kind == sessionstore.ItemToolCallStatus {
 			status := item.Data.(sessionstore.ToolCallStatus)
+			if inputGate != nil && toolState(status.Status, status.Operations) != "running" {
+				inputGate.toolSettled(runCtx, status.CallID)
+			}
 			mu.Lock()
 			metadata := toolCalls[status.CallID]
 			mu.Unlock()
@@ -701,15 +729,150 @@ func pumpInputs(
 	inputs *inbox.Inbox,
 	stream <-chan Input,
 	keepAlive bool,
+	gate *inputBoundaryGate,
+	builder contextbuilder.Builder,
+	store sessionstore.Store,
+	sessionID session.ID,
+	cancelRun context.CancelFunc,
 	acks map[inbox.ID][]func(error),
 	acked map[inbox.ID]struct{},
 	ackMu *sync.Mutex,
 	recordOutputErr func(error),
 ) {
+	queued := make([]Input, 0)
+	const maxQueuedInputs = 64
+	defer func() {
+		for _, incoming := range queued {
+			if incoming.Accepted != nil {
+				incoming.Accepted(context.Canceled)
+			}
+		}
+	}()
+	var submit func(Input) error
+	submit = func(incoming Input) error {
+		id := strings.TrimSpace(incoming.ID)
+		if id == "" {
+			var err error
+			id, err = newID()
+			if err != nil {
+				if incoming.Accepted != nil {
+					incoming.Accepted(err)
+				}
+				return err
+			}
+		}
+		inputID := inbox.ID(id)
+		ackMu.Lock()
+		_, alreadyPersisted := acked[inputID]
+		if !alreadyPersisted && incoming.Accepted != nil {
+			acks[inputID] = append(acks[inputID], incoming.Accepted)
+		}
+		ackMu.Unlock()
+		if alreadyPersisted {
+			if incoming.Accepted != nil {
+				incoming.Accepted(nil)
+			}
+			return nil
+		}
+		payload, err := json.Marshal(incoming.Text)
+		if err == nil {
+			err = inputs.Submit(ctx, inbox.Input{ID: inputID, Kind: inbox.InputExternal, Payload: payload})
+		}
+		if err != nil {
+			ackMu.Lock()
+			callbacks := acks[inputID]
+			delete(acks, inputID)
+			ackMu.Unlock()
+			for _, callback := range callbacks {
+				callback(err)
+			}
+			recordOutputErr(fmt.Errorf("submit follow-up input: %w", err))
+		}
+		return err
+	}
+	injectAtBoundary := func(incoming Input) error {
+		id := strings.TrimSpace(incoming.ID)
+		if id == "" {
+			var err error
+			id, err = newID()
+			if err != nil {
+				return err
+			}
+		}
+		inputID := inbox.ID(id)
+		ackMu.Lock()
+		_, alreadyPersisted := acked[inputID]
+		ackMu.Unlock()
+		if alreadyPersisted {
+			if incoming.Accepted != nil {
+				incoming.Accepted(nil)
+			}
+			return nil
+		}
+		payload, err := json.Marshal(incoming.Text)
+		if err != nil {
+			return err
+		}
+		input := inbox.Input{ID: inputID, Kind: inbox.InputExternal, Payload: payload}
+		if err := store.AppendInput(ctx, sessionID, input); err != nil {
+			return fmt.Errorf("persist queued steering: %w", err)
+		}
+		if err := builder.AddExternalInput(input); err != nil {
+			return fmt.Errorf("add queued steering to context: %w", err)
+		}
+		// AppendInput synchronously notifies observers, marking this ID durable;
+		// acknowledge only after the bytes are also in the current request builder.
+		if incoming.Accepted != nil {
+			incoming.Accepted(nil)
+		}
+		return nil
+	}
+	flush := func() {
+		if len(queued) == 0 {
+			if gate != nil {
+				gate.finishBoundary(false)
+			}
+			return
+		}
+		directInjection := gate != nil && gate.directBoundary()
+		for index, incoming := range queued {
+			var err error
+			if directInjection {
+				err = injectAtBoundary(incoming)
+			} else {
+				err = submit(incoming)
+			}
+			if err != nil {
+				if directInjection && incoming.Accepted != nil {
+					incoming.Accepted(err)
+				}
+				for _, pending := range queued[index+1:] {
+					if pending.Accepted != nil {
+						pending.Accepted(err)
+					}
+				}
+				recordOutputErr(err)
+				if directInjection {
+					// The coordinator is waiting at a tool boundary. Do not let it build
+					// a request without the durable steering entry we could not inject.
+					cancelRun()
+				}
+				break
+			}
+		}
+		queued = queued[:0]
+		if gate != nil {
+			gate.finishBoundary(true)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-gateWake(gate):
+			if gate != nil && gate.boundaryReady() {
+				flush()
+			}
 		case incoming, ok := <-stream:
 			if !ok {
 				if keepAlive {
@@ -717,48 +880,168 @@ func pumpInputs(
 						recordOutputErr(err)
 					}
 				}
-				return
+				if gate == nil {
+					return
+				}
+				// Keep servicing boundary acknowledgments until the coordinator exits.
+				// In particular, a terminal model response may synchronously wait for
+				// queued inputs to be submitted before it can observe StopWhenIdle.
+				stream = nil
+				continue
 			}
-			id := strings.TrimSpace(incoming.ID)
-			if id == "" {
-				var err error
-				id, err = newID()
-				if err != nil {
+			if gate != nil && (gate.waiting() || gate.boundaryReady() || len(queued) != 0) {
+				if len(queued) >= maxQueuedInputs {
+					err := fmt.Errorf("interactive input queue is full (limit %d)", maxQueuedInputs)
 					if incoming.Accepted != nil {
 						incoming.Accepted(err)
 					}
 					recordOutputErr(err)
 					continue
 				}
-			}
-			inputID := inbox.ID(id)
-			ackMu.Lock()
-			_, alreadyPersisted := acked[inputID]
-			if !alreadyPersisted && incoming.Accepted != nil {
-				acks[inputID] = append(acks[inputID], incoming.Accepted)
-			}
-			ackMu.Unlock()
-			if alreadyPersisted {
-				if incoming.Accepted != nil {
-					incoming.Accepted(nil)
+				queued = append(queued, incoming)
+				if gate.boundaryReady() {
+					flush()
 				}
 				continue
 			}
-			payload, err := json.Marshal(incoming.Text)
-			if err == nil {
-				err = inputs.Submit(ctx, inbox.Input{ID: inputID, Kind: inbox.InputExternal, Payload: payload})
+			if err := submit(incoming); err != nil {
+				continue
 			}
-			if err != nil {
-				ackMu.Lock()
-				callbacks := acks[inputID]
-				delete(acks, inputID)
-				ackMu.Unlock()
-				for _, callback := range callbacks {
-					callback(err)
-				}
-				recordOutputErr(fmt.Errorf("submit follow-up input: %w", err))
+			if gate != nil {
+				gate.submittedInput()
 			}
 		}
+	}
+}
+
+func gateWake(gate *inputBoundaryGate) <-chan struct{} {
+	if gate == nil {
+		return nil
+	}
+	return gate.wake
+}
+
+// inputBoundaryGate keeps interactive prompts out of the active provider/tool
+// cycle. The pinned coordinator may otherwise request another model response
+// during its tool grace period when a prompt arrives mid-tool. QueueInputs
+// holds such entries in the runner until every tool from the response settles.
+type inputBoundaryGate struct {
+	mu          sync.Mutex
+	phase       inputGatePhase
+	outstanding map[string]struct{}
+	autoNext    bool
+	readyAck    chan struct{}
+	wake        chan struct{}
+}
+
+type inputGatePhase uint8
+
+const (
+	inputAwaitingModel inputGatePhase = iota
+	inputAwaitingTools
+	inputBoundaryOpen
+	inputIdle
+)
+
+func newInputBoundaryGate() *inputBoundaryGate {
+	return &inputBoundaryGate{phase: inputAwaitingModel, outstanding: make(map[string]struct{}), wake: make(chan struct{}, 1)}
+}
+
+func (gate *inputBoundaryGate) signal() {
+	select {
+	case gate.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (gate *inputBoundaryGate) waiting() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.phase == inputAwaitingModel || gate.phase == inputAwaitingTools
+}
+
+func (gate *inputBoundaryGate) boundaryReady() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.phase == inputBoundaryOpen
+}
+
+func (gate *inputBoundaryGate) directBoundary() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.phase == inputBoundaryOpen && gate.autoNext
+}
+
+func (gate *inputBoundaryGate) submittedInput() {
+	gate.mu.Lock()
+	gate.phase = inputAwaitingModel
+	gate.autoNext = false
+	gate.mu.Unlock()
+}
+
+func (gate *inputBoundaryGate) finishBoundary(submitted bool) {
+	gate.mu.Lock()
+	if submitted || gate.autoNext {
+		gate.phase = inputAwaitingModel
+	} else {
+		gate.phase = inputIdle
+	}
+	gate.autoNext = false
+	if gate.readyAck != nil {
+		close(gate.readyAck)
+		gate.readyAck = nil
+	}
+	gate.mu.Unlock()
+}
+
+func (gate *inputBoundaryGate) modelResponse(ctx context.Context, callIDs []string) {
+	gate.mu.Lock()
+	clear(gate.outstanding)
+	for _, callID := range callIDs {
+		gate.outstanding[callID] = struct{}{}
+	}
+	if len(gate.outstanding) == 0 {
+		gate.phase = inputBoundaryOpen
+		gate.autoNext = false
+		gate.readyAck = make(chan struct{})
+	} else {
+		gate.phase = inputAwaitingTools
+		gate.autoNext = true
+	}
+	ack := gate.readyAck
+	gate.mu.Unlock()
+	gate.signal()
+	if len(callIDs) == 0 {
+		awaitBoundary(ctx, ack)
+	}
+}
+
+func (gate *inputBoundaryGate) toolSettled(ctx context.Context, callID string) {
+	gate.mu.Lock()
+	if gate.phase != inputAwaitingTools {
+		gate.mu.Unlock()
+		return
+	}
+	delete(gate.outstanding, callID)
+	var ack chan struct{}
+	if len(gate.outstanding) == 0 {
+		gate.phase = inputBoundaryOpen
+		gate.autoNext = true
+		gate.readyAck = make(chan struct{})
+		ack = gate.readyAck
+	}
+	gate.mu.Unlock()
+	gate.signal()
+	awaitBoundary(ctx, ack)
+}
+
+func awaitBoundary(ctx context.Context, ack <-chan struct{}) {
+	if ack == nil {
+		return
+	}
+	select {
+	case <-ack:
+	case <-ctx.Done():
 	}
 }
 

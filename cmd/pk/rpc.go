@@ -65,8 +65,11 @@ type rpcServer struct {
 	useCodex            bool
 	codexPath           string
 	started             bool
+	steeringEnabled     bool
 	session             string
 	activeCancel        context.CancelFunc
+	activeInputs        chan runner.Input
+	pendingSteers       map[string]func(error)
 	active              bool
 	quit                bool
 	attachedTask        string
@@ -94,6 +97,14 @@ func (s *rpcServer) emit(id, typ string, payload any) error {
 	}
 	return json.NewEncoder(s.output).Encode(rpcEvent{Version: rpcVersion, ID: id, Type: typ, Payload: payload})
 }
+
+func (s *rpcServer) rejectSteer(requestID, message string) {
+	s.mu.Lock()
+	sessionID := s.session
+	s.mu.Unlock()
+	_ = s.emit(requestID, "input_rejected", map[string]any{"input_id": requestID, "session_id": sessionID, "message": message})
+}
+
 func (s *rpcServer) serve() error {
 	scanner := bufio.NewScanner(s.input)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
@@ -154,10 +165,19 @@ func (s *rpcServer) completeTurn(result turnDone) {
 	s.mu.Lock()
 	s.active = false
 	s.activeCancel = nil
+	s.activeInputs = nil
+	pending := make([]func(error), 0, len(s.pendingSteers))
+	for _, reject := range s.pendingSteers {
+		pending = append(pending, reject)
+	}
+	s.pendingSteers = nil
 	broker := s.broker
 	s.broker = nil
 	sessionID := s.session
 	s.mu.Unlock()
+	for _, reject := range pending {
+		reject(errors.New("run ended before the input was durably accepted"))
+	}
 	if broker != nil {
 		broker.Close()
 	}
@@ -239,6 +259,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.session = get("session_id")
 		s.opts.SessionID = s.session
 		s.pluginPaths = pluginPaths
+		var steeringEnabled bool
+		_ = json.Unmarshal(payload["steering"], &steeringEnabled)
+		s.steeringEnabled = steeringEnabled
 		if s.session != "" {
 			if err := s.emitSessionHistory(msg.ID, s.session); err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
@@ -246,7 +269,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		s.started = true
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "capabilities": []string{"attach", "cancel", "detach", "set_model"}})
+		capabilities := []string{"attach", "cancel", "detach", "set_model"}
+		if steeringEnabled {
+			capabilities = append(capabilities, "steer")
+		}
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "capabilities": capabilities})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
@@ -279,10 +306,22 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
 		s.active = true
+		var inputStream chan runner.Input
+		steeringEnabled := s.steeringEnabled
+		if steeringEnabled {
+			inputStream = make(chan runner.Input, 64)
+			s.activeInputs = inputStream
+		} else {
+			s.activeInputs = nil
+		}
 		broker := interaction.NewBroker(ctx, sessionID)
 		s.broker = broker
 		opts := s.opts
 		opts.SessionID = sessionID
+		if steeringEnabled {
+			opts.Inputs = inputStream
+			opts.QueueInputs = true
+		}
 		s.mu.Unlock()
 		_ = s.emit(msg.ID, "turn_started", map[string]any{"session_id": sessionID})
 		go func() {
@@ -453,11 +492,84 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "cancel":
 		s.mu.Lock()
 		cancel, active, sessionID, model, effort := s.activeCancel, s.active, s.session, s.opts.Model, s.opts.Effort
+		s.activeInputs = nil
 		s.mu.Unlock()
 		if cancel != nil {
 			cancel()
 		}
 		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "cancel_requested": active})
+	case "steer":
+		text := get("text")
+		if strings.TrimSpace(text) == "" {
+			s.rejectSteer(msg.ID, "steering text is empty")
+			return
+		}
+		if raw, present := payload["files"]; present && len(raw) > 0 {
+			var files []json.RawMessage
+			if err := json.Unmarshal(raw, &files); err != nil || len(files) != 0 {
+				s.rejectSteer(msg.ID, "steering attachments are not supported; files were not queued")
+				return
+			}
+		}
+		if strings.TrimSpace(msg.ID) == "" {
+			s.rejectSteer(msg.ID, "steering request ID is required")
+			return
+		}
+		s.mu.Lock()
+		steeringEnabled := s.steeringEnabled
+		s.mu.Unlock()
+		if !steeringEnabled {
+			s.rejectSteer(msg.ID, "foreground steering was not enabled at session start")
+			return
+		}
+		queuedEvent := make(chan struct{})
+		inputID, requestID := msg.ID, msg.ID
+		var replyOnce sync.Once
+		reply := func(acceptedErr error) {
+			replyOnce.Do(func() {
+				<-queuedEvent
+				s.mu.Lock()
+				delete(s.pendingSteers, inputID)
+				sessionID := s.session
+				s.mu.Unlock()
+				if acceptedErr != nil {
+					_ = s.emit(requestID, "input_rejected", map[string]any{"input_id": inputID, "session_id": sessionID, "message": acceptedErr.Error()})
+					return
+				}
+				_ = s.emit(requestID, "input_accepted", map[string]any{"input_id": inputID, "session_id": sessionID})
+			})
+		}
+		s.mu.Lock()
+		inputStream := s.activeInputs
+		sessionID := s.session
+		if !s.active || inputStream == nil {
+			s.mu.Unlock()
+			close(queuedEvent)
+			s.rejectSteer(msg.ID, "there is no active foreground run to steer")
+			return
+		}
+		if s.pendingSteers == nil {
+			s.pendingSteers = make(map[string]func(error))
+		}
+		if _, duplicate := s.pendingSteers[inputID]; duplicate {
+			s.mu.Unlock()
+			close(queuedEvent)
+			s.rejectSteer(msg.ID, "steering request ID is already pending")
+			return
+		}
+		s.pendingSteers[inputID] = reply
+		steerInput := runner.Input{ID: inputID, Text: text, Accepted: reply}
+		select {
+		case inputStream <- steerInput:
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "input_queued", map[string]any{"input_id": inputID, "session_id": sessionID})
+			close(queuedEvent)
+		default:
+			delete(s.pendingSteers, inputID)
+			s.mu.Unlock()
+			close(queuedEvent)
+			s.rejectSteer(msg.ID, "interactive input queue is full; text was not queued")
+		}
 	case "answer_question":
 		var questionID, answer string
 		_ = json.Unmarshal(payload["id"], &questionID)

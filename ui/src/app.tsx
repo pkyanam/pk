@@ -5,7 +5,7 @@ import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 
 type Role = "user" | "assistant" | "system" | "tool"
-type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean }
+type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type StreamDraft = { outerId: string; requestId: string; attempt: number; itemId: string; entryId: number; text: string }
 type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number }
@@ -211,6 +211,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [usage, setUsage] = useState<{ cachedInput?: number; available: boolean } | null>(null)
   const [connected, setConnected] = useState(false)
   const [everConnected, setEverConnected] = useState(false)
+  const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
   const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | null>(null)
   const [selectionIndex, setSelectionIndex] = useState(0)
@@ -238,6 +239,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
   const pendingClipboardRequests = useRef(new Set<string>())
+  const pendingSteers = useRef(new Map<string, number>())
   const activityPhase = useRef("idle")
   const activeToolIds = useRef(new Set<string>())
   const streamDrafts = useRef(new Map<string, StreamDraft>())
@@ -270,6 +272,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const addEntry = (role: Role, text: string) => {
     if (!text.trim()) return
     setEntries((previous) => [...previous, { id: entryId.current++, role, text }].slice(-300))
+  }
+
+  const updateEntry = (id: number, update: (entry: Entry) => Entry) => {
+    setEntries((current) => current.map((entry) => entry.id === id ? update(entry) : entry))
+  }
+
+  const finishPendingSteers = (message: string) => {
+    const ids = new Set(pendingSteers.current.values())
+    if (ids.size) setEntries((current) => current.map((entry) => ids.has(entry.id) ? { ...entry, delivery: "rejected", deliveryMessage: message } : entry))
+    pendingSteers.current.clear()
   }
 
   const setStreamProgress = (next: StreamProgress | null) => {
@@ -450,7 +462,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   useEffect(() => { busyRef.current = busy }, [busy])
 
   useEffect(() => {
-    void transport.start({ workspace, model: "", effort: "", sessionId: initialSession })
+    void transport.start({ workspace, model: "", effort: "", sessionId: initialSession, steering: true })
   }, [transport, workspace, initialSession])
 
   const handleEvent = useRef<(event: ServerEvent) => void>(() => {})
@@ -460,6 +472,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "ready":
         setConnected(true)
         setEverConnected(true)
+        setSteeringEnabled(Array.isArray(data.capabilities) && data.capabilities.includes("steer"))
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (data.workspace) setMessage(String(data.workspace))
@@ -521,6 +534,38 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "model_progress":
         handleModelProgress(event)
         break
+      case "input_queued": {
+        const requestId = String(event.id ?? data.command_id ?? "")
+        const entryId = pendingSteers.current.get(requestId)
+        if (entryId !== undefined) updateEntry(entryId, (entry) => ({ ...entry, delivery: "queued", deliveryMessage: undefined }))
+        break
+      }
+      case "input_accepted": {
+        const requestId = String(event.id ?? data.command_id ?? "")
+        const entryId = pendingSteers.current.get(requestId)
+        if (entryId !== undefined) {
+          updateEntry(entryId, (entry) => ({ ...entry, delivery: "accepted", deliveryMessage: undefined }))
+          pendingSteers.current.delete(requestId)
+        }
+        break
+      }
+      case "input_rejected": {
+        const requestId = String(event.id ?? data.command_id ?? "")
+        const entryId = pendingSteers.current.get(requestId)
+        const reason = String(data.message ?? "The active turn could not accept this message.")
+        if (entryId !== undefined) {
+          const messageEntry = entries.find((entry) => entry.id === entryId)
+          updateEntry(entryId, (entry) => ({ ...entry, delivery: "rejected", deliveryMessage: reason }))
+          pendingSteers.current.delete(requestId)
+          if (!(textarea.current?.plainText ?? "").trim() && messageEntry) {
+            textarea.current?.setText(messageEntry.text)
+            textarea.current?.focus()
+            setDraft(messageEntry.text)
+          }
+        }
+        addEntry("system", `Steering message not accepted · ${reason}`)
+        break
+      }
       case "attachments_loaded": {
         const submitted = event.id ? pendingPromptFiles.current.get(event.id) : undefined
         if (event.id) pendingPromptFiles.current.delete(event.id)
@@ -577,6 +622,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "turn_finished":
+        finishPendingSteers("The turn ended before this message was accepted.")
         clearStreamDraft()
         toolProgress.current.clear()
         setBusy(false)
@@ -683,6 +729,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.status || data.tool) addEntry("system", String(data.message ?? `${data.status ?? "running"} ${data.tool ?? ""}`))
         break
       case "task_finished":
+        finishPendingSteers("The task ended before this message was accepted.")
         clearStreamDraft()
         toolProgress.current.clear()
         if (data.text) addEntry("assistant", String(data.text))
@@ -706,6 +753,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "error":
         addEntry("system", String(data.message ?? "The agent encountered an error."))
+        if ((data.command_type === "steer" || data.request_type === "steer") && event.id) {
+          const entryId = pendingSteers.current.get(event.id)
+          if (entryId !== undefined) {
+            const messageEntry = entries.find((entry) => entry.id === entryId)
+            const reason = String(data.message ?? "The active turn could not accept this message.")
+            updateEntry(entryId, (entry) => ({ ...entry, delivery: "rejected", deliveryMessage: reason }))
+            pendingSteers.current.delete(event.id)
+            if (!(textarea.current?.plainText ?? "").trim() && messageEntry) {
+              textarea.current?.setText(messageEntry.text)
+              textarea.current?.focus()
+              setDraft(messageEntry.text)
+            }
+          }
+        }
         if (data.command_type === "answer_question" || data.request_type === "answer_question") {
           setQuestion((current) => current ? { ...current, answering: false, submittedAnswer: undefined } : current)
         }
@@ -739,9 +800,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "rpc_closed": {
+        finishPendingSteers("The connection closed before this message was accepted.")
         clearStreamDraft()
         toolProgress.current.clear()
         setConnected(false)
+        setSteeringEnabled(false)
         setBusy(false)
         setActivityStartedAt(null)
         enterPhase("idle")
@@ -817,7 +880,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       clearComposer(true)
       return
     }
-    if (!text || !connected || (waiting.current && !activeTaskId)) return
+    if (!text || !connected) return
     const leadingPath = leadingPathFromPrompt(text)
     if (leadingPath && "ambiguous" in leadingPath) {
       addEntry("system", 'That looks like a file path with spaces. Quote the path, for example: "/path/to/meeting notes.pdf" describe this file.')
@@ -843,6 +906,27 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if (activeTaskId && queuedFilesRef.current.length) {
       addEntry("system", "File attachments are not supported for this background task. The draft and file queue are kept; attachments work with foreground prompts.")
+      return
+    }
+    if (!activeTaskId && (waiting.current || turnActive.current || busyRef.current)) {
+      if (queuedFilesRef.current.length) {
+        addEntry("system", "Steering messages cannot include queued file attachments yet. The draft and file queue are kept; send after this turn or clear files with /files clear.")
+        return
+      }
+      if (!steeringEnabled) {
+        addEntry("system", "This session does not support mid-turn steering. Your draft is kept; use Esc to stop the active turn, then send it.")
+        return
+      }
+      const commandId = transport.send("steer" as any, { text: promptText })
+      if (!commandId) {
+        addEntry("system", "Could not queue this steering message because the agent connection is unavailable. Your draft is kept.")
+        return
+      }
+      const id = entryId.current++
+      pendingSteers.current.set(commandId, id)
+      const steeringEntry: Entry = { id, role: "user", text: promptText, delivery: "queued" }
+      setEntries((previous) => [...previous, steeringEntry].slice(-300))
+      clearComposer(true)
       return
     }
     addEntry("user", promptText)
@@ -1241,7 +1325,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-      <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
+      <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
@@ -1326,10 +1410,12 @@ function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
   </box>
   const isUser = entry.role === "user"
   const markdown = hasMarkdownSyntax(entry.text)
+  const delivery = entry.delivery === "queued" ? "queued · waiting for a boundary" : entry.delivery === "accepted" ? "accepted by active turn" : entry.delivery === "rejected" ? "not accepted" : ""
   return <box style={{ flexDirection: "column", width: "100%", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
-    <text fg={isUser ? palette.blue : palette.accent} content={isUser ? "you" : "pk"} />
+    <text fg={isUser ? palette.blue : palette.accent} content={isUser ? `you${delivery ? ` · ${delivery}` : ""}` : "pk"} />
     {isUser || entry.provisional || !markdown
       ? <text fg={palette.text} content={entry.text} />
       : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
+    {entry.deliveryMessage && <text fg={entry.delivery === "rejected" ? palette.red : palette.dim} content={entry.deliveryMessage} />}
   </box>
 }
