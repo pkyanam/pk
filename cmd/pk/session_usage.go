@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 
+	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
@@ -20,16 +22,17 @@ type sessionUsageCoverage struct {
 }
 
 type sessionUsageSummary struct {
-	SessionID           string               `json:"session_id"`
-	ResponseCount       int                  `json:"response_count"`
-	InputTokens         *int64               `json:"input_tokens"`
-	OutputTokens        *int64               `json:"output_tokens"`
-	CachedInputTokens   *int64               `json:"cached_input_tokens"`
-	UncachedInputTokens *int64               `json:"uncached_input_tokens"`
-	Coverage            sessionUsageCoverage `json:"coverage"`
+	SessionID           string                     `json:"session_id"`
+	ResponseCount       int                        `json:"response_count"`
+	InputTokens         *int64                     `json:"input_tokens"`
+	OutputTokens        *int64                     `json:"output_tokens"`
+	CachedInputTokens   *int64                     `json:"cached_input_tokens"`
+	UncachedInputTokens *int64                     `json:"uncached_input_tokens"`
+	Coverage            sessionUsageCoverage       `json:"coverage"`
+	Context             *runner.ContextUsageRecord `json:"context,omitempty"`
 }
 
-func readSessionUsage(ctx context.Context, store *localfile.Store, id string) (sessionUsageSummary, error) {
+func readSessionUsage(ctx context.Context, store *localfile.Store, id string, metadataDirs ...string) (sessionUsageSummary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -91,6 +94,12 @@ func readSessionUsage(ctx context.Context, store *localfile.Store, id string) (s
 	}
 	if uncachedSeen && !uncachedOverflow {
 		summary.UncachedInputTokens = int64Pointer(uncachedSum)
+	}
+	if len(metadataDirs) > 0 && strings.TrimSpace(metadataDirs[0]) != "" {
+		contextUsage, available, contextErr := runner.LoadContextUsage(ctx, metadataDirs[0], "", id)
+		if contextErr == nil && available {
+			summary.Context = &contextUsage
+		}
 	}
 	return summary, nil
 }

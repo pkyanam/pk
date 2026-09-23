@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/coordinator"
@@ -87,6 +88,9 @@ type Options struct {
 	// ContextSnapshots can persist prefix snapshots for custom session stores.
 	// Local sessions use a private sidecar store when this is nil.
 	ContextSnapshots ContextSnapshotStore
+	// ContextUsageStore persists content-free request composition measurements
+	// for custom session stores. Local sessions use a private sidecar by default.
+	ContextUsageStore ContextUsageStore
 	// BuilderFactory and RegistryFactory allow hosts to provide extension seams
 	// without changing the coordinator or the pinned upstream harness.
 	BuilderFactory  func([]tool.Skill) contextbuilder.Builder
@@ -467,6 +471,19 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	builder.SetSystemPrompt(snapshot.SystemPrompt)
 	for _, definition := range snapshot.Tools {
 		builder.AddTool(definition)
+	}
+	contextUsageStore := options.ContextUsageStore
+	if contextUsageStore == nil {
+		contextUsageStore = defaultContextUsageStore(options.SessionDir, options.Workspace)
+	}
+	contextUsageOrdinal := 0
+	if previous, loadErr := contextUsageStore.LoadContextUsage(ctx, id); loadErr == nil {
+		contextUsageOrdinal = previous.RequestOrdinal
+	}
+	options.Adapter = &contextUsageAdapter{
+		next: options.Adapter, store: contextUsageStore, id: id,
+		ordinal: contextUsageOrdinal,
+		onError: func(err error) { fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", err) },
 	}
 	lifecycle := func(eventType, status string) {}
 	if options.LifecycleObserver != nil {
@@ -1260,33 +1277,30 @@ func sessionHasNoHistory(ctx context.Context, store sessionstore.Store, id sessi
 
 func usageJSONEvent(id session.ID, response llm.Response) map[string]any {
 	usage := response.Usage
-	if len(usage.Raw) == 0 && usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CachedInputTokens == 0 && usage.CacheWriteInputTokens == 0 && usage.ReasoningTokens == 0 {
-		// Keep response coverage explicit even when the provider supplies no usage.
-		// Omitting the event would hide unmetered child/tool-only responses.
-		return map[string]any{"type": "usage", "session_id": id, "response_id": response.ID, "usage_available": false}
-	}
-	cachedAvailable := usage.CachedInputTokens != 0
-	writeAvailable := usage.CacheWriteInputTokens != 0
-	if len(usage.Raw) > 0 {
-		var raw struct {
-			InputDetails struct {
-				CachedTokens     *int64 `json:"cached_tokens"`
-				CacheWriteTokens *int64 `json:"cache_write_tokens"`
-			} `json:"input_tokens_details"`
-		}
-		if json.Unmarshal(usage.Raw, &raw) == nil {
-			cachedAvailable = cachedAvailable || raw.InputDetails.CachedTokens != nil
-			writeAvailable = writeAvailable || raw.InputDetails.CacheWriteTokens != nil
-		}
-	}
-	return map[string]any{
+	measured := benchcontext.MeasureUsage(usage)
+	event := map[string]any{
 		"type": "usage", "session_id": id, "response_id": response.ID,
-		"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
-		"reasoning_tokens":    usage.ReasoningTokens,
-		"cached_input_tokens": usage.CachedInputTokens, "cached_input_tokens_available": cachedAvailable,
-		"cache_write_input_tokens": usage.CacheWriteInputTokens, "cache_write_input_tokens_available": writeAvailable,
-		"usage_available": len(usage.Raw) > 0 || usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.ReasoningTokens != 0,
+		"input_tokens_available": measured.InputAvailable, "output_tokens_available": measured.OutputAvailable,
+		"cached_input_tokens_available":      measured.CachedInputAvailable,
+		"cache_write_input_tokens_available": measured.CacheWriteAvailable,
+		"usage_available":                    measured.InputAvailable || measured.OutputAvailable || measured.CachedInputAvailable || measured.CacheWriteAvailable || usage.ReasoningTokens != 0,
 	}
+	if measured.InputAvailable {
+		event["input_tokens"] = usage.InputTokens
+	}
+	if measured.OutputAvailable {
+		event["output_tokens"] = usage.OutputTokens
+	}
+	if usage.ReasoningTokens != 0 {
+		event["reasoning_tokens"] = usage.ReasoningTokens
+	}
+	if measured.CachedInputAvailable {
+		event["cached_input_tokens"] = measured.CachedInputTokens
+	}
+	if measured.CacheWriteAvailable {
+		event["cache_write_input_tokens"] = measured.CacheWriteTokens
+	}
+	return event
 }
 
 const maxWorkspaceInstructions = 64 << 10

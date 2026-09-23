@@ -257,6 +257,10 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if err := os.WriteFile(contextPath, []byte(`{"Version":1,"Workspace":"/workspace/example","SystemPrompt":"stable"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	contextUsage := contextUsagePath(sessionDir, id)
+	if err := os.WriteFile(contextUsage, []byte(`{"version":1,"record":{"available":true,"total_bytes":123}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	pageDir := attachments.PromptPDFPageDir(sessionDir, id, "input-with-pdf")
 	if err := os.MkdirAll(pageDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -298,7 +302,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if len(result) != 1 || !result[0].OK {
 		t.Fatalf("archive result: %+v", result)
 	}
-	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, compactionPath, capture, pagePath} {
+	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, contextUsage, compactionPath, capture, pagePath} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Errorf("live artifact still exists at %s (err=%v)", path, err)
 		}
@@ -318,6 +322,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	for path, want := range map[string]string{
 		filepath.Join(sessionDir, id+".session.jsonl"): "session",
 		contextPath:    "stable",
+		contextUsage:   `"total_bytes":123`,
 		compactionPath: "summary",
 		capture:        "complete output",
 		pagePath:       "rendered page",

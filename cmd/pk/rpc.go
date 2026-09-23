@@ -1429,7 +1429,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			if err != nil {
 				return nil, err
 			}
-			return readSessionUsage(ctx, store, request.SessionID)
+			return readSessionUsage(ctx, store, request.SessionID, sessionDir)
 		})
 	case "plugins_list":
 		payload, err := listRPCPlugins(userPluginService())

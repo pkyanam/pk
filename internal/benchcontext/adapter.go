@@ -70,7 +70,7 @@ func (adapter *Adapter) Respond(ctx context.Context, request llm.Request, option
 	response, requestErr := adapter.Next.Respond(ctx, request, options)
 	record.ResponseID = response.ID
 	record.RequestFailed = requestErr != nil
-	record.Usage = measureUsage(response.Usage)
+	record.Usage = MeasureUsage(response.Usage)
 	data, err := json.Marshal(record)
 	if err != nil {
 		return llm.Response{}, err
@@ -135,21 +135,55 @@ func MeasureRequest(request llm.Request) (Record, error) {
 	return record, nil
 }
 
-func measureUsage(usage llm.Usage) Usage {
+// MeasureUsage returns the provider usage counters and preserves availability
+// separately from zero. The raw provider payload is inspected only for counter
+// presence; it is never included in the returned record.
+func MeasureUsage(usage llm.Usage) Usage {
 	raw := map[string]any{}
 	if len(usage.Raw) > 0 {
 		_ = json.Unmarshal(usage.Raw, &raw)
 	}
 	inputKnown := usage.InputTokens != 0 || hasNumeric(raw, "input_tokens", "prompt_tokens", "InputTokens")
 	outputKnown := usage.OutputTokens != 0 || hasNumeric(raw, "output_tokens", "completion_tokens", "OutputTokens")
-	cachedKnown := usage.CachedInputTokens != 0 || hasNumeric(raw, "cached_input_tokens", "cached_tokens", "CachedInputTokens")
-	writeKnown := usage.CacheWriteInputTokens != 0 || hasNumeric(raw, "cache_write_input_tokens", "cache_write_tokens", "CacheWriteInputTokens")
+	cachedKnown := usage.CachedInputTokens != 0 || hasNumeric(raw, "cached_input_tokens", "cached_tokens", "CachedInputTokens", "cache_read_input_tokens")
+	writeKnown := usage.CacheWriteInputTokens != 0 || hasNumeric(raw, "cache_write_input_tokens", "cache_write_tokens", "CacheWriteInputTokens", "cache_creation_input_tokens")
+	cachedTokens := usage.CachedInputTokens
+	if cachedTokens == 0 {
+		if value, ok := rawCounter(raw, "cached_input_tokens", "cached_tokens", "CachedInputTokens", "cache_read_input_tokens"); ok {
+			cachedTokens = value
+		}
+	}
+	writeTokens := usage.CacheWriteInputTokens
+	if writeTokens == 0 {
+		if value, ok := rawCounter(raw, "cache_write_input_tokens", "cache_write_tokens", "CacheWriteInputTokens", "cache_creation_input_tokens"); ok {
+			writeTokens = value
+		}
+	}
 	return Usage{
 		InputTokens: usage.InputTokens, InputAvailable: inputKnown,
 		OutputTokens: usage.OutputTokens, OutputAvailable: outputKnown,
-		CachedInputTokens: usage.CachedInputTokens, CachedInputAvailable: cachedKnown,
-		CacheWriteTokens: usage.CacheWriteInputTokens, CacheWriteAvailable: writeKnown,
+		CachedInputTokens: cachedTokens, CachedInputAvailable: cachedKnown,
+		CacheWriteTokens: writeTokens, CacheWriteAvailable: writeKnown,
 	}
+}
+
+func rawCounter(raw map[string]any, names ...string) (int64, bool) {
+	for key, value := range raw {
+		for _, name := range names {
+			if key == name {
+				if number, ok := value.(float64); ok && number >= 0 && number <= math.MaxInt64 && math.Trunc(number) == number && !math.IsNaN(number) && !math.IsInf(number, 0) {
+					return int64(number), true
+				}
+				return 0, false
+			}
+		}
+		if valueMap, ok := value.(map[string]any); ok {
+			if number, found := rawCounter(valueMap, names...); found {
+				return number, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func hasNumeric(value any, names ...string) bool {

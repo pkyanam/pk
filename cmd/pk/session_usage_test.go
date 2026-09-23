@@ -3,20 +3,60 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/json/jsontext"
 	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
 )
+
+func TestReadSessionUsageIncludesLatestContentFreeContextMetadata(t *testing.T) {
+	ctx := context.Background()
+	sessionDir := filepath.Join(t.TempDir(), "sessions")
+	store, err := localfile.New(sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := session.ID("usage-context")
+	if _, err := store.Create(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(id))
+	metadata := `{"version":1,"record":{"available":true,"pending":false,"request_ordinal":3,"measurement":"json_value_bytes","categories":[{"id":"system_prompt","items":1,"bytes":41}],"total_bytes":41,"latest_provider_usage":{"input_tokens":12,"input_tokens_available":true,"output_tokens_available":false,"cached_input_tokens_available":false,"cache_write_input_tokens_available":false},"context_limit_tokens":null}}`
+	path := filepath.Join(sessionDir, hex.EncodeToString(digest[:])+".context-usage.json")
+	if err := os.WriteFile(path, []byte(metadata), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readSessionUsage(ctx, store, string(id), sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Context == nil || !got.Context.Available || got.Context.Pending || got.Context.TotalBytes != 41 || got.Context.RequestOrdinal != 3 || got.Context.LatestProviderUsage.InputTokens == nil || *got.Context.LatestProviderUsage.InputTokens != 12 || got.Context.LatestProviderUsage.OutputAvailable {
+		t.Fatalf("context metadata=%+v", got.Context)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("prompt content")) || !bytes.Contains(encoded, []byte(`"measurement":"json_value_bytes"`)) {
+		t.Fatalf("usage response not numeric/content-free: %s", encoded)
+	}
+	if _, available, err := runner.LoadContextUsage(ctx, sessionDir, "", string(id)); err != nil || !available {
+		t.Fatalf("direct metadata load available=%v err=%v", available, err)
+	}
+}
 
 func TestReadSessionUsageAggregatesDurableResponsesAndCoverage(t *testing.T) {
 	ctx := context.Background()
