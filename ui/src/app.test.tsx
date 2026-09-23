@@ -80,6 +80,23 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("_ __ | | __")
   })
 
+  test("fresh welcome returns after /new completes its ready handshake", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("_ __ | | __"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "old-session" } }))
+    await act(async () => { await setup.mockInput.typeText("/new") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const request = fake.sent.find((item) => item.type === "new")!
+    expect(request).toBeDefined()
+    expect(setup.captureCharFrame()).not.toContain("_ __ | | __")
+    act(() => fake.emit({ version: 1, id: request.id, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "" } }))
+    const frame = await setup.waitForFrame((value) => value.includes("_ __ | | __"))
+    expect(frame).toContain("A quiet workspace")
+  })
+
   test("rapid slash typing and Enter runs the command from the live composer value", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
@@ -310,10 +327,11 @@ describe("OpenTUI application", () => {
       { id: "mint-tools", version: "1.2.0", manifest_path: "/tmp/mint/plugin.json", enabled: false, tools: ["lookup"] },
       { id: "broken", manifest_path: "/tmp/broken/plugin.json", enabled: false, error: "manifest parse failed" },
     ] } }))
-    let frame = await setup.waitForFrame((value) => value.includes("Installed plugins"))
+    let frame = await setup.waitForFrame((value) => value.includes("Plugins · Add or manage"))
     expect(frame).toContain("disabled")
     expect(frame).toContain("manifest parse failed")
-    act(() => setup.mockInput.pressEnter())
+    const pluginRow = frame.split("\n").findIndex((line) => line.includes("mint-tools"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[pluginRow]!.indexOf("mint-tools"), pluginRow))
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "plugins_enable" && item.payload?.manifest_path === "/tmp/mint/plugin.json")).toBe(true)
     act(() => fake.emit({ version: 1, type: "plugins_updated", payload: { next_session_only: true, plugins: [
@@ -321,7 +339,8 @@ describe("OpenTUI application", () => {
     ] } }))
     frame = await setup.waitForFrame((value) => value.includes("enabled"))
     expect(frame).toContain("enabled")
-    act(() => setup.mockInput.pressEnter())
+    const enabledRow = frame.split("\n").findIndex((line) => line.includes("mint-tools"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[enabledRow]!.indexOf("mint-tools"), enabledRow))
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "plugins_disable" && item.payload?.id === "mint-tools")).toBe(true)
     await act(async () => { await setup.mockInput.pressKeys(["ESCAPE"], 100) })
@@ -377,6 +396,39 @@ describe("OpenTUI application", () => {
     ] } }))
     frame = await setup.waitForFrame((value) => value.includes("Plugin installed and enabled"))
     expect(frame).toContain("available in new sessions")
+  })
+
+  test("installed plugins panel has an Add plugin source form and continues through explicit review", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/plugins") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const list = fake.sent.find((item) => item.type === "plugins_list")!
+    act(() => fake.emit({ version: 1, id: list.id, type: "plugins", payload: { plugins: [] } }))
+    await setup.waitForFrame((frame) => frame.includes("Add plugin…"))
+    act(() => setup.mockInput.pressEnter())
+    let frame = await setup.waitForFrame((value) => value.includes("Add plugin from source"))
+    expect(frame).toContain("owner/repo")
+    expect(frame).toContain("Nothing")
+    expect(frame).toContain("review a candidate")
+    await act(async () => { await setup.mockInput.typeText("https://github.com/acme/pk-plugin") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const discovery = fake.sent.find((item) => item.type === "plugins_discover")
+    expect(discovery?.payload?.source).toBe("https://github.com/acme/pk-plugin")
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+    act(() => fake.emit({ version: 1, id: discovery!.id, type: "plugin_candidates", payload: { source: "https://github.com/acme/pk-plugin", revision: "sha1", candidates: [
+      { id: "acme-helper", version: "2.0", manifest_path: "/tmp/acme/plugin.json", tools: ["inspect"], commands: [], build_required: false },
+    ] } }))
+    frame = await setup.waitForFrame((value) => value.includes("acme-helper"))
+    act(() => setup.mockInput.pressEnter())
+    frame = await setup.waitForFrame((value) => value.includes("Review acme-helper"))
+    expect(frame).toContain("Install and enable")
+    expect(fake.sent.some((item) => item.type === "plugins_install")).toBe(false)
   })
 
   test("slash menu makes plugin panels discoverable by command description", async () => {

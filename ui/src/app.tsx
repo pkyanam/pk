@@ -283,11 +283,13 @@ export function parsePastedPaths(input: string, mimeType = ""): { paths: string[
 export function PkApp({ transport, workspace, initialSession }: { transport: PkTransport; workspace: string; initialSession?: string }) {
   const renderer = useRenderer()
   const textarea = useRef<TextareaRenderable>(null)
+  const pluginSourceTextarea = useRef<TextareaRenderable>(null)
   const [entries, setEntries] = useState<Entry[]>([{ id: 0, role: "system", text: "Ready when you are. Ask about this workspace or give me a task." }])
   const [tools, setTools] = useState<ToolActivity[]>([])
   const [model, setModel] = useState(process.env.PK_MODEL || "gpt-6-luna")
   const [effort, setEffort] = useState(process.env.PK_EFFORT || "medium")
   const [sessionId, setSessionId] = useState(initialSession || "")
+  const [newSessionPending, setNewSessionPending] = useState(false)
   const [usage, setUsage] = useState<{ cachedInput?: number; available: boolean } | null>(null)
   const [connected, setConnected] = useState(false)
   const [everConnected, setEverConnected] = useState(false)
@@ -318,6 +320,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingSkillCatalog = useRef("")
   const skillsPanelRequested = useRef(false)
   const [plugins, setPlugins] = useState<PluginOption[]>([])
+  const [pluginSourceModalOpen, setPluginSourceModalOpen] = useState(false)
+  const [pluginSourceDraft, setPluginSourceDraft] = useState("")
   const [pluginCandidates, setPluginCandidates] = useState<PluginCandidate[]>([])
   const [pluginCandidateReview, setPluginCandidateReview] = useState<PluginCandidate | null>(null)
   const [pluginCandidateSource, setPluginCandidateSource] = useState("")
@@ -363,6 +367,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const turnActive = useRef(false)
   const busyRef = useRef(false)
   const promptCommandId = useRef("")
+  const newSessionCommandID = useRef("")
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
   const pendingClipboardRequests = useRef(new Set<string>())
@@ -680,6 +685,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "ready":
         setConnected(true)
         setEverConnected(true)
+        setNewSessionPending(false)
+        newSessionCommandID.current = ""
         if (Array.isArray(data.capabilities)) steeringNegotiated.current = data.capabilities.includes("steer")
         setSteeringEnabled(steeringNegotiated.current)
         if (data.model) setModel(data.model)
@@ -1039,6 +1046,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         })) : []
         setPlugins(available)
         if (selector !== "plugins") setSelectionIndex(0)
+        else setSelectionIndex((index) => Math.min(index, available.length))
         setSelector("plugins")
         if (event.type === "plugins_updated" && data.next_session_only) {
           const installed = data.installed === true
@@ -1336,6 +1344,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        if (event.id && event.id === newSessionCommandID.current) {
+          newSessionCommandID.current = ""
+          setNewSessionPending(false)
+        }
         if (event.id && event.id === pluginSourceRequest.current) {
           pluginSourceRequest.current = ""
           setPluginSourceOperation("")
@@ -1468,6 +1480,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   useEffect(() => {
     transport.setEventHandler((event: ServerEvent) => handleEvent.current(event))
   }, [transport])
+
+  useEffect(() => {
+    if (!pluginSourceModalOpen) return
+    pluginSourceTextarea.current?.setText(pluginSourceDraft)
+    pluginSourceTextarea.current?.focus()
+  }, [pluginSourceModalOpen])
 
   const queueFile = (path: string): boolean => {
     if (!path) {
@@ -1628,6 +1646,31 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
   }
 
+  const beginPluginDiscovery = (sourceInput: string) => {
+    const source = sourceInput.trim()
+    if (!source) { addEntry("system", "Enter a local repository path, GitHub owner/repo, or HTTPS GitHub URL."); return }
+    if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pluginCommandRun) {
+      addEntry("system", "Plugin discovery is available while the session is idle.")
+      return
+    }
+    setPluginSourceModalOpen(false)
+    setPluginCandidateSource(source)
+    setPluginCandidateReview(null)
+    setPluginSourceOperation("Inspecting plugin source…")
+    setSelector("plugin_candidates")
+    pluginSourceRequest.current = transport.send("plugins_discover" as any, { source }) ?? ""
+    if (!pluginSourceRequest.current) { setPluginSourceOperation(""); addEntry("system", "Could not inspect plugin source because the RPC connection is unavailable.") }
+  }
+
+  const openPluginSourceEntry = () => {
+    if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pluginCommandRun) {
+      addEntry("system", "Plugin discovery is available while the session is idle.")
+      return
+    }
+    setPluginSourceDraft("")
+    setPluginSourceModalOpen(true)
+  }
+
   const runSlashCommand = (raw: string) => {
     const [head, ...args] = parseSlashWords(raw)
     const command = slashCommands.find((item) => item.name === head)
@@ -1676,19 +1719,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       case "plugins": {
         const [operation, ...rest] = args
-        if (operation === "discover" && rest.length) {
-          if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pluginCommandRun) {
-            addEntry("system", "Plugin discovery is available while the session is idle.")
-            break
-          }
-          const source = rest.join(" ").trim()
-          setPluginCandidateSource(source)
-          setPluginCandidateReview(null)
-          setPluginSourceOperation("Inspecting plugin source…")
-          setSelector("plugin_candidates")
-          pluginSourceRequest.current = transport.send("plugins_discover" as any, { source }) ?? ""
-          if (!pluginSourceRequest.current) { setPluginSourceOperation(""); addEntry("system", "Could not inspect plugin source because the RPC connection is unavailable.") }
-        } else if (!operation || operation === "list") transport.send("plugins_list" as any)
+        if (operation === "discover" && rest.length) beginPluginDiscovery(rest.join(" "))
+        else if (!operation || operation === "list") transport.send("plugins_list" as any)
         else addEntry("system", 'Usage: /plugins · /plugins discover OWNER/REPO|URL|LOCAL_PATH · select a candidate to review, then press i to install.')
         break
       }
@@ -1843,7 +1875,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "new":
         if (busy) { addEntry("system", "Wait for the active turn to finish before starting a new session."); break }
         cancelHistoryRead()
-        transport.send("new")
+        newSessionCommandID.current = transport.send("new") ?? ""
+        setNewSessionPending(Boolean(newSessionCommandID.current))
         setEntries([])
         sessionHasPrompt.current = false
         setSessionId("")
@@ -2036,7 +2069,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       const candidate = pluginCandidates[index]
       if (candidate) setPluginCandidateReview(candidate)
     } else if (selector === "plugins") {
-      const plugin = plugins[index]
+      if (index === 0) { openPluginSourceEntry(); return }
+      const plugin = plugins[index - 1]
       if (plugin) {
         if (plugin.enabled) transport.send("plugins_disable" as any, { id: plugin.id })
         else if (plugin.error) addEntry("system", `Cannot enable ${plugin.id}: ${plugin.error}`)
@@ -2098,6 +2132,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   useKeyboard((key) => {
     if (sessionManagerOpen || mcpManagerOpen) return
+    if (pluginSourceModalOpen) {
+      if (key.name === "escape" || key.name === "esc") {
+        setPluginSourceModalOpen(false)
+        textarea.current?.focus()
+      }
+      return
+    }
     const liveDraft = textarea.current?.plainText ?? draft
     const isEscape = key.name === "escape" || key.name === "esc"
     const commandModifier = key.super === true || key.meta === true
@@ -2150,7 +2191,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
       if (selector === "plugin_candidates" && pluginSourceOperation && isEscape) {
         transport.send("plugin_source_cancel" as any)
         pluginSourceRequest.current = ""
@@ -2309,7 +2350,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
               : skillsView === "review" ? []
                 : skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
         : selector === "plugin_candidates" ? pluginCandidates.map((plugin) => ({ label: plugin.id, value: plugin.manifest_path, description: `${plugin.version ? `v${plugin.version} · ` : ""}${plugin.tools.length} tools · ${plugin.commands.length} commands${plugin.build_required ? " · build required" : ""}`, state: plugin.build_required ? "review only" : "candidate" }))
-          : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
+          : selector === "plugins" ? [{ label: "Add plugin…", value: "__add_plugin__", description: "Discover from a local folder, GitHub repository, or URL", state: "add" }, ...plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))]
           : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: server.url
             ? `${server.url} · ${server.auth_mode ?? "anonymous"} · ${server.auth_status ?? "configured"}${server.credential_env?.length ? ` · env ${server.credential_env.join(", ")}` : ""}`
             : `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: server.auth_status ?? "configured" }))
@@ -2339,6 +2380,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending
   const cacheLabel = usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"
   const transcriptOmitted = entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id)
+  const welcomeVisible = (entries.length === 0 && connected && !newSessionPending) || (entries.length === 1 && entries[0]?.id === 0)
   const skillsEmptyLabel = skillOperation || (skillsView === "installed" ? "No managed skills installed · use /skills search QUERY" : skillsView === "results" ? "No skills matched that search." : skillsView === "candidates" ? "No skill manifests found in this source." : "No skills available")
 
   return (
@@ -2350,11 +2392,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <text selectable={false} fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
       </box>
       <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
-        {groupTranscript(entries.filter((entry) => entry.id !== 0 || entries.length === 1)).map((item) => item.kind === "entry"
-          ? item.entry.id === 0 && entries.length === 1
-            ? <WelcomeEntry key="welcome" onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
-            : <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
-          : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
+        {welcomeVisible
+          ? <WelcomeEntry onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
+          : groupTranscript(entries.filter((entry) => entry.id !== 0)).map((item) => item.kind === "entry"
+            ? <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
+            : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
       </scrollbox>
       <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
         {queuedFiles.length > 0 && <box style={{ flexDirection: "row", gap: 1, height: 1, flexShrink: 0, paddingLeft: 1 }}>
@@ -2375,7 +2417,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea id="composer" ref={textarea} focused={!selector && !sessionManagerOpen && !mcpManagerOpen} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea id="composer" ref={textarea} focused={!selector && !sessionManagerOpen && !mcpManagerOpen && !pluginSourceModalOpen} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
@@ -2399,7 +2441,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>
       </box>
       {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
         {selector === "plugin_candidates" && <text fg={pluginSourceOperation ? palette.accent : palette.dim} content={pluginSourceOperation || (pluginCandidateReview ? `${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands · source reviewed before install` : `Source · ${pluginCandidateSource}${pluginCandidateRevision ? ` · revision ${pluginCandidateRevision.slice(0, 12)}` : ""} · review a candidate before installation`)} />}
         {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
@@ -2431,7 +2473,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
               <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
               <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
-              <text fg={(selector === "plugins" && option.state === "enabled") || (selector === "mcp" && option.state === "configured") || ((selector === "providers") && (option.state === "default" || option.state === "selected")) ? palette.accent : palette.dim} content={option.state} />
+              <text fg={(selector === "plugins" && (option.state === "enabled" || option.state === "add")) || (selector === "mcp" && option.state === "configured") || ((selector === "providers") && (option.state === "default" || option.state === "selected")) ? palette.accent : palette.dim} content={option.state} />
             </box>
             {option.description && <text fg={palette.dim} content={option.description} />}
           </box>
@@ -2439,7 +2481,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={historyEntries[historyDetailIndex]!.text.slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
-        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugins discover SOURCE · /plugin enable|disable · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter open or toggle · Add plugin… accepts a repo URL · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+      </box>}
+      {pluginSourceModalOpen && <box style={{ position: "absolute", left: "18%", right: "18%", top: "30%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.text} content="Add plugin from source" />
+        <text fg={palette.muted} content="Enter a local repository folder, owner/repo, or GitHub URL. Nothing installs until you review a candidate." />
+        <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 4, flexShrink: 0 }}>
+          <textarea id="plugin-source" ref={pluginSourceTextarea} focused={pluginSourceModalOpen} placeholder="owner/repo or https://github.com/owner/repo" onContentChange={() => setPluginSourceDraft(pluginSourceTextarea.current?.plainText ?? "")} onSubmit={() => beginPluginDiscovery(pluginSourceTextarea.current?.plainText ?? pluginSourceDraft)} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }]} />
+        </box>
+        <box style={{ flexDirection: "row", gap: 2, paddingTop: 1 }}>
+          <box onMouseDown={(event) => leftMouseDown(event, () => beginPluginDiscovery(pluginSourceTextarea.current?.plainText ?? pluginSourceDraft))} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.accent} content="Discover candidates · Enter" /></box>
+          <box onMouseDown={(event) => leftMouseDown(event, () => { setPluginSourceModalOpen(false); textarea.current?.focus() })} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.muted} content="Cancel · Esc" /></box>
+        </box>
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
