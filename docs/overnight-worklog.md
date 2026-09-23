@@ -711,3 +711,11 @@ gates or imply that every backlog item is complete.
 - UI ignores stale copy replies, bounds pending tracking, and distinguishes busy from timed-out operations that may finish late. Ten focused copy/paste tests pass (41 assertions); existing React act warnings remain in several fixture paths.
 - 05538d2 removes redundant pre-build dependency setup/UI checks, retaining build and post-build validation. Update tests assert UI validation once. No timing comparison claimed.
 - User requested prebuilt GitHub Releases for fast routine updates. GitHub release list was empty and installer is source-only; task_runtime is implementing paired platform artifacts/checksums/download update support. Checklist retains this as open until delivered and measured.
+
+### 10:37 EDT — visible links and retrieval timestamps
+
+- Installed clean 38c94d8 from the isolated `/tmp/pk-link-style-release` worktree while prebuilt-update implementation continues in the main checkout. Managed Go/UI/build gates passed; running user sessions remain untouched.
+- Explicit `markup.link.label` and `markup.strong` styles match OpenTUI's actual token scopes: link labels are blue/underlined independently of hover. Opening links still follows terminal modifier behavior. The exact reported Bitcoin response is saved complete with valid Markdown and renders fully in a focused regression.
+- A temporary drag-copy experiment reproduced partially copied hidden bold delimiters. That is a distinct selection serialization defect; tui is implementing a targeted follow-up, not a blanket Markdown strip.
+- Successful WebSearch/WebFetch envelopes now include UTC RFC3339-second `retrieved_at`, explicitly not source freshness. Shared-handler fixture/race tests cover success, failure, and partial URL errors without external calls.
+- GitHub Release download work remains uncommitted and under review/tests; no prebuilt release has been published yet.
