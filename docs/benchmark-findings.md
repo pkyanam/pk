@@ -31,7 +31,13 @@ unavailable. Child identities namespace response IDs so different children do
 not collide. Sanitized traces retain these accounting events for reparsing.
 
 Earlier reports with only parent usage must not be used as whole-delegation
-cost evidence. The recorded clamp/intervals comparison used no child launches;
-new delegation experiments must include child accounting. The benchmark-only
-flat subagent dispatcher saves 807 serialized schema bytes in local tests, but
-has not been selected by a live benchmark policy or shown lower token cost.
+cost evidence. The matched clamp/intervals comparison used no child launches.
+A later two-repetition, counterbalanced pk-only schema experiment did launch
+two children per arm with complete child usage and passed all holdouts. The flat
+dispatcher reduced measured subagent schema bytes from 2,124 to 1,317. Combined
+parent-and-child input was 51,468 tokens versus 55,735 for the direct tools;
+combined uncached input was 39,692 versus 40,375, combined output was 2,786
+versus 3,314, and response count was 30 versus 29. This is encouraging but
+small evidence: uncached input was higher in one pair, the other pair drove most
+of the aggregate reduction, and no dollar cost or general quality improvement
+is established. See the [counterbalanced result](../benchmarks/results/subagent-schema-counterbalanced-20260923/summary.md).

@@ -213,6 +213,7 @@ func run(args []string) int {
 	outputCapExperiment := flags.Bool("output-cap-ablation", false, "run the paired current-vs-4K-default Bash policy experiment only")
 	toolSchemaExperiment := flags.Bool("tool-schema-ablation", false, "run the paired current-vs-compact tool-description experiment only")
 	subagentSchemaExperiment := flags.Bool("subagent-schema-ablation", false, "run the paired current-vs-compact subagent-tool experiment only")
+	subagentTask := flags.String("subagent-task", "", "subagent schema fixture: clamp+intervals (default) or webhook (requires -subagent-schema-ablation)")
 	replayCompactionExperiment := flags.Bool("replay-compaction-ablation", false, "run the paired current-vs-captured-output context replay experiment only")
 	replayTasks := flags.String("replay-tasks", "", "comma-separated replay-ablation fixtures (default: routematch,eventmerge)")
 	replayProfile := flags.String("replay-compaction-profile", "standard", "replay compaction treatment: standard, aggressive, or large-output (requires -replay-compaction-ablation)")
@@ -249,8 +250,21 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "choose at most one benchmark ablation")
 		return 2
 	}
-	if selectedExperiments > 0 && (*taskSelection != "" || *totalTimeout != 20*time.Minute) {
-		fmt.Fprintln(os.Stderr, "-tasks and -total-timeout apply only to the matched-engine pilot")
+	var subagentTaskExplicit, totalTimeoutExplicit bool
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "subagent-task":
+			subagentTaskExplicit = true
+		case "total-timeout":
+			totalTimeoutExplicit = true
+		}
+	})
+	if selectedExperiments > 0 && (*taskSelection != "" || (totalTimeoutExplicit && !*subagentSchemaExperiment)) {
+		fmt.Fprintln(os.Stderr, "-tasks applies only to the matched-engine pilot; -total-timeout applies to the matched-engine pilot and subagent-schema ablation")
+		return 2
+	}
+	if subagentTaskExplicit && !*subagentSchemaExperiment {
+		fmt.Fprintln(os.Stderr, "-subagent-task requires -subagent-schema-ablation")
 		return 2
 	}
 	if *contextMetrics && selectedExperiments > 0 {
@@ -276,7 +290,13 @@ func run(args []string) int {
 		return runToolSchemaExperiment(*repo, *out, *repetitions, *timeout)
 	}
 	if *subagentSchemaExperiment {
-		return runSubagentSchemaExperiment(*repo, *out, *repetitions, *timeout, modelID, effort)
+		taskName, taskErr := parseSubagentTask(*subagentTask)
+		if taskErr != nil {
+			fmt.Fprintln(os.Stderr, taskErr)
+			return 2
+		}
+		wholeTimeout := resolveSubagentWholeTimeout(*totalTimeout, totalTimeoutExplicit, *repetitions)
+		return runSubagentSchemaExperiment(*repo, *out, *repetitions, *timeout, wholeTimeout, modelID, effort, taskName)
 	}
 	if *replayCompactionExperiment {
 		if _, _, _, _, profileErr := replayCompactionProfile(*replayProfile); profileErr != nil {
