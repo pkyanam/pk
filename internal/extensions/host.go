@@ -12,9 +12,14 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
-const defaultCallTimeout = 10 * time.Second
+const (
+	defaultCallTimeout           = 10 * time.Second
+	MaxSlashCommandArgumentBytes = 16 << 10
+	MaxSlashCommandResultBytes   = 64 << 10
+)
 
 type Report struct {
 	Loaded   []string
@@ -28,16 +33,33 @@ type loadedExtension struct {
 	disabled error
 }
 
+// SlashCommand is a discoverable, explicitly invokable command registration.
+// Name is fully qualified as /ext:<extension-id>:<command-name> so extension
+// commands cannot shadow built-in slash commands or one another.
+type SlashCommand struct {
+	Name        string `json:"name"`
+	ExtensionID string `json:"extension_id"`
+	CommandName string `json:"command_name"`
+	Description string `json:"description"`
+}
+
+type commandBinding struct {
+	extension *loadedExtension
+	name      string
+}
+
 type Host struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	workspace   string
-	callTimeout time.Duration
-	mu          sync.RWMutex
-	byID        map[string]*loadedExtension
-	tools       map[string]*loadedExtension
-	commands    map[string]*loadedExtension
-	closed      bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	workspace         string
+	callTimeout       time.Duration
+	mu                sync.RWMutex
+	byID              map[string]*loadedExtension
+	tools             map[string]*loadedExtension
+	commands          map[string]*loadedExtension
+	ambiguousCommands map[string]bool
+	slashCommands     map[string]commandBinding
+	closed            bool
 }
 
 // NewHost loads only the manifests passed by its caller. Invalid or failing
@@ -55,7 +77,8 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 	}
 	ctx, cancel := context.WithCancel(parent)
 	host := &Host{ctx: ctx, cancel: cancel, workspace: workspace, callTimeout: defaultCallTimeout,
-		byID: make(map[string]*loadedExtension), tools: make(map[string]*loadedExtension), commands: make(map[string]*loadedExtension)}
+		byID: make(map[string]*loadedExtension), tools: make(map[string]*loadedExtension), commands: make(map[string]*loadedExtension),
+		ambiguousCommands: make(map[string]bool), slashCommands: make(map[string]commandBinding)}
 	report := Report{}
 	for _, manifest := range manifests {
 		if err := manifest.Validate(); err != nil {
@@ -94,7 +117,14 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 			host.tools[spec.Name] = loaded
 		}
 		for _, spec := range manifest.Commands {
-			host.commands[spec.Name] = loaded
+			if _, exists := host.commands[spec.Name]; exists {
+				host.commands[spec.Name] = nil
+				host.ambiguousCommands[spec.Name] = true
+			} else {
+				host.commands[spec.Name] = loaded
+			}
+			slashName := SlashCommandName(manifest.ID, spec.Name)
+			host.slashCommands[slashName] = commandBinding{extension: loaded, name: spec.Name}
 		}
 		report.Loaded = append(report.Loaded, manifest.ID)
 	}
@@ -151,11 +181,6 @@ func (h *Host) nameConflict(manifest Manifest) error {
 			return fmt.Errorf("extension %q tool %q conflicts with extension %q", manifest.ID, spec.Name, owner.manifest.ID)
 		}
 	}
-	for _, spec := range manifest.Commands {
-		if owner := h.commands[spec.Name]; owner != nil {
-			return fmt.Errorf("extension %q command %q conflicts with extension %q", manifest.ID, spec.Name, owner.manifest.ID)
-		}
-	}
 	return nil
 }
 
@@ -180,6 +205,29 @@ func (h *Host) Commands() []CommandSpec {
 		out = append(out, manifest.Commands...)
 	}
 	return out
+}
+
+// SlashCommands returns loaded command declarations in deterministic order.
+// It performs no command execution. Extensions are loaded only from manifests
+// explicitly passed to NewHost.
+func (h *Host) SlashCommands() []SlashCommand {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []SlashCommand
+	for _, manifest := range h.orderedManifests() {
+		for _, spec := range manifest.Commands {
+			out = append(out, SlashCommand{
+				Name: SlashCommandName(manifest.ID, spec.Name), ExtensionID: manifest.ID,
+				CommandName: spec.Name, Description: spec.Description,
+			})
+		}
+	}
+	return out
+}
+
+// SlashCommandName returns the stable user-facing namespace for a command.
+func SlashCommandName(extensionID, commandName string) string {
+	return "/ext:" + extensionID + ":" + commandName
 }
 
 // SchemaFingerprint identifies the enabled extension tool declarations so a
@@ -283,9 +331,41 @@ func (h *Host) ExecuteTool(ctx context.Context, name, callID string, arguments j
 }
 
 func (h *Host) ExecuteCommand(ctx context.Context, name, arguments string) (string, error) {
+	h.mu.RLock()
+	ambiguous := h.ambiguousCommands[name]
+	h.mu.RUnlock()
+	if ambiguous {
+		return "", fmt.Errorf("extension command %q is ambiguous; use its namespaced slash command", name)
+	}
 	ext := h.lookup(h.commands, name)
 	if ext == nil {
 		return "", fmt.Errorf("extension command %q is unavailable", name)
+	}
+	return h.executeCommand(ctx, ext, name, arguments)
+}
+
+// ExecuteSlashCommand invokes one discovered command by its fully qualified
+// name, keeping the extension ID out of the worker's stable v1 command name.
+func (h *Host) ExecuteSlashCommand(ctx context.Context, name, arguments string) (string, error) {
+	h.mu.RLock()
+	binding, exists := h.slashCommands[name]
+	closed := h.closed
+	h.mu.RUnlock()
+	if closed || !exists {
+		return "", fmt.Errorf("extension slash command %q is unavailable", name)
+	}
+	if h.lookup(map[string]*loadedExtension{binding.name: binding.extension}, binding.name) == nil {
+		return "", fmt.Errorf("extension slash command %q is unavailable", name)
+	}
+	return h.executeCommand(ctx, binding.extension, binding.name, arguments)
+}
+
+func (h *Host) executeCommand(ctx context.Context, ext *loadedExtension, name, arguments string) (string, error) {
+	if len(arguments) > MaxSlashCommandArgumentBytes {
+		return "", fmt.Errorf("extension command arguments exceed %d bytes", MaxSlashCommandArgumentBytes)
+	}
+	if !utf8.ValidString(arguments) {
+		return "", errors.New("extension command arguments must be valid UTF-8")
 	}
 	callCtx, cancel := h.callContext(ctx)
 	defer cancel()
@@ -294,6 +374,12 @@ func (h *Host) ExecuteCommand(ctx context.Context, name, arguments string) (stri
 	if err != nil {
 		h.failWorker(ext, err)
 		return "", fmt.Errorf("extension %q command %q: %w", ext.manifest.ID, name, err)
+	}
+	if len(result) > MaxSlashCommandResultBytes {
+		return "", fmt.Errorf("extension command result exceeds %d bytes", MaxSlashCommandResultBytes)
+	}
+	if !utf8.ValidString(result) {
+		return "", errors.New("extension command result is not valid UTF-8")
 	}
 	return result, nil
 }

@@ -151,6 +151,31 @@ func TestEnableRejectsManifestAndRegistrationConflicts(t *testing.T) {
 	}
 }
 
+func TestNamespacedCommandsAllowSharedLeafNames(t *testing.T) {
+	home, dir := t.TempDir(), t.TempDir()
+	service := Service{Home: home}
+	first := testManifest("alpha", "alpha_tool")
+	first.Commands = []extensions.CommandSpec{{Name: "status", Description: "Show alpha status"}}
+	second := testManifest("beta", "beta_tool")
+	second.Commands = []extensions.CommandSpec{{Name: "status", Description: "Show beta status"}}
+	firstPath := writeManifest(t, dir, first)
+	secondPath := writeManifest(t, dir, second)
+	if _, err := service.Enable(firstPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Enable(secondPath); err != nil {
+		t.Fatalf("same command leaf with distinct namespaces rejected: %v", err)
+	}
+	plugins, err := service.List()
+	if err != nil || len(plugins) != 2 || plugins[0].Error != "" || plugins[1].Error != "" {
+		t.Fatalf("plugin list=%+v err=%v", plugins, err)
+	}
+	manifests, issues, err := service.EnabledManifests()
+	if err != nil || len(issues) != 0 || len(manifests) != 2 {
+		t.Fatalf("enabled manifests=%+v issues=%v err=%v", manifests, issues, err)
+	}
+}
+
 func TestEnabledManifestsAreSortedAndSkipMissingOrChangedEntries(t *testing.T) {
 	home, dir := t.TempDir(), t.TempDir()
 	service := Service{Home: home}

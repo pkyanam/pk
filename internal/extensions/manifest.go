@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	ProtocolVersion = "pk.extensions/v1"
-	maxManifestSize = 1 << 20
-	maxMessageSize  = 1 << 20
+	ProtocolVersion            = "pk.extensions/v1"
+	maxManifestSize            = 1 << 20
+	maxMessageSize             = 1 << 20
+	maxCommandDescriptionBytes = 1024
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
@@ -146,6 +147,12 @@ func (m Manifest) Validate() error {
 	for _, spec := range m.Commands {
 		if !namePattern.MatchString(spec.Name) {
 			return fmt.Errorf("extension %q has invalid command name %q", m.ID, spec.Name)
+		}
+		if strings.TrimSpace(spec.Description) == "" {
+			return fmt.Errorf("extension %q command %q has no description", m.ID, spec.Name)
+		}
+		if len(spec.Description) > maxCommandDescriptionBytes {
+			return fmt.Errorf("extension %q command %q description exceeds %d bytes", m.ID, spec.Name, maxCommandDescriptionBytes)
 		}
 		if err := claimName(seen, "command", spec.Name); err != nil {
 			return fmt.Errorf("extension %q: %w", m.ID, err)

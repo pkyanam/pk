@@ -18,11 +18,14 @@ import (
 )
 
 type fakeWorker struct {
-	id        string
-	workspace string
-	closed    bool
-	tools     []string
-	commands  []string
+	id            string
+	workspace     string
+	closed        bool
+	tools         []string
+	commands      []string
+	commandCalls  int
+	commandArgs   []string
+	commandResult string
 }
 
 func (w *fakeWorker) Call(ctx context.Context, method string, params any, result any) error {
@@ -53,6 +56,11 @@ func (w *fakeWorker) Call(ctx context.Context, method string, params any, result
 		if err := convert(params, &p); err != nil {
 			return err
 		}
+		w.commandCalls++
+		w.commandArgs = append(w.commandArgs, p.Arguments)
+		if w.commandResult != "" {
+			return convertInto(w.commandResult, result)
+		}
 		stats, err := countWorkspace(p.Workspace)
 		if err != nil {
 			return err
@@ -60,6 +68,68 @@ func (w *fakeWorker) Call(ctx context.Context, method string, params any, result
 		return convertInto(formatStats(stats), result)
 	default:
 		return &RPCError{Code: "method_not_found", Message: method}
+	}
+}
+
+func TestSlashCommandCatalogIsNamespacedAndExecutionIsExplicit(t *testing.T) {
+	workspace := t.TempDir()
+	first, second := statsManifest("alpha", "alpha_tool"), statsManifest("beta", "beta_tool")
+	var workers = map[string]*fakeWorker{}
+	host, report, err := NewHost(context.Background(), workspace, []Manifest{second, first}, func(_ context.Context, manifest Manifest, root string) (Worker, error) {
+		worker := &fakeWorker{id: manifest.ID, workspace: root, tools: namesOfTools(manifest.Tools), commands: namesOfCommands(manifest.Commands)}
+		workers[manifest.ID] = worker
+		return worker, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if len(report.Loaded) != 2 || len(report.Disabled) != 0 {
+		t.Fatalf("load report: %+v", report)
+	}
+	commands := host.SlashCommands()
+	if len(commands) != 2 || commands[0].Name != "/ext:alpha:stats" || commands[1].Name != "/ext:beta:stats" || commands[0].Description != first.Commands[0].Description {
+		t.Fatalf("slash catalog not deterministic or namespaced: %+v", commands)
+	}
+	if workers["alpha"].commandCalls != 0 || workers["beta"].commandCalls != 0 {
+		t.Fatal("listing commands invoked an extension command")
+	}
+	if _, err := host.ExecuteCommand(context.Background(), "stats", ""); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous legacy command should be rejected, got %v", err)
+	}
+	result, err := host.ExecuteSlashCommand(context.Background(), "/ext:alpha:stats", "report now")
+	if err != nil || result != "0 files, 0 directories, 0 bytes" {
+		t.Fatalf("namespaced execution result=%q err=%v", result, err)
+	}
+	if workers["alpha"].commandCalls != 1 || workers["beta"].commandCalls != 0 || workers["alpha"].commandArgs[0] != "report now" {
+		t.Fatalf("execution routed incorrectly: alpha=%+v beta=%+v", workers["alpha"], workers["beta"])
+	}
+}
+
+func TestSlashCommandBoundsArgumentsAndResults(t *testing.T) {
+	manifest := statsManifest("bounded", "bounded_tool")
+	var worker *fakeWorker
+	host, _, err := NewHost(context.Background(), t.TempDir(), []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		worker = &fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands)}
+		return worker, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	name := "/ext:bounded:stats"
+	if _, err := host.ExecuteSlashCommand(context.Background(), name, strings.Repeat("x", MaxSlashCommandArgumentBytes+1)); err == nil || !strings.Contains(err.Error(), "arguments exceed") {
+		t.Fatalf("oversize command args error=%v", err)
+	}
+	if _, err := host.ExecuteSlashCommand(context.Background(), name, string([]byte{0xff})); err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("invalid UTF-8 command args error=%v", err)
+	}
+	if worker.commandCalls != 0 {
+		t.Fatal("invalid command arguments reached worker")
+	}
+	worker.commandResult = strings.Repeat("y", MaxSlashCommandResultBytes+1)
+	if _, err := host.ExecuteSlashCommand(context.Background(), name, ""); err == nil || !strings.Contains(err.Error(), "result exceeds") {
+		t.Fatalf("oversize command result error=%v", err)
 	}
 }
 
@@ -257,6 +327,19 @@ func TestManifestRejectsUnsupportedDeclarationsAndRelativeExecutableIsStable(t *
 	}
 	if err := os.Mkdir(filepath.Join(filepath.Dir(path), "pipe"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestManifestRequiresBoundedCommandDescriptions(t *testing.T) {
+	manifest := statsManifest("stats-extension", "workspace_stats")
+	manifest.Commands[0].Description = "  "
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "no description") {
+		t.Fatalf("empty command description validation error=%v", err)
+	}
+	manifest = statsManifest("stats-extension", "workspace_stats")
+	manifest.Commands[0].Description = strings.Repeat("d", maxCommandDescriptionBytes+1)
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "description exceeds") {
+		t.Fatalf("oversize command description validation error=%v", err)
 	}
 }
 

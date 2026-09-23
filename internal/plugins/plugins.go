@@ -59,7 +59,7 @@ func (s Service) List() ([]Plugin, error) {
 			return err
 		}
 		result = make([]Plugin, 0, len(cfg.Plugins))
-		toolOwners, commandOwners := map[string]string{}, map[string]string{}
+		toolOwners := map[string]string{}
 		for _, item := range cfg.Plugins {
 			plugin := Plugin{ID: item.ID, ManifestPath: item.ManifestPath, Enabled: item.Enabled}
 			manifest, err := extensions.LoadManifest(item.ManifestPath)
@@ -89,19 +89,8 @@ func (s Service) List() ([]Plugin, error) {
 						}
 					}
 					if plugin.Error == "" {
-						for _, spec := range manifest.Commands {
-							if owner := commandOwners[spec.Name]; owner != "" {
-								plugin.Error = fmt.Sprintf("command %q conflicts with plugin %q", spec.Name, owner)
-								break
-							}
-						}
-					}
-					if plugin.Error == "" {
 						for _, spec := range manifest.Tools {
 							toolOwners[spec.Name] = item.ID
-						}
-						for _, spec := range manifest.Commands {
-							commandOwners[spec.Name] = item.ID
 						}
 					}
 				}
@@ -114,8 +103,9 @@ func (s Service) List() ([]Plugin, error) {
 }
 
 // Enable adds a manifest by explicit path or re-enables its existing entry.
-// It validates every enabled manifest and rejects duplicate IDs or tool/command
-// names before atomically persisting the new configuration.
+// It validates every enabled manifest and rejects duplicate IDs or model-tool
+// names before atomically persisting the new configuration. Slash commands are
+// namespaced by extension ID and may reuse a leaf name.
 func (s Service) Enable(manifestPath string) (Plugin, error) {
 	manifest, path, err := loadExplicit(manifestPath)
 	if err != nil {
@@ -217,7 +207,7 @@ func (s Service) EnabledManifests() ([]extensions.Manifest, []error, error) {
 				manifest extensions.Manifest
 			}{item, manifest})
 		}
-		toolOwners, commandOwners := map[string]string{}, map[string]string{}
+		toolOwners := map[string]string{}
 		for _, item := range loaded { // config is sorted by ID, so winners are stable
 			conflict := ""
 			for _, spec := range item.manifest.Tools {
@@ -226,23 +216,12 @@ func (s Service) EnabledManifests() ([]extensions.Manifest, []error, error) {
 					break
 				}
 			}
-			if conflict == "" {
-				for _, spec := range item.manifest.Commands {
-					if owner := commandOwners[spec.Name]; owner != "" {
-						conflict = fmt.Sprintf("command %q conflicts with plugin %q", spec.Name, owner)
-						break
-					}
-				}
-			}
 			if conflict != "" {
 				issues = append(issues, fmt.Errorf("plugin %q: %s; plugin disabled for this session", item.entry.ID, conflict))
 				continue
 			}
 			for _, spec := range item.manifest.Tools {
 				toolOwners[spec.Name] = item.entry.ID
-			}
-			for _, spec := range item.manifest.Commands {
-				commandOwners[spec.Name] = item.entry.ID
 			}
 			manifests = append(manifests, item.manifest)
 		}
@@ -299,7 +278,7 @@ func validateWorkerExecutable(executable string) error {
 }
 
 func validateEnabled(cfg config, candidate *extensions.Manifest, candidatePath string) error {
-	toolOwners, commandOwners, ids := map[string]string{}, map[string]string{}, map[string]string{}
+	toolOwners, ids := map[string]string{}, map[string]string{}
 	for _, item := range cfg.Plugins {
 		if !item.Enabled {
 			continue
@@ -324,12 +303,6 @@ func validateEnabled(cfg config, candidate *extensions.Manifest, candidatePath s
 				return fmt.Errorf("plugin tool %q conflicts between %q and %q", spec.Name, owner, manifest.ID)
 			}
 			toolOwners[spec.Name] = manifest.ID
-		}
-		for _, spec := range manifest.Commands {
-			if owner := commandOwners[spec.Name]; owner != "" && owner != manifest.ID {
-				return fmt.Errorf("plugin command %q conflicts between %q and %q", spec.Name, owner, manifest.ID)
-			}
-			commandOwners[spec.Name] = manifest.ID
 		}
 	}
 	return nil
