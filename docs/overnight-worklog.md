@@ -376,3 +376,12 @@ gates or imply that every backlog item is complete.
 - `e697977` adds the jobqueue fixture and immutable holdout checks. One bounded 8-phase Luna/low full-versus-compact cohort is running from that clean source in isolation; no additional runs authorized beyond the recorded cap.
 - Official Monid CLI/skill setup succeeded. A hidden-input local credential helper is ready and the user has been asked to enter their key privately. No authenticated Monid free-search request has run yet.
 - Guided MCP UI, plugin source picker, native attachments, launch capture/video, and morning report remain active work. Current installed revision remains `fd31672`.
+
+## 04:02 EDT — skill fixes installed; Monid free route verified
+
+- Installed clean public commit `fb6bdbb` as release `20260923T075956.819388000Z-7e9d5c1a5465-996834da`. Updater gates and installed PTY/RPC pre-prompt catalog smokes passed. UI suite: 86 tests/392 assertions. Existing user processes were left running.
+- Selected skills.sh URLs now survive the UI→discovery→installation round trip; candidate URLs preserve the exact folder and encoded slash-containing refs. Real isolated installs passed Vercel React, Google Workspace Gmail, Anthropic academy-guide, and Superpowers brainstorming. Other Gmail variants encountered GitHub API rate limiting rather than a parser failure; errors now identify that condition.
+- New build includes scoped transcript copying, rich saved-session management, guided MCP stdio/HTTP/auth setup, safe modal focus, masked/nonselectable secret input, and cancellable history. Native mouse/clipboard validation across terminals remains distinct from the passing headless regressions.
+- User privately configured Monid. Official CLI metadata verified TinyFish search/fetch as zero-priced; one search and four pricing-page fetches both reported zero billing. A bounded Monid-backed pk adapter is now in development; the successful CLI test is not yet a pk integration claim.
+- Matched jobqueue pilot completed all eight phases and four holdouts. Compact replay increased total input by 33.8%, with nearly unchanged uncached input and variable wall time. Default full replay remains unchanged. Results and exact source are published in `benchmarks/results/jobqueue-replay-e697977-20260923/`.
+- Next: plugin source UI/ASCII welcome, Monid adapter, MCP echoed-secret/refresh-timeout hardening, ACP interoperability audit, native attachment checks, real Cap recording/edit, and morning delivery.
