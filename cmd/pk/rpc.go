@@ -42,6 +42,7 @@ import (
 )
 
 const rpcVersion = 1
+const rpcClipboardTimeout = 5 * time.Second
 
 type rpcMessage struct {
 	Version int             `json:"version"`
@@ -108,6 +109,9 @@ type rpcServer struct {
 	prepareAdapter          func(context.Context, bool, string) (*codexAdapter, error)
 	clipboardProvider       clipboard.Provider
 	clipboardWriter         clipboard.TextWriter
+	clipboardActive         bool
+	clipboardLateWrite      bool
+	clipboardTimeout        time.Duration
 	runReleaseCommand       func(context.Context, []string, io.Writer, io.Writer) int
 }
 
@@ -125,6 +129,92 @@ func (s *rpcServer) emit(id, typ string, payload any) error {
 		}
 	}
 	return json.NewEncoder(s.output).Encode(rpcEvent{Version: rpcVersion, ID: id, Type: typ, Payload: payload})
+}
+
+type clipboardOperationResult struct {
+	eventType string
+	payload   any
+	err       error
+	finished  time.Time
+}
+
+// startClipboardOperation keeps native clipboard helpers off the RPC reader
+// loop. The single slot remains occupied after timeout until the helper really
+// returns: AppKit calls cannot be interrupted once entered, and a late write
+// must not race a newer pk write.
+func (s *rpcServer) startClipboardOperation(requestID string, mayWriteLate bool, run func(context.Context) (string, any, error)) {
+	s.mu.Lock()
+	if s.clipboardActive {
+		lateWrite := s.clipboardLateWrite
+		s.mu.Unlock()
+		payload := map[string]any{"message": "clipboard operation is still in progress", "recoverable": true, "clipboard_busy": true}
+		if lateWrite {
+			payload["native_may_complete_late"] = true
+		}
+		_ = s.emit(requestID, "error", payload)
+		return
+	}
+	s.clipboardActive = true
+	s.clipboardLateWrite = mayWriteLate
+	s.mu.Unlock()
+
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	timeout := s.clipboardTimeout
+	if timeout <= 0 {
+		timeout = rpcClipboardTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	deadline := time.Now().Add(timeout)
+	done := make(chan clipboardOperationResult, 1)
+	go func() {
+		eventType, payload, err := run(ctx)
+		done <- clipboardOperationResult{eventType: eventType, payload: payload, err: err, finished: time.Now()}
+	}()
+	go func() {
+		defer cancel()
+		finish := func() {
+			s.mu.Lock()
+			s.clipboardActive = false
+			s.clipboardLateWrite = false
+			s.mu.Unlock()
+		}
+		publish := func(result clipboardOperationResult) {
+			if result.err != nil {
+				_ = s.emit(requestID, "error", map[string]any{"message": result.err.Error(), "recoverable": true})
+				return
+			}
+			_ = s.emit(requestID, result.eventType, result.payload)
+		}
+		select {
+		case result := <-done:
+			finish()
+			if parent.Err() != nil {
+				return
+			}
+			if !result.finished.Before(deadline) {
+				payload := map[string]any{"message": "clipboard operation timed out", "recoverable": true, "clipboard_operation_timeout": true}
+				if mayWriteLate {
+					payload["native_may_complete_late"] = true
+				}
+				_ = s.emit(requestID, "error", payload)
+				return
+			}
+			publish(result)
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
+				payload := map[string]any{"message": "clipboard operation timed out", "recoverable": true, "clipboard_operation_timeout": true}
+				if mayWriteLate {
+					payload["native_may_complete_late"] = true
+				}
+				_ = s.emit(requestID, "error", payload)
+			}
+			<-done // retain the slot until a non-cancellable native call returns
+			finish()
+		}
+	}()
 }
 
 func (s *rpcServer) rejectSteer(requestID, message string) {
@@ -934,20 +1024,23 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		if provider == nil {
 			provider = clipboard.NativeProvider{}
 		}
-		snapshot, err := provider.Read(s.ctx)
-		if err != nil {
-			_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": "", "message": err.Error()})
-			return
-		}
-		snapshot = clipboard.NormalizeSnapshot(snapshot)
-		selected, err := clipboard.CaptureSnapshot(s.ctx, snapshot, filepath.Join(pkHome(), "attachments"))
-		if err != nil {
-			_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": snapshot.Text, "message": err.Error()})
-			return
-		}
-		// The UI retains these explicit selections and submits their paths through
-		// the same bounded attachment loader used by --file and ordinary prompts.
-		_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": selected, "text": snapshot.Text, "workspace": workspace, "message": snapshot.Message})
+		s.startClipboardOperation(msg.ID, false, func(ctx context.Context) (string, any, error) {
+			snapshot, err := provider.Read(ctx)
+			if err != nil {
+				return "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": "", "message": err.Error()}, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": "", "message": err.Error()}, nil
+			}
+			snapshot = clipboard.NormalizeSnapshot(snapshot)
+			selected, err := clipboard.CaptureSnapshot(ctx, snapshot, filepath.Join(pkHome(), "attachments"))
+			if err != nil {
+				return "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": snapshot.Text, "message": err.Error()}, nil
+			}
+			// The UI retains these explicit selections and submits their paths through
+			// the same bounded attachment loader used by --file and ordinary prompts.
+			return "clipboard_files", map[string]any{"files": selected, "text": snapshot.Text, "workspace": workspace, "message": snapshot.Message}, nil
+		})
 	case "clipboard_write":
 		var text string
 		if err := json.Unmarshal(payload["text"], &text); err != nil {
@@ -969,11 +1062,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		if writer == nil {
 			writer = clipboard.NativeWriter{}
 		}
-		if err := writer.WriteText(s.ctx, text); err != nil {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
-			return
-		}
-		_ = s.emit(msg.ID, "clipboard_written", map[string]any{"bytes": len(text)})
+		s.startClipboardOperation(msg.ID, true, func(ctx context.Context) (string, any, error) {
+			if err := writer.WriteText(ctx, text); err != nil {
+				return "", nil, err
+			}
+			return "clipboard_written", map[string]any{"bytes": len(text)}, nil
+		})
 	case "cancel":
 		s.mu.Lock()
 		cancel, active, sessionID, model, effort := s.activeCancel, s.active, s.session, s.opts.Model, s.opts.Effort

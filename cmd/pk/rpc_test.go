@@ -44,9 +44,9 @@ func TestRPCClipboardPasteReadsOnlyOnExplicitRequestAndReturnsSavedImage(t *test
 	t.Setenv("PK_HOME", t.TempDir())
 	workspace := t.TempDir()
 	imageBytes := []byte("\x89PNG\r\n\x1a\nfixture")
-	var stdout bytes.Buffer
+	sink := &rpcEventSink{events: make(chan []byte, 2)}
 	server := &rpcServer{
-		ctx: context.Background(), output: &stdout, diagnostics: io.Discard,
+		ctx: context.Background(), output: sink, diagnostics: io.Discard,
 		started: true, opts: runner.Options{Workspace: workspace},
 		requestTypes: make(map[string]string),
 		clipboardProvider: clipboardFixture{snapshot: clipboard.Snapshot{
@@ -54,22 +54,20 @@ func TestRPCClipboardPasteReadsOnlyOnExplicitRequestAndReturnsSavedImage(t *test
 		}},
 	}
 	server.handle(rpcMessage{Version: 1, ID: "paste-1", Type: "clipboard_paste"}, make(chan turnDone, 1))
-	var event struct {
-		Version int    `json:"version"`
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Payload struct {
-			Text  string                   `json:"text"`
-			Files []clipboard.SelectedFile `json:"files"`
-		} `json:"payload"`
-	}
-	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &event); err != nil {
-		t.Fatalf("decode event: %v; output=%q", err, stdout.String())
-	}
-	if event.Type != "clipboard_files" || event.ID != "paste-1" || event.Payload.Text != "" || len(event.Payload.Files) != 1 {
+	event := readRPCEvent(t, sink)
+	payload, ok := event.Payload.(map[string]any)
+	if event.Type != "clipboard_files" || event.ID != "paste-1" || !ok || payload["text"] != "" {
 		t.Fatalf("unexpected event: %+v", event)
 	}
-	saved, err := os.ReadFile(event.Payload.Files[0].Path)
+	filesJSON, err := json.Marshal(payload["files"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []clipboard.SelectedFile
+	if err := json.Unmarshal(filesJSON, &files); err != nil || len(files) != 1 {
+		t.Fatalf("decode clipboard files: files=%+v err=%v", files, err)
+	}
+	saved, err := os.ReadFile(files[0].Path)
 	if err != nil || !bytes.Equal(saved, imageBytes) {
 		t.Fatalf("saved image=%q err=%v", saved, err)
 	}

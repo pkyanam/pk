@@ -110,6 +110,13 @@ is explicit text entry, not a native picker.
 
 ## Native Cmux checks (2026-09-23)
 
+Clipboard RPC operations run independently of the request reader, with a five-second response
+deadline and one native operation in flight. A timeout leaves the native slot occupied until the
+operation actually returns: macOS pasteboard calls cannot be cancelled once entered. Other RPC
+requests can continue. The UI suppresses fallback copying when a native write might still finish,
+and ignores stale copy replies so they cannot trigger a fallback for an older selection. This bounds
+pk's clipboard work; it does not guarantee that the operating system clipboard service will recover.
+
 Two separately exercised paths reached the model successfully:
 
 - Finder: select a generated PNG whose filename contains a space, Cmd+C, then Cmd+V in pk. The file chip held the selected path; `ViewImage` inspected that path and Luna described the image correctly (session `03872f2a`).

@@ -1823,6 +1823,53 @@ describe("OpenTUI application", () => {
     expect(setup.captureCharFrame()).toContain("Copy this βeta text")
   })
 
+  test("only the latest clipboard selection can change copy feedback or trigger fallback", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "copy-order-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, id: "copy-order-answer", type: "assistant", payload: { text: "First selection line.\n\nSecond selection line.\n\nThird selection line.\n\nFourth selection line." } }))
+
+    const selectAndCopy = async (text: string) => {
+      const frame = await setup.waitForFrame((value) => value.includes(text))
+      const row = frame.split("\n").findIndex((line) => line.includes(text))
+      const start = frame.split("\n")[row]!.indexOf(text)
+      await act(async () => {
+        await setup.mockMouse.pressDown(start, row)
+        await setup.mockMouse.moveTo(start + text.length - 1, row)
+        await setup.mockMouse.release(start + text.length - 1, row)
+      })
+      await setup.flush()
+      return fake.sent.filter((item) => item.type === "clipboard_write").at(-1)!
+    }
+
+    const older = await selectAndCopy("First selection line.")
+    const latest = await selectAndCopy("Second selection line.")
+    act(() => fake.emit({ version: 1, id: latest.id, type: "clipboard_written", payload: { bytes: 21 } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Copied to clipboard")
+
+    // An old error can arrive after the newest native write succeeded. It must
+    // not send stale text through OSC 52 or replace the current confirmation.
+    act(() => fake.emit({ version: 1, id: older.id, type: "error", payload: { message: "old write failed" } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Copied to clipboard")
+    expect(setup.captureCharFrame()).not.toContain("Clipboard copy is unavailable")
+
+    const timedOut = await selectAndCopy("Third selection line.")
+    act(() => fake.emit({ version: 1, id: timedOut.id, type: "error", payload: { message: "write timed out", clipboard_operation_timeout: true, native_may_complete_late: true } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Clipboard copy timed out · it may still complete")
+    expect(setup.captureCharFrame()).not.toContain("Clipboard copy is unavailable")
+
+    const busy = await selectAndCopy("Fourth selection line.")
+    act(() => fake.emit({ version: 1, id: busy.id, type: "error", payload: { message: "operation is still in progress", clipboard_busy: true, native_may_complete_late: true } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Clipboard busy · copy again shortly")
+    expect(setup.captureCharFrame()).not.toContain("Clipboard copy is unavailable")
+  })
+
   test("copying a transcript selection does not take focus from an open selector", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })

@@ -470,6 +470,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingPromptFiles = useRef(new Map<string, string[]>())
   const pendingClipboardRequests = useRef(new Map<string, { target: "composer" | "question"; questionID?: string; sessionID: string; sessionGeneration: number }>())
   const pendingClipboardWrites = useRef(new Map<string, string>())
+  const latestClipboardWriteID = useRef("")
   const pendingToolsRequest = useRef("")
   const pendingHistoryRequest = useRef("")
   const pendingProviderModelsRequest = useRef("")
@@ -553,9 +554,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     if (!text) return
     const id = transport.send("clipboard_write" as any, { text })
     if (id) {
+      latestClipboardWriteID.current = id
       pendingClipboardWrites.current.set(id, text)
+      while (pendingClipboardWrites.current.size > 16) {
+        const oldest = pendingClipboardWrites.current.keys().next().value
+        if (!oldest) break
+        pendingClipboardWrites.current.delete(oldest)
+      }
       setCopyNotice("Copying…")
-    } else fallbackClipboardCopy(text)
+    } else {
+      latestClipboardWriteID.current = ""
+      fallbackClipboardCopy(text)
+    }
     // Copying a drag selection can leave terminal focus on the transcript.
     // Restore the input only after the selected text has been captured.
     if (composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) textarea.current?.focus()
@@ -1463,7 +1473,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "clipboard_written": {
-        if (event.id && pendingClipboardWrites.current.delete(event.id)) showCopyNotice("Copied to clipboard")
+        if (event.id && pendingClipboardWrites.current.delete(event.id) && event.id === latestClipboardWriteID.current) showCopyNotice("Copied to clipboard")
         break
       }
       case "update_started":
@@ -1644,10 +1654,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           addEntry("system", String(data.message ?? "Could not load earlier conversation history."))
           break
         }
-        if (event.id && pendingClipboardWrites.current.has(event.id) && (data.command_type === "clipboard_write" || data.request_type === "clipboard_write")) {
+        if (event.id && pendingClipboardWrites.current.has(event.id)) {
           const text = pendingClipboardWrites.current.get(event.id)!
           pendingClipboardWrites.current.delete(event.id)
-          fallbackClipboardCopy(text)
+          if (event.id === latestClipboardWriteID.current) {
+            if (data.clipboard_busy === true) showCopyNotice("Clipboard busy · copy again shortly")
+            else if (data.clipboard_operation_timeout === true) showCopyNotice("Clipboard copy timed out · it may still complete")
+            else if (data.native_may_complete_late === true) showCopyNotice("Clipboard copy may still complete")
+            else fallbackClipboardCopy(text)
+          }
           break
         }
         addEntry("system", String(data.message ?? "The agent encountered an error."))
@@ -1729,6 +1744,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         turnActive.current = false
         promptCommandId.current = ""
         pendingPromptFiles.current.clear()
+        pendingClipboardWrites.current.clear()
+        latestClipboardWriteID.current = ""
         setActiveTaskId("")
         addEntry("system", "Agent connection closed. Relaunch pk to reconnect.")
         break
