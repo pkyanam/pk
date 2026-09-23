@@ -1,0 +1,28 @@
+package routing
+
+type Rule struct {
+	Name     string
+	Prefix   string
+	Priority int
+	Enabled  bool
+}
+
+// Choose returns the most specific enabled rule that matches path.
+func Choose(rules []Rule, path string) (Rule, bool) {
+	var chosen Rule
+	found := false
+	for _, rule := range rules {
+		if !rule.Enabled || !matches(rule.Prefix, path) {
+			continue
+		}
+		if !found || len(rule.Prefix) > len(chosen.Prefix) ||
+			(len(rule.Prefix) == len(chosen.Prefix) && rule.Priority > chosen.Priority) {
+			chosen = rule
+			found = true
+		}
+	}
+	if !found {
+		return Rule{}, false
+	}
+	return chosen, true
+}

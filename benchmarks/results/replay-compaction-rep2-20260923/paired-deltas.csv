@@ -1,0 +1,5 @@
+task,repetition,delta_wall_ms,delta_responses,delta_input_tokens,delta_uncached_input_tokens,delta_output_tokens,delta_cached_tokens,delta_original_result_bytes,delta_stored_result_bytes
+eventmerge,1,-3081,1,-5691,-3131,-169,-2560,0,-16829
+eventmerge,2,1143,1,-2699,-2187,58,-512,-4,-16833
+routematch,1,-1738,0,-4978,-4466,120,-512,0,-11015
+routematch,2,-2184,1,-1416,-904,158,-512,0,-11015

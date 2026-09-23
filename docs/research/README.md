@@ -17,6 +17,7 @@ Go is a reasonable first choice for this process- and network-heavy workload. It
 - **Unreal Agent is already Go and MIT licensed.** Its public releases are dated September 22. Its useful architectural contribution is separating tool-call acceptance from durable asynchronous operations and context assembly. See the [source audit](unreal-agent.md) for release records, inspected revision, and reuse considerations.
 - **Its benchmark story is promising but narrower than “SOTA.”** The vendor reports lower costs and comparable or higher success on selected evaluations; one Codex comparison uses a leaderboard baseline. We have not independently replicated these results. The [audit](unreal-agent.md) records the figures and caveats.
 - **Pi sets a serious extensibility baseline.** It already has provider abstractions, steering, persistent branching sessions, compaction, and rich TypeScript extensions. A Go rewrite alone is not a differentiator. See [Pi and the landscape](pi-and-landscape.md).
+- **OMP identity is ambiguous.** In this coding-agent comparison context it most likely means Oh My Pi; compare only after pinning the repository and fork. See [the OMP identity note](omp.md).
 - **Context and execution policy are the main experimental surface.** On-demand tools, retrievable output artifacts, stable prompt prefixes, structured checkpoints, and bounded delegation are worth testing individually. Published findings remain model- and workload-dependent. See [context and tools](context-and-tools.md).
 
 ## Proposed architecture

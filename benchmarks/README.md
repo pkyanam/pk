@@ -51,6 +51,11 @@ its exact scope and token-measurement limits are documented in
 experiments use the same two fixtures and Luna-medium settings but are
 separate runs.
 
+For the benchmark-only large Bash-result context replay experiment, use
+`-replay-compaction-ablation`; its fixture, capture-path fallback, bounded
+excerpt policy, and byte-versus-token interpretation are in
+[`experiments/replay-compaction.md`](experiments/replay-compaction.md).
+
 Fixtures are separate Go modules under `benchmarks/tasks/`. Their TODO
 implementations intentionally fail tests, so repository `go test ./...` does
 not include them. `cmd/pkbench` unit tests cover event usage parsing, missing

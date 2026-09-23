@@ -1,0 +1,17 @@
+"engine","task","repetition","phase","wall_ms","model_responses","input_tokens","uncached_input_tokens","output_tokens","cached_input_tokens","eligible_bash_results","compacted_bash_results","original_result_bytes","stored_result_bytes","correctness_passed"
+"pk-current","routematch",1,"implementation",21919,4,8945,8945,782,0,1,0,5680,5680,""
+"pk-current","routematch",1,"verification",5112,2,11381,4213,49,7168,2,0,11362,11362,true
+"pk-compact-replayed-output","routematch",1,"implementation",21485,4,7704,6168,901,1536,1,1,5680,2009,""
+"pk-compact-replayed-output","routematch",1,"verification",3808,2,7644,2524,50,5120,2,2,11362,4018,true
+"pk-current","eventmerge",1,"implementation",27112,5,14753,8609,956,6144,1,0,7618,7618,""
+"pk-current","eventmerge",1,"verification",4202,2,13983,4767,78,9216,2,0,15238,15238,true
+"pk-compact-replayed-output","eventmerge",1,"implementation",24722,6,13892,8260,815,5632,1,1,7618,2009,""
+"pk-compact-replayed-output","eventmerge",1,"verification",3511,2,9153,1985,50,7168,2,2,15238,4018,true
+"pk-compact-replayed-output","eventmerge",2,"implementation",21881,5,10701,6605,797,4096,1,1,7618,2009,""
+"pk-compact-replayed-output","eventmerge",2,"verification",3270,2,8071,1927,50,6144,2,2,15238,4018,true
+"pk-current","eventmerge",2,"implementation",18246,4,8802,7266,739,1536,1,0,7620,7620,""
+"pk-current","eventmerge",2,"verification",5762,2,12669,3453,50,9216,2,0,15240,15240,true
+"pk-compact-replayed-output","routematch",2,"implementation",27395,4,7616,6080,830,1536,1,1,5680,2009,""
+"pk-compact-replayed-output","routematch",2,"verification",3611,2,7638,2518,50,5120,2,2,11362,4018,true
+"pk-current","routematch",2,"implementation",28350,3,6443,6443,672,0,1,0,5680,5680,""
+"pk-current","routematch",2,"verification",4840,2,10227,3059,50,7168,2,0,11362,11362,true

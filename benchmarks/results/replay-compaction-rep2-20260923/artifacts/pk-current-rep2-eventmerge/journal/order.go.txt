@@ -1,0 +1,8 @@
+package journal
+
+func newer(candidate, current Event) bool {
+	if candidate.Revision != current.Revision {
+		return candidate.Revision > current.Revision
+	}
+	return candidate.At.After(current.At)
+}

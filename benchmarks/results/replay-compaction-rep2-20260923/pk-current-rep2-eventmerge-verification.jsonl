@@ -1,0 +1,9 @@
+{"type":"session"}
+{"effort":"medium","model":"gpt-6-luna","type":"model"}
+{"cache_write_input_tokens":0,"cache_write_input_tokens_available":true,"cached_input_tokens":4608,"cached_input_tokens_available":true,"input_tokens":5051,"output_tokens":30,"reasoning_tokens":0,"type":"usage","usage_available":true}
+{"arguments_preview":"{\"command\":\"go test -v ./...\",\"max_output_length\":30000}","command_preview":"go test -v ./...","elapsed_ms":3,"name":"Bash","operations":[{"state":"ready","type":"shell"}],"state":"running","type":"tool_call"}
+{"arguments_preview":"{\"max_output_length\":30000,\"command\":\"go test -v ./...\"}","command_preview":"go test -v ./...","elapsed_ms":220,"name":"Bash","operations":[{"exit_code":0,"output_excerpt":"=== RUN   TestMerge\n=== RUN   TestMerge/newer-revision-000\n=== RUN   TestMerge/newer-revision-001\n=== RUN   TestMerge/newer-revision-002\n=== RUN   TestMerge/newer-revision-003\n=== RUN   TestMerge/newer-revision-004\n=== RUN   TestMerge/ne\u2026","state":"completed","type":"shell"}],"state":"completed","type":"tool_call"}
+{"cache_write_input_tokens":0,"cache_write_input_tokens_available":true,"cached_input_tokens":4608,"cached_input_tokens_available":true,"input_tokens":7618,"output_tokens":20,"reasoning_tokens":0,"type":"usage","usage_available":true}
+{"phase":"final_answer","text_bytes":65,"type":"assistant"}
+{"mode":"replay-compaction-current","type":"benchmark_context_compaction"}
+{"bash_error_bytes":0,"bash_error_truncated_operations":0,"bash_metrics_available":true,"bash_output_bytes":17706,"bash_output_truncated_operations":0,"bash_raw_error_bytes":0,"bash_raw_output_bytes":17706,"benchmark_default_applied":0,"explicit_bash_output_limits":1,"mode":"replay-compaction-current","omitted_bash_output_limits":0,"type":"benchmark_tool_limits"}

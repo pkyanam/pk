@@ -1,0 +1,14 @@
+package routing
+
+func matches(prefix, path string) bool {
+	if prefix == "" {
+		return false
+	}
+	if prefix == "/" {
+		return len(path) > 0 && path[0] == '/'
+	}
+	if path == prefix {
+		return true
+	}
+	return len(path) > len(prefix) && path[:len(prefix)] == prefix && path[len(prefix)] == '/'
+}

@@ -1,0 +1,16 @@
+package journal
+
+import "sort"
+
+func newer(candidate, current Event) bool {
+	if candidate.Revision != current.Revision {
+		return candidate.Revision > current.Revision
+	}
+	return candidate.At.After(current.At)
+}
+
+func sortEvents(events []Event) {
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Key < events[j].Key
+	})
+}

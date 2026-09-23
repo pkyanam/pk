@@ -1,0 +1,40 @@
+package journal
+
+import (
+	"sort"
+	"time"
+)
+
+type Event struct {
+	Key      string
+	Revision int
+	At       time.Time
+	Value    string
+	Deleted  bool
+}
+
+// Merge returns one winning event for each key, ordered by key.
+func Merge(existing, incoming []Event) []Event {
+	winners := make(map[string]Event, len(existing)+len(incoming))
+	for _, event := range existing {
+		current, ok := winners[event.Key]
+		if !ok || newer(event, current) {
+			winners[event.Key] = event
+		}
+	}
+	for _, event := range incoming {
+		current, ok := winners[event.Key]
+		if !ok || newer(event, current) {
+			winners[event.Key] = event
+		}
+	}
+
+	result := make([]Event, 0, len(winners))
+	for _, event := range winners {
+		result = append(result, event)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Key < result[j].Key
+	})
+	return result
+}

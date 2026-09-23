@@ -1,0 +1,13 @@
+package routing
+
+import "strings"
+
+func matches(prefix, path string) bool {
+	if prefix == "" {
+		return false
+	}
+	if prefix == "/" {
+		return strings.HasPrefix(path, "/")
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
