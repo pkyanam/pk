@@ -1,0 +1,13 @@
+{"kind":"input","recordedAt":"2026-09-23T09:39:00.544377Z","sequence":1}
+{"kind":"input","recordedAt":"2026-09-23T09:39:00.549043Z","sequence":2}
+{"kind":"input","recordedAt":"2026-09-23T09:39:00.552843Z","sequence":3}
+{"kind":"turn","recordedAt":"2026-09-23T09:39:00.555878Z","sequence":4}
+{"kind":"model_response","recordedAt":"2026-09-23T09:39:03.011029Z","response_id":"resp_075ce0510c371cea016ab39e34efc887d2878d749137f7e643","sequence":5,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":540,"outputTokens":32,"reasoningTokens":0}}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:39:03.01792Z","sequence":6}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:39:03.061736Z","sequence":7}
+{"kind":"turn","recordedAt":"2026-09-23T09:39:03.06474Z","sequence":8}
+{"kind":"model_response","recordedAt":"2026-09-23T09:39:06.624763Z","response_id":"resp_075ce0510c371cea016ab39e37826887d28f03d405d3f82e49","sequence":9,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":769,"outputTokens":132,"reasoningTokens":0}}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:39:06.632383Z","sequence":10}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:39:06.704097Z","sequence":11}
+{"kind":"turn","recordedAt":"2026-09-23T09:39:06.707144Z","sequence":12}
+{"kind":"model_response","recordedAt":"2026-09-23T09:39:08.210294Z","response_id":"resp_075ce0510c371cea016ab39e3b000c87d2b44cb1816bf1fc60","sequence":13,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":970,"outputTokens":26,"reasoningTokens":0}}

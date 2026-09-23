@@ -1,0 +1,17 @@
+{"kind":"input","recordedAt":"2026-09-23T09:38:29.59552Z","sequence":1}
+{"kind":"input","recordedAt":"2026-09-23T09:38:29.600022Z","sequence":2}
+{"kind":"input","recordedAt":"2026-09-23T09:38:29.613221Z","sequence":3}
+{"kind":"turn","recordedAt":"2026-09-23T09:38:29.616269Z","sequence":4}
+{"kind":"model_response","recordedAt":"2026-09-23T09:38:30.975894Z","response_id":"resp_009f6f37a186c1b0016ab39e15fb0887d2a025e8bc42ac1b95","sequence":5,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":554,"outputTokens":18,"reasoningTokens":0}}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:38:30.98286Z","sequence":6}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:38:31.030647Z","sequence":7}
+{"kind":"turn","recordedAt":"2026-09-23T09:38:31.032883Z","sequence":8}
+{"kind":"model_response","recordedAt":"2026-09-23T09:38:32.836309Z","response_id":"resp_009f6f37a186c1b0016ab39e175d3c87d2b3c065979cfefef8","sequence":9,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":597,"outputTokens":20,"reasoningTokens":0}}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:38:32.84127Z","sequence":10}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:38:32.886942Z","sequence":11}
+{"kind":"turn","recordedAt":"2026-09-23T09:38:32.889892Z","sequence":12}
+{"kind":"model_response","recordedAt":"2026-09-23T09:38:39.154544Z","response_id":"resp_009f6f37a186c1b0016ab39e19340c87d2806dd0f49528c9d3","sequence":13,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":669,"outputTokens":288,"reasoningTokens":0}}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:38:39.161043Z","sequence":14}
+{"kind":"tool_call_status","recordedAt":"2026-09-23T09:38:39.199261Z","sequence":15}
+{"kind":"turn","recordedAt":"2026-09-23T09:38:39.201969Z","sequence":16}
+{"kind":"model_response","recordedAt":"2026-09-23T09:38:41.237517Z","response_id":"resp_009f6f37a186c1b0016ab39e1f96d087d29cc8c8ab16056439","sequence":17,"usage":{"cacheWriteInputTokens":0,"cachedInputTokens":0,"inputTokens":971,"outputTokens":46,"reasoningTokens":0}}

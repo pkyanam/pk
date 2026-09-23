@@ -34,6 +34,20 @@ Run from the repository root:
 go run ./cmd/pkbench -repetitions 1 -timeout 90s
 ```
 
+The matched-engine cohort can select a fixture subset and cap the whole run
+without changing the defaults. For example, a two-repetition Luna-low run on
+`clamp` and `intervals` has 16 bounded phases (two tasks × two engines × two
+phases × two repetitions):
+
+```sh
+go run ./cmd/pkbench -tasks clamp,intervals -repetitions 2 \
+  -model gpt-6-luna -effort low -timeout 90s -total-timeout 15m
+```
+
+The summary records the selected task order and both deadlines. A total timeout
+can end the cohort before all records exist; incomplete runs are retained as
+such and must not be treated as complete comparisons.
+
 Use `-unreal=false` to run only pk, `-out DIR` to select a private result
 directory, or `-repetitions 2` for a second pilot. The command builds both
 runners itself. Before running tasks, it verifies upstream flags, request
