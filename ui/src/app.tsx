@@ -160,6 +160,26 @@ function shortChildID(id: string) {
   return id.length <= 10 ? id : id.slice(0, 8)
 }
 
+function compactSkillSource(source: string, path: string) {
+  try {
+    const url = new URL(source)
+    if (url.hostname === "github.com") {
+      const parts = url.pathname.split("/").filter(Boolean)
+      const treeIndex = parts.indexOf("tree")
+      if (parts.length >= 2 && treeIndex >= 2) {
+        const repository = parts.slice(0, 2).join("/")
+        const ref = parts[treeIndex + 1]
+        const skillPath = path || parts.slice(treeIndex + 2).join("/")
+        return `${repository}${skillPath ? ` · ${skillPath}` : ""}${ref ? ` · ${ref}` : ""}`
+      }
+      if (parts.length >= 2) return parts.slice(0, 2).join("/")
+    }
+  } catch {
+    // Non-URL source identifiers are shown as provided.
+  }
+  return path ? `${source} · ${path}` : source
+}
+
 function safeProviderURL(value: string) {
   try {
     const url = new URL(value)
@@ -793,6 +813,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setConnected(true)
         setEverConnected(true)
         setNewSessionPending(false)
+        if (newSessionCommandID.current) setSkillNotice("")
         newSessionCommandID.current = ""
         if (Array.isArray(data.capabilities)) steeringNegotiated.current = data.capabilities.includes("steer")
         setSteeringEnabled(steeringNegotiated.current)
@@ -2088,6 +2109,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       case "new":
         if (busy) { addEntry("system", "Wait for the active turn to finish before starting a new session."); break }
+        setSkillNotice("")
         cancelHistoryRead()
         newSessionCommandID.current = transport.send("new") ?? ""
         setNewSessionPending(Boolean(newSessionCommandID.current))
@@ -2583,7 +2605,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           : skillsView === "candidates" ? skillCandidates.map((skill) => ({ label: skill.name, value: skill.path, description: `${skill.description || "No description"} · ${skill.source}`, state: "review" }))
             : skillsView === "installed" ? skillInstallations.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "Managed skill"}${skill.source ? ` · ${skill.source}` : ""}`, state: "installed" }))
               : skillsView === "review" ? []
-                : skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
+            : skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${preview(skill.description || "No description", 140)} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
         : selector === "plugin_candidates" ? pluginCandidates.map((plugin) => ({ label: plugin.id, value: plugin.manifest_path, description: `${plugin.version ? `v${plugin.version} · ` : ""}${plugin.tools.length} tools · ${plugin.commands.length} commands${plugin.build_required ? " · build required" : ""}`, state: plugin.build_required ? "review only" : "candidate" }))
           : selector === "plugins" ? [{ label: "Add plugin…", value: "__add_plugin__", description: "Discover from a local folder, GitHub repository, or URL", state: "add" }, ...plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))]
           : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: server.url
@@ -2698,7 +2720,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
                 : <text fg={palette.muted} content="No usage report loaded." />}
           <box onMouseDown={(event) => leftMouseDown(event, () => { cancelSessionUsageRequest(); setSelector(null); textarea.current?.focus() })} style={{ alignSelf: "flex-start", backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}><text fg={palette.accent} content="Close · Esc" /></box>
         </box>}
-        {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
+        {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? "Review the source before installing · affects new sessions" : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
         {selector === "plugin_candidates" && <text fg={pluginSourceOperation ? palette.accent : palette.dim} content={pluginSourceOperation || (pluginCandidateReview ? `${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands · source reviewed before install` : `Source · ${pluginCandidateSource}${pluginCandidateRevision ? ` · revision ${pluginCandidateRevision.slice(0, 12)}` : ""} · review a candidate before installation`)} />}
         {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user, assistant, and tool entries · before #${historyBeforeSequence}`} />}
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
@@ -2709,7 +2731,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "review" && skillReview && <box style={{ flexDirection: "column", border: ["top"], borderColor: palette.line, paddingTop: 1, gap: 1 }}>
           <text fg={palette.text} content={skillReview.description || "No description provided by the source."} />
-          <text fg={palette.dim} content={`Source · ${skillReview.source}${skillReview.url ? ` · ${skillReview.url}` : ""}`} />
+          <text fg={palette.dim} content={`Source · ${compactSkillSource(skillReview.source, skillReview.path)}`} />
           <box onMouseDown={(event) => leftMouseDown(event, installReviewedSkill)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}>
             <text fg={palette.accent} content="Install this skill · new sessions only" />
           </box>

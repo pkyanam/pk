@@ -406,6 +406,9 @@ describe("OpenTUI application", () => {
     await setup.waitForFrame((frame) => frame.includes("Review a skill source") && frame.includes("gws-gmail"))
     act(() => setup.mockInput.pressEnter())
     const review = await setup.waitForFrame((frame) => frame.includes("Review gws-gmail") && frame.includes("Use Google Workspace Gmail commands."))
+    expect(review.split("Use Google Workspace Gmail commands.").length - 1).toBe(1)
+    expect(review).toContain("googleworkspace/cli · skills/gws-gmail · main")
+    expect(review).not.toContain("https://github.com/googleworkspace/cli/tree/main/skills/gws-gmail")
     expect(review).toContain("Install this skill")
     expect(fake.sent.some((item) => item.type === "skill_install")).toBe(false)
     await act(async () => { await setup.mockInput.typeText("i") })
@@ -423,6 +426,25 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "skill_remove" && item.payload?.name === "gws-gmail")).toBe(true)
     expect(row).toBeGreaterThanOrEqual(0)
+  })
+
+  test("available skill rows bound long descriptions while keeping source and path visible", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/skills available") })
+    await setup.waitForFrame((frame) => frame.includes("/skills available"))
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const catalog = fake.sent.find((item) => item.type === "skills")!
+    act(() => fake.emit({ version: 1, id: catalog.id, type: "skill_catalog", payload: { skills: [
+      { name: "hf-cli", description: "This is a very long skill description. ".repeat(16), path: "skills/hf-cli", saved: true },
+    ] } }))
+    const frame = await setup.waitForFrame((value) => value.includes("hf-cli") && value.includes("skills/hf-cli"))
+    expect(frame).toContain("This is a very long skill description.")
+    expect(frame).not.toContain("This is a very long skill description. This is a very long skill description. This is a very long skill description.")
   })
 
   test("Escape cancels a skill search and ignores its stale results", async () => {
