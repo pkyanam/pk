@@ -3,7 +3,7 @@ import { destroyTreeSitterClient, getTreeSitterClient } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 import { act } from "react"
 import type { ServerEvent } from "./protocol"
-import { PkApp } from "./app"
+import { PkApp, transcriptTimelineShouldUpdate } from "./app"
 import { leadingPathFromPrompt, parsePastedPaths } from "./app"
 import type { PkTransport } from "./transport"
 
@@ -39,6 +39,16 @@ function fakeTransport() {
 }
 
 describe("OpenTUI application", () => {
+  test("transcript timeline ignores clock ticks unless a live tool duration is visible", () => {
+    const onToggle = () => {}
+    const expandedToolGroups = new Set<string>()
+    const staticTimeline = { groups: [], clock: 1, hasLiveTool: false, expandedToolGroups, onToggle }
+    expect(transcriptTimelineShouldUpdate(staticTimeline, { ...staticTimeline, clock: 2 })).toBe(false)
+    const liveTimeline = { ...staticTimeline, hasLiveTool: true }
+    expect(transcriptTimelineShouldUpdate(liveTimeline, { ...liveTimeline, clock: 2 })).toBe(true)
+    expect(transcriptTimelineShouldUpdate(staticTimeline, { ...staticTimeline, expandedToolGroups: new Set<string>() })).toBe(true)
+  })
+
   test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("renders a usable shell at $width × $height", async ({ width, height }) => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })
@@ -307,6 +317,14 @@ describe("OpenTUI application", () => {
     const transcript = (setup.renderer.root as any).findDescendantById("transcript")
     expect(transcript.getChildren().length).toBeLessThanOrEqual(300)
     expect(transcript.getChildren().length).toBeGreaterThan(0)
+    const boundedRowCount = transcript.getChildren().length
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1150)) })
+    await setup.flush()
+    expect(transcript.getChildren().length).toBe(boundedRowCount)
+    expect(setup.captureCharFrame()).toContain("Row 1199")
+    await act(async () => { await setup.mockInput.typeText("still responsive") })
+    await setup.flush()
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("still responsive")
   })
 
   test("executes a selected slash command from the multiline composer", async () => {

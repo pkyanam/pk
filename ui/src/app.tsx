@@ -1,6 +1,6 @@
 import { useKeyboard, usePaste, useRenderer, useSelectionHandler } from "@opentui/react"
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
-import { memo, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 import { SessionManager, type ManagedSession } from "./session-manager"
@@ -256,6 +256,7 @@ function groupTranscript(entries: Entry[]): Array<{ kind: "entry"; entry: Entry 
   }
   return grouped
 }
+type TranscriptGroup = ReturnType<typeof groupTranscript>[number]
 
 function parseSlashWords(input: string): string[] {
   const words: string[] = []
@@ -2348,14 +2349,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     clearComposer(true)
   }
 
-  const toggleToolGroup = (key: string) => {
+  const toggleToolGroup = useCallback((key: string) => {
     setExpandedToolGroups((current) => {
       const next = new Set(current)
       if (next.has(key)) next.delete(key)
       else next.add(key)
       return next
     })
-  }
+  }, [])
 
   const toggleLastToolGroup = () => {
     const groups = groupTranscript(entries).filter((item): item is { kind: "tools"; entries: Entry[] } => item.kind === "tools")
@@ -2636,7 +2637,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
   const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending
   const cacheLabel = usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"
-  const transcriptOmitted = entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id)
+  const transcriptOmitted = useMemo(() => entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id), [entries])
+  const transcriptGroups = useMemo(() => groupTranscript(entries.filter((entry) => entry.id !== 0)), [entries])
+  const transcriptHasLiveTool = useMemo(() => hasLiveToolDuration(transcriptGroups), [transcriptGroups])
   const welcomeVisible = (entries.length === 0 && connected && !newSessionPending) || (entries.length === 1 && entries[0]?.id === 0)
   const skillsEmptyLabel = skillOperation || (skillsView === "installed" ? "No managed skills installed · use /skills search QUERY" : skillsView === "results" ? "No skills matched that search." : skillsView === "candidates" ? "No skill manifests found in this source." : "No skills available")
 
@@ -2651,9 +2654,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
         {welcomeVisible
           ? <WelcomeEntry onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
-          : groupTranscript(entries.filter((entry) => entry.id !== 0)).map((item) => item.kind === "entry"
-            ? <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
-            : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
+          : <TranscriptTimeline groups={transcriptGroups} clock={clock} hasLiveTool={transcriptHasLiveTool} expandedToolGroups={expandedToolGroups} onToggle={toggleToolGroup} />}
       </scrollbox>
       <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
         {queuedFiles.length > 0 && <box style={{ flexDirection: "row", gap: 1, height: 1, flexShrink: 0, paddingLeft: 1 }}>
@@ -2926,3 +2927,31 @@ const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { en
   const elapsedIsLive = previous.entry.elapsedMs === undefined && previous.entry.startedAt !== undefined && !terminal
   return !elapsedIsLive || previous.clock === next.clock
 })
+
+function hasLiveToolDuration(groups: TranscriptGroup[]) {
+  return groups.some((group) => (group.kind === "entry" ? [group.entry] : group.entries).some((entry) => {
+    if (entry.role !== "tool" || entry.historical || entry.elapsedMs !== undefined || entry.startedAt === undefined) return false
+    return !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase())
+  }))
+}
+
+type TranscriptTimelineProps = {
+  groups: TranscriptGroup[]
+  clock: number
+  hasLiveTool: boolean
+  expandedToolGroups: Set<string>
+  onToggle: (key: string) => void
+}
+
+export function transcriptTimelineShouldUpdate(previous: TranscriptTimelineProps, next: TranscriptTimelineProps) {
+  if (previous.groups !== next.groups || previous.expandedToolGroups !== next.expandedToolGroups || previous.onToggle !== next.onToggle || previous.hasLiveTool !== next.hasLiveTool) return true
+  return previous.hasLiveTool && previous.clock !== next.clock
+}
+
+const TranscriptTimeline = memo(function TranscriptTimeline({ groups, clock, expandedToolGroups, onToggle }: TranscriptTimelineProps) {
+  return <>{groups.map((item) => {
+    if (item.kind === "entry") return <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
+    const key = toolGroupKey(item.entries)
+    return <ToolTranscriptGroup key={`tools-${key}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(key)} onToggle={() => onToggle(key)} />
+  })}</>
+}, (previous, next) => !transcriptTimelineShouldUpdate(previous, next))
