@@ -280,3 +280,18 @@ will do.
 - User reported a missing AgentMail worker and tool-description confusion while inside its example directory. Rebuilt the ignored worker and verified initialize returns its three tool names without mail API calls. Enable/runtime executable checks and concise model-tool identity guidance are in progress.
 - User explicitly requests copy-on-selection-release and a GitHub-source updater through `pk --update`, `pk -update`, or `/update`. Luna owners are implementing native confirmed clipboard writes and canonical GitHub source staging. Neither is installed yet.
 - Computer Use validation was deferred after Cmux reported external user interaction; no existing user session was interrupted or recorded.
+
+### 2026-09-23 01:54 EDT — GitHub updater and native clipboard checkpoint
+
+- Installed clean public GitHub revision `eef6c46` through an actual `pk --update` fetch/build/activation. Full isolated Go race suite/vet and updater Go/UI gates passed (52 UI tests). Stable launcher retains paired releases; existing user processes were not restarted.
+- This release adds copy-on-selection-release with native clipboard acknowledgment, GitHub update aliases and TUI maintenance controls, MCP CLI configuration, and plugin executable availability checks. Native GUI copy and reload still need end-to-end verification.
+- Rebuilt the ignored AgentMail worker with the committed redacted HTTP-error handling. No mail was sent or modified.
+- MCP RPC and `/mcp`/`/tools` UI checkpoint committed as `320cb9c`, not installed yet.
+- New user report: assistant final text arrives but foreground turn stays active, and some new-session paths lose steering capability. Backend and TUI Luna owners are prioritizing lifecycle/negotiation regressions before the next release.
+- Replay-compaction benchmark first preflight failed because a git archive lacked repository metadata; no provider calls occurred. Retried from clean git checkout `8e2783d`, with two repetitions and bounded per-phase timeouts. Production compaction policy remains unchanged pending results.
+
+### 2026-09-23 02:05 EDT — foreground completion hotfix installed
+
+- Installed public GitHub revision `0d5476d` as release `20260923T060454.646785000Z-3b3cead7ab77-e9f7c088`. Foreground QueueInputs no longer suppresses normal idle completion; `/new` and `/attach` retain negotiated steering. MCP RPC/UI `/mcp` and `/tools` are included.
+- Evidence: isolated full Go race suite/vet/build passed, all updater Go/UI validation gates passed. One live installed Luna RPC smoke returned `turn_finished` without Escape or input-channel closure; subsequent new/attach events both advertised steering. Existing user sessions were left untouched.
+- Replay-compaction pilot completed all eight paired task runs with passing holdouts. Luna owner is analyzing and sanitizing results; no efficiency claim yet. Provider selection, managed subagent wiring, TinyFish tools, and the next skill refresh remain in progress.
