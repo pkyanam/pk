@@ -1,67 +1,69 @@
 # pk launch copy — review drafts
 
-These drafts describe the current terminal workspace. They are for review and have not been posted.
-They make no comparative performance claim and do not promise cache hits.
+These drafts describe implemented pk behavior at `0e6947c`. They are for review only and have not been posted.
 
 ## Short post options
 
+Each option is under 280 characters including the GitHub link and line break.
+
 **A — Keep work moving**
 
-Meet pk: a coding workspace for the terminal. Work in a live OpenTUI session, delegate bounded subtasks, or leave a durable task running and return to its progress.
+Meet pk: a Go coding workspace with an OpenTUI terminal. Follow progress and tool activity, delegate bounded subtasks, or leave a durable task running in its own folder and return later.
+
 https://github.com/pkyanam/pk
 
-**B — Built for the long run**
+**B — Long-running work**
 
-Some coding work takes more than one turn. pk keeps tasks resumable, shows tool activity as it happens, and lets you steer work from the terminal.
+Some coding work takes more than one turn. pk keeps a task running in a separate workspace. Attach to follow progress, steer it, cancel it, or resume interrupted work.
+
 https://github.com/pkyanam/pk
 
-**C — Your tools, your provider**
+**C — Bring your tools**
 
-Use skills, explicitly enabled plugins, and MCP tools in pk. Choose the built-in ChatGPT/Codex provider or configure an OpenAI-compatible endpoint.
+Explore skills, enable plugins, configure MCP servers, or connect an OpenAI-compatible provider. pk also works as an ACP agent for compatible clients.
+
 https://github.com/pkyanam/pk
 
-**D — Your workspace. Your choice.**
+**D — Your workspace, your choice**
 
-Meet pk: a terminal coding harness with no first-party usage analytics. Keep session history on your machine, choose your model provider, and connect the tools you want.
+pk has no first-party telemetry service and keeps its own session history locally. Model, search, and configured integration requests still go to their providers.
 
-Your selected provider still receives the context needed to do the work. Privacy starts with making those boundaries clear.
 https://github.com/pkyanam/pk
 
 ## Four-post thread
 
 **1/4**
 
-Meet pk: a coding workspace for the terminal. Follow progress and tool activity in a live OpenTUI session, or hand longer work to a durable task.
+Meet pk: a Go coding workspace with an OpenTUI terminal. See assistant progress and tool activity together as work moves forward.
 
 **2/4**
 
-Tasks can run in their own workspace. Attach to follow along, send more input, cancel, or resume saved work.
+For longer jobs, start a durable task in its own workspace. Attach to follow along, send more input, cancel, or resume interrupted work.
 
 **3/4**
 
-Bring your setup: discover skills, enable plugins, connect MCP tools, or use pk through ACP. Choose the built-in ChatGPT/Codex provider or configure an OpenAI-compatible one.
+Shape your setup with skills, explicitly enabled plugins, MCP servers, and OpenAI-compatible providers. Use pk from compatible clients through ACP.
 
 **4/4**
 
-Update and roll back from the terminal. Start here:
+Search the web with TinyFish directly or through Monid's TinyFish route. Direct TinyFish needs an API key; pk accepts Monid results only when the response confirms zero cost. Start here:
+
 https://github.com/pkyanam/pk
 
 ## Demo captions
 
-- **Foreground session:** “Progress and tool activity, together in the terminal.”
-- **Long task:** “Leave a task running, attach to its progress, and steer it as it works.”
-- **Subtasks:** “Delegate a bounded piece of work and follow its result.”
-- **Your setup:** “Use skills, plugins, and MCP tools with the provider you choose.”
+- **Foreground work:** “Assistant progress and tool results, in one terminal timeline.”
+- **Durable task:** “Start work in a separate folder. Attach, steer, or return later.”
+- **Subtasks:** “Delegate a bounded task and review its result.”
+- **Search:** “Search and fetch through TinyFish; the Monid route fails closed unless it confirms zero cost.”
+- **Your setup:** “Choose skills, plugins, MCP connections, and provider.”
 
 ## Copy guardrails
 
-- Go is the engine and OpenTUI is the terminal interface. Describe shipped workflows without implying a performance advantage over another agent.
-- Cache counts are shown only when a provider supplies them. Do not promise a cache hit, lower cost, or token savings. The [small paired-task pilot](benchmark-findings.md) is exploratory and is not a general performance result.
-- The center image in the README is concept art, not a product screenshot. Replace the screenshot-coming-soon note only after a current UI capture is reviewed.
-- Plugins and MCP servers are explicitly configured; do not imply a bundled marketplace or that arbitrary plugin programs are sandboxed. Bash and extension processes use pk's operating-system permissions.
-- Do not claim open-source or other licensing terms until the repository has a selected license.
-- These are drafts. Do not post them or use them in an external campaign without explicit authorization.
-
-## Privacy positioning
-
-Lead with control and transparency, not browser comparisons or claims of anonymity. pk stores history locally and does not operate a telemetry service. Model requests, search, and configured integrations still contact their respective services. Link the [data-handling disclosure](privacy.md) beside privacy claims. Local files are protected by filesystem permissions, not encrypted by pk.
+- Describe shipped workflows without implying pk outperforms another agent. The pilots are small and mixed; the latest job-queue compaction test used 33.8% more total input tokens in compact mode, so the shipped default remains `full`. See [benchmark findings](benchmark-findings.md).
+- Cache counts appear only when the provider reports them. Do not promise cache hits, lower cost, or token savings.
+- pk's own storage and integrations have different boundaries. pk operates no first-party telemetry service; model/search/MCP/plugin traffic still goes to configured providers. Do not call pk anonymous or claim external providers collect nothing. See the [data-handling disclosure](privacy.md).
+- TinyFish direct access requires a key. The Monid route accepts only responses that explicitly report zero cost and zero billed units; one live validation is not a guarantee of future pricing. See [web search](web-search.md).
+- Plugins and MCP servers require explicit configuration. Plugin programs run with pk's operating-system permissions; do not imply that they are sandboxed or bundled in a marketplace.
+- Do not claim a license until the repository contains one. Do not describe concept art as a product screenshot.
+- These drafts are not authorization to post or run an external campaign.

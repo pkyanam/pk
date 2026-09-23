@@ -1,5 +1,14 @@
 # pk launch assets — review drafts
 
+The repository contains three generated brand assets and three UI concept images. Brand art is not a
+product screenshot; UI concepts are not captures of the running interface. All are committed for
+review, but none has been posted to X or used in an external campaign.
+
+The UI concepts are [dark welcome](../output/imagegen/pk-welcome-dark.png),
+[active task](../output/imagegen/pk-active-task.png), and
+[light task list](../output/imagegen/pk-tasks-light.png). They are prompts for visual direction, not
+screenshots or descriptions of shipped UI.
+
 ## Brand card
 
 The first generated brand card is ready for review: [pk-keep-work-moving.png](../output/launch/pk-keep-work-moving.png)
@@ -41,8 +50,8 @@ This image is a repository review asset, not a social post or external campaign.
 new 1672 × 941 concept card (about 1.6 MiB). It uses a charcoal field, softly lit mint `pk`
 wordmark/cursor, and the line “Your workspace. Your tools. Your choice.” The line is positioning,
 not a claim that every provider, MCP server, or extension has the same privacy practices. The image
-is brand art, not a product screenshot or evidence of a particular UI state. It is a local review
-draft and has not been posted or used in an external campaign.
+is brand art, not a product screenshot or evidence of a particular UI state. It is committed for
+review and has not been posted or used in an external campaign.
 
 Generation prompt:
 
@@ -51,4 +60,4 @@ Use case: ads-marketing. Asset type: wide 16:9 launch card for the pk terminal c
 ```
 
 Generated once with the built-in image generation tool and inspected after generation. No existing
-asset was replaced. This draft has not been posted or published as a campaign.
+asset was replaced. This draft has not been posted or used in a campaign.

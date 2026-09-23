@@ -39,18 +39,50 @@ Relevant help checked from the installed Cap CLI: `record start` accepts `--wind
 
    Check the actual `targets --json` shape and current Cap help before scripting ID extraction; never hard-code a window ID. Keep the `.cap` project beside the MP4 so edits remain possible.
 
-## 45–50 second storyboard
+## 30–45 second storyboard: inclusive-range fix
+
+Use the deterministic disposable Go fixture in `scripts/demo-fixture`; it starts with a genuine
+failing test for an off-by-one bug in closed integer intervals. The demo shows one foreground
+session in that fixture, not a detached task, subagent, or steering flow. Create it before recording:
+
+```sh
+WORKSPACE=$(scripts/demo-fixture/create.sh | sed -n 's/^Created disposable coding fixture: //p')
+cd "$WORKSPACE"
+pk
+```
+
+In the live session, submit a request such as:
+
+> Fix the inclusive range endpoint count in `intervals/coverage.go`, keep overlap handling correct, add or adjust tests if needed, run `go test ./...`, and verify the README CLI example produces `{"covered":5}`. Explain the change briefly.
+
+Let the real run determine the visible progress and timing. The fixture’s independent verification,
+after the pk response, is:
+
+```sh
+cd "$WORKSPACE"
+go test ./...
+printf '{"ranges":[{"start":1,"end":3},{"start":5,"end":6}]}\n' | go run ./cmd/covercount
+```
+
+Expected CLI output after a correct fix: `{"covered":5}`. `scripts/demo-fixture/reset.sh "$WORKSPACE"`
+removes only an unmodified, marker-verified fixture; do not use it if the agent changed the directory.
 
 | Time | Picture / action | On-screen wording |
 |---|---|---|
-| 0–4s | Clean title over the real Cmux workspace | “pk — coding tasks, in your workspace” |
-| 4–11s | Launch pk and show its model/effort status, if visible in this build | “A terminal-native coding agent” |
-| 11–20s | Start one small, real task in the disposable checkout; show its task/workspace identity | “Start work in an isolated folder” only if the shown task actually uses that folder |
-| 20–32s | Show a genuine progress or tool event; use one real steering message only if the UI supports it in the recorded path | Keep command and output legible; do not accelerate away meaningful state changes |
-| 32–42s | Show the task's actual terminal state and run its relevant test/check | Label the specific check and its observed result; do not imply broader verification |
-| 42–50s | Return to the clean terminal, brief end card | “pk” plus a link/name only if the destination is already public and approved |
+| 0–3s | Title overlay over the real terminal | “pk · Go + OpenTUI” |
+| 3–9s | Show the disposable workspace and submit the interval-count request | “A real bug, in a disposable Go project” |
+| 9–25s | Keep the single continuous run legible as assistant updates and tool results appear | No speed or token-savings claim; retain truthful progress and test output |
+| 25–36s | Show the final response and the run’s actual test result, if completed | “Closed intervals count both endpoints” only if the code/result shows it |
+| 36–42s | Independently run the tests and README CLI example in the same workspace | Show actual `go test` result and `{"covered":5}` |
+| 42–45s | End card | “pk · Coding work, in your workspace” |
 
-Choose a task that finishes reliably in the recording window; seed a tiny disposable fixture rather than waiting on a large or unpredictable code change. If the task runs long, record a truthful start/progress/reattach sequence and end with its current state. Never splice separate runs to imply one continuous successful run. Do not show tokens, account identifiers, private paths, unrelated windows, or authentication setup.
+The times are an edit target, not a promise that the run finishes in 45 seconds. Record the full
+real sequence, then choose a continuous 30–45 second segment that contains only events that actually
+happened. If the coding run takes longer or the result is not correct, show truthful progress or
+retake after fixing the fixture; never splice independent runs to imply one continuous success.
+Keep the independent verification in the cut only when it follows the shown coding run in the same
+workspace. The existing FFmpeg script adds only opening, lower-third, and outro overlays; it does not
+join multiple runs.
 
 ## Edit and delivery
 
