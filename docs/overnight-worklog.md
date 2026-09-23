@@ -406,3 +406,8 @@ gates or imply that every backlog item is complete.
 - Installed 0e6947c ran a real Luna/low coding task in disposable `/tmp/pk-demo-fixture.AsxZqh` through Cmux. It fixed inclusive interval counting, completed its response, and returned Ready. Independent `go test ./...` passed; CLI returned `{"covered":5}`.
 - Committed cancellation/second-prompt regression and reusable fixture in 011d765; focused race checks passed. Launch/privacy/checklist updates in 51a8e31 pushed.
 - Cap accepted Cmux window ID 31835, but contact-sheet inspection showed Codex instead. Rejected and removed that entire disposable capture/export/edit; no video delivered or uploaded. Investigating target selection before any recapture. This is a capture failure, not a coding-task failure.
+
+### 2026-09-23 08:31 UTC — native Finder paste and image interpretation
+- Copied generated `mint sample.png` in Finder with Cmd+C, then Cmd+V into the dedicated Cmux demo session. pk queued the single spaced-path file and displayed its attachment chip.
+- Sent a brief description request. Saved session 03872f2a records ViewImage on the exact file and a final answer describing the mint vertical rectangle against a dark background. This verifies Finder-file Cmd+V through the installed Cmux/pk route and real image interpretation; raw pixel clipboard and native drag/drop remain separate checks.
+- Provider model lookup race fix e9821c4 pushed; 96 UI tests/434 assertions, typecheck/build pass. GitHub updater running against this checkpoint, existing sessions left intact.
