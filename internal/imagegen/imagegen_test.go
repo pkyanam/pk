@@ -82,7 +82,7 @@ func TestGenerateRequiresOneArtifactFromExactThread(t *testing.T) {
 			if err := os.WriteFile(fixture, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			_, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: codexHome, DriverModel: "gpt-6-astra", Timeout: time.Second}, Request{Prompt: "mint leaf", OutputRoot: t.TempDir(), OutputPath: "leaf.png"})
+			_, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: codexHome, DriverModel: "gpt-6-astra", Timeout: 10 * time.Second}, Request{Prompt: "mint leaf", OutputRoot: t.TempDir(), OutputPath: "leaf.png"})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("expected error containing %q, got %v", tc.want, err)
 			}
@@ -105,7 +105,7 @@ func TestGenerateRejectsMalformedOrOversizedJSONL(t *testing.T) {
 			if err := os.WriteFile(fixture, []byte("#!/bin/sh\n"+tc.body), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			_, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: t.TempDir(), DriverModel: "gpt-6-astra", Timeout: time.Second}, Request{Prompt: "x", OutputRoot: t.TempDir(), OutputPath: "x.png"})
+			_, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: t.TempDir(), DriverModel: "gpt-6-astra", Timeout: 10 * time.Second}, Request{Prompt: "x", OutputRoot: t.TempDir(), OutputPath: "x.png"})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("expected error containing %q, got %v", tc.want, err)
 			}
@@ -128,7 +128,7 @@ func TestGenerateRejectsSymlinkArtifact(t *testing.T) {
 	if err := os.WriteFile(fixture, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: codexHome, DriverModel: "gpt-6-astra", Timeout: time.Second}, Request{Prompt: "x", OutputRoot: t.TempDir(), OutputPath: "x.png"})
+	_, err := Generate(context.Background(), Config{Executable: fixture, CodexHome: codexHome, DriverModel: "gpt-6-astra", Timeout: 10 * time.Second}, Request{Prompt: "x", OutputRoot: t.TempDir(), OutputPath: "x.png"})
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("expected symlink rejection, got %v", err)
 	}
