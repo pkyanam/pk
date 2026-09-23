@@ -8,7 +8,7 @@ import { MCPManager } from "./mcp-manager"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type HistoryAttachment = { name: string; kind: string; contentType?: string; truncated?: boolean; pagesExtracted?: number; pagesTotal?: number }
-type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; historyAttachments?: HistoryAttachment[]; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
+type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; historyAttachments?: HistoryAttachment[]; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; progressText?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
 const MAX_TRANSCRIPT_ENTRIES = 300
 const OMITTED_TRANSCRIPT_ENTRY: Entry = { id: -1, role: "system", text: "Earlier activity omitted from this view · transcript is bounded for responsiveness." }
 function appendTranscriptEntries(current: Entry[], incoming: Entry | Entry[]): Entry[] {
@@ -930,6 +930,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           activeStreamAttempt.current = null
         }
         trackTool(data)
+        break
+      }
+      case "tool_progress": {
+        const outerId = String(event.id ?? "")
+        const callId = typeof data.call_id === "string" ? data.call_id : ""
+        if (!outerId || outerId !== promptCommandId.current || !callId || typeof data.text !== "string") break
+        const progressText = data.text.replace(/[\u0000-\u001f\u007f\s]+/g, " ").trim().slice(0, 180)
+        if (!progressText) break
+        setEntries((current) => {
+          const existing = current.find((entry) => entry.role === "tool" && entry.callId === callId)
+          if (!existing || existing.historical || ["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((existing.toolState ?? "").toLowerCase())) return current
+          return current.map((entry) => entry === existing ? { ...entry, progressText } : entry)
+        })
         break
       }
       case "turn_finished":
@@ -2663,12 +2676,16 @@ const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clo
   const historicallyUnfinished = entries.some((entry) => entry.historical && ["running", "working"].includes((entry.toolState ?? "").toLowerCase()))
   const hasElapsed = entries.some((entry) => entry.elapsedMs !== undefined || entry.startedAt !== undefined)
   const elapsed = entries.reduce((total, entry) => total + (entry.elapsedMs ?? (entry.startedAt ? Math.max(0, clock - entry.startedAt) : 0)), 0)
+  const progressText = [...entries].reverse().find((entry) => entry.progressText)?.progressText
   const summary = entries.length > 1
     ? `${first.toolName ?? "tool"} · Ran ${entries.length} ${first.toolName === "Bash" ? "commands" : "calls"}`
-    : first.historySummary ?? `${first.toolName ?? "tool"} · ${first.commandPreview || "operation"}`
+    : first.historySummary ?? `${first.toolName ?? "tool"} · ${progressText ? "working" : first.commandPreview || "operation"}`
+  const summaryWithProgress = progressText
+    ? entries.length > 1 ? `${summary} · ${progressText}` : `${first.toolName ?? "tool"} · ${progressText}`
+    : summary
   const color = failed ? palette.red : interrupted || historicallyUnfinished ? palette.amber : running ? palette.accent : palette.green
   const available = Math.max(24, Math.min(112, renderer.width - 24))
-  const compactSummary = summary.length > available ? `${summary.slice(0, available - 1)}…` : summary
+  const compactSummary = summaryWithProgress.length > available ? `${summaryWithProgress.slice(0, available - 1)}…` : summaryWithProgress
   return <box focusable onMouseDown={(event) => {
     if (event.button !== 0) return
     event.preventDefault()
@@ -2688,6 +2705,7 @@ const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clo
     </box>
     {expanded && entries.map((entry) => <box key={entry.callId} style={{ flexDirection: "column", paddingLeft: 2, paddingBottom: 1 }}>
       {entry.commandPreview && <text fg={palette.muted} content={`$ ${entry.commandPreview}`} />}
+      {entry.progressText && <text fg={palette.accent} content={`Progress · ${entry.progressText}`} />}
       {entry.detail && <text fg={entry.toolState === "failed" ? palette.red : palette.dim} content={entry.detail} />}
       {entry.text && entry.text !== entry.detail && <text fg={palette.red} content={entry.text} />}
     </box>)}

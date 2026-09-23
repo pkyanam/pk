@@ -56,7 +56,85 @@ func TestExtensionProcessHelper(t *testing.T) {
 			_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"result":"ok"}`+"\n", req.ID)
 			os.Exit(0)
 		}
+		if mode == "progress-flood" {
+			for i := 0; i < 100000; i++ {
+				_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"method":"tool.progress","params":{"text":"update %d"}}`+"\n", req.ID, i)
+			}
+			for {
+				time.Sleep(time.Hour)
+			}
+		}
+		if mode == "progress" {
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":"stale","method":"tool.progress","params":{"text":"stale"}}`+"\n")
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"method":"tool.progress","params":{"text":"api_key=shh"}}`+"\n", req.ID)
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"result":"ok"}`+"\n", req.ID)
+			return
+		}
+		if mode == "progress-fast-exit" {
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"method":"tool.progress","params":{"text":"before final"}}`+"\n", req.ID)
+			_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"result":"ok"}`+"\n", req.ID)
+			os.Exit(0)
+		}
 		_, _ = fmt.Fprintf(os.Stdout, `{"id":%q,"result":"ok"}`+"\n", req.ID)
+	}
+}
+
+func TestProcessWorkerDoesNotLoseFinalAfterProgressOnExit(t *testing.T) {
+	t.Setenv("PK_EXTENSION_PROCESS_HELPER", "progress-fast-exit")
+	for i := 0; i < 30; i++ {
+		worker := testProcessWorker(t)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx = context.WithValue(ctx, progressReporterKey{}, func(string) bool { return true })
+		var result string
+		err := worker.Call(ctx, "tool.execute", ToolExecuteParams{Name: "tool", CallID: "model-call"}, &result)
+		cancel()
+		_ = worker.Close()
+		if err != nil || result != "ok" {
+			t.Fatalf("iteration %d: result=%q err=%v", i, result, err)
+		}
+	}
+}
+
+func TestProcessWorkerProgressMatchesActiveRequestAndRedacts(t *testing.T) {
+	t.Setenv("PK_EXTENSION_PROCESS_HELPER", "progress")
+	worker := testProcessWorker(t)
+	defer worker.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var got []string
+	ctx = context.WithValue(ctx, progressReporterKey{}, func(text string) bool { got = append(got, text); return true })
+	var result string
+	params := ToolExecuteParams{Name: "ext_tool", CallID: "model-call-7"}
+	if err := worker.Call(ctx, "tool.execute", params, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result != "ok" {
+		t.Fatalf("result=%q", result)
+	}
+	if len(got) != 1 || got[0] != "api_key=[redacted]" {
+		t.Fatalf("progress=%q", got)
+	}
+}
+
+func TestProcessWorkerProgressFloodDoesNotBlockCancellation(t *testing.T) {
+	t.Setenv("PK_EXTENSION_PROCESS_HELPER", "progress-flood")
+	worker := testProcessWorker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	var result string
+	err := worker.Call(ctx, "tool.execute", ToolExecuteParams{Name: "ext_tool", CallID: "call"}, &result)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Call error=%v", err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- worker.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked after progress flood")
 	}
 }
 

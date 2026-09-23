@@ -41,7 +41,7 @@ func ProcessFactory(parent context.Context, manifest Manifest, workspace string)
 	}
 	worker := &processWorker{
 		cmd: cmd, cancel: cancel, stdin: stdin, stderr: stderr,
-		readEvents: make(chan responseEvent, 16), done: make(chan struct{}),
+		readEvents: make(chan responseEvent, 16), done: make(chan struct{}), readStop: make(chan struct{}),
 		callGate: make(chan struct{}, 1),
 	}
 	go worker.readResponses(stdout)
@@ -56,6 +56,7 @@ type processWorker struct {
 	stderr     *boundedBuffer
 	readEvents chan responseEvent
 	done       chan struct{}
+	readStop   chan struct{}
 	callGate   chan struct{}
 	closeOnce  sync.Once
 	nextID     atomic.Uint64
@@ -63,25 +64,62 @@ type processWorker struct {
 
 type responseEvent struct {
 	response *Response
+	progress *ProgressNotification
 	err      error
+}
+
+type ProgressNotification struct {
+	ID     string `json:"id"`
+	Method string `json:"method"`
+	Params struct {
+		Text string `json:"text"`
+	} `json:"params"`
 }
 
 func (w *processWorker) readResponses(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 4096), maxMessageSize)
 	for scanner.Scan() {
-		var response Response
-		if err := json.Unmarshal(scanner.Bytes(), &response); err != nil {
-			w.readEvents <- responseEvent{err: fmt.Errorf("decode extension response: %w", err)}
+		var frame struct {
+			ID     string `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Text string `json:"text"`
+			} `json:"params"`
+			Result json.RawMessage `json:"result"`
+			Error  *RPCError       `json:"error"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &frame); err != nil {
+			w.sendReaderEvent(responseEvent{err: fmt.Errorf("decode extension response: %w", err)})
 			return
 		}
-		w.readEvents <- responseEvent{response: &response}
+		if frame.Method != "" {
+			if frame.Method == "tool.progress" && frame.ID != "" {
+				w.sendProgressEvent(responseEvent{progress: &ProgressNotification{ID: frame.ID, Method: frame.Method, Params: frame.Params}})
+			}
+			continue
+		}
+		w.sendReaderEvent(responseEvent{response: &Response{ID: frame.ID, Result: frame.Result, Error: frame.Error}})
 	}
 	if err := scanner.Err(); err != nil {
-		w.readEvents <- responseEvent{err: fmt.Errorf("read extension response: %w", err)}
+		w.sendReaderEvent(responseEvent{err: fmt.Errorf("read extension response: %w", err)})
 		return
 	}
-	w.readEvents <- responseEvent{err: io.EOF}
+	w.sendReaderEvent(responseEvent{err: io.EOF})
+}
+
+func (w *processWorker) sendProgressEvent(event responseEvent) {
+	select {
+	case w.readEvents <- event:
+	default:
+	}
+}
+
+func (w *processWorker) sendReaderEvent(event responseEvent) {
+	select {
+	case w.readEvents <- event:
+	case <-w.readStop:
+	}
 }
 
 func (w *processWorker) Call(ctx context.Context, method string, params any, result any) error {
@@ -105,6 +143,13 @@ func (w *processWorker) Call(ctx context.Context, method string, params any, res
 	encodedParams, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("encode extension params: %w", err)
+	}
+	progressCallID := ""
+	if method == "tool.execute" {
+		var toolParams ToolExecuteParams
+		if json.Unmarshal(encodedParams, &toolParams) == nil {
+			progressCallID = toolParams.CallID
+		}
 	}
 	line, err := json.Marshal(Request{ID: id, Method: method, Params: encodedParams})
 	if err != nil {
@@ -132,6 +177,12 @@ func (w *processWorker) Call(ctx context.Context, method string, params any, res
 	for {
 		select {
 		case event := <-w.readEvents:
+			if event.progress != nil {
+				if method == "tool.execute" && event.progress.ID == id && progressCallID != "" {
+					ReportProgress(ctx, event.progress.Params.Text)
+				}
+				continue
+			}
 			if event.err != nil {
 				w.Close()
 				return w.processError("read response", event.err)
@@ -150,6 +201,9 @@ func (w *processWorker) Call(ctx context.Context, method string, params any, res
 			// done only protects against an abnormal pipe-reader failure.
 			select {
 			case event := <-w.readEvents:
+				if event.progress != nil {
+					continue
+				}
 				if event.response != nil {
 					if err = validateResponse(*event.response, id, result); err == nil {
 						return nil
@@ -186,7 +240,7 @@ func (w *processWorker) processError(action string, causes ...error) error {
 }
 
 func (w *processWorker) Close() error {
-	w.closeOnce.Do(func() { _ = w.stdin.Close(); w.cancel() })
+	w.closeOnce.Do(func() { close(w.readStop); _ = w.stdin.Close(); w.cancel() })
 	select {
 	case <-w.done:
 		return nil

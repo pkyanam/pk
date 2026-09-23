@@ -1254,6 +1254,43 @@ describe("OpenTUI application", () => {
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
   })
 
+  test("tool progress updates only its active card, is expandable, and clears at terminal state", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("run a task") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    const longCommand = `npm test -- ${"x".repeat(160)}`
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "tool_call", payload: { call_id: "tool-1", name: "Bash", state: "running", command_preview: longCommand } }))
+    await setup.waitForFrame((frame) => frame.includes("Bash · npm test"))
+
+    act(() => fake.emit({ version: 1, id: "older-prompt", type: "tool_progress", payload: { call_id: "tool-1", name: "Bash", extension_id: "", text: "stale progress" } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("stale progress")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "tool_progress", payload: { call_id: "tool-1", name: "Bash", extension_id: "", text: "Scanning package files\n  and checking tests" } }))
+    let frame = await setup.waitForFrame((value) => value.includes("Scanning package files and checking tests"))
+    expect(frame).toContain("Bash · Scanning package files")
+    expect(frame.match(/Bash · Scanning package files/g)).toHaveLength(1)
+    expect(frame).toContain("Running 1 tool")
+
+    const row = frame.split("\n").findIndex((line) => line.includes("Scanning package files"))
+    await act(async () => setup.mockMouse.click(8, row, 0))
+    frame = await setup.waitForFrame((value) => value.includes("Progress · Scanning package files"))
+    expect(frame).toContain("$ npm test --")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "tool_call", payload: { call_id: "tool-1", name: "Bash", state: "completed", command_preview: longCommand, elapsed_ms: 800 } }))
+    await setup.waitForFrame((value) => value.includes("Bash · npm test"))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "tool_progress", payload: { call_id: "tool-1", name: "Bash", extension_id: "", text: "late progress after completion" } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("late progress after completion")
+    expect(setup.captureCharFrame()).not.toContain("Progress · Scanning package files")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+  })
+
   test("groups adjacent tools but keeps assistant updates as timeline boundaries", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })

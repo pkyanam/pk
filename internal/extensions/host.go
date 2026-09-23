@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -60,6 +61,8 @@ type Host struct {
 	ambiguousCommands map[string]bool
 	slashCommands     map[string]commandBinding
 	closed            bool
+	progressEvents    chan ProgressEvent
+	progressHandler   func(ProgressEvent)
 }
 
 // NewHost loads only the manifests passed by its caller. Invalid or failing
@@ -78,7 +81,8 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 	ctx, cancel := context.WithCancel(parent)
 	host := &Host{ctx: ctx, cancel: cancel, workspace: workspace, callTimeout: defaultCallTimeout,
 		byID: make(map[string]*loadedExtension), tools: make(map[string]*loadedExtension), commands: make(map[string]*loadedExtension),
-		ambiguousCommands: make(map[string]bool), slashCommands: make(map[string]commandBinding)}
+		ambiguousCommands: make(map[string]bool), slashCommands: make(map[string]commandBinding), progressEvents: make(chan ProgressEvent, MaxProgressEventsPerCall)}
+	go host.dispatchProgress()
 	report := Report{}
 	for _, manifest := range manifests {
 		if err := manifest.Validate(); err != nil {
@@ -99,7 +103,7 @@ func NewHost(parent context.Context, workspace string, manifests []Manifest, fac
 			continue
 		}
 		loaded := &loadedExtension{manifest: manifest, worker: worker}
-		initParams := InitializeParams{APIVersion: ProtocolVersion, ID: manifest.ID, Version: manifest.Version, Workspace: workspace, Capabilities: append([]string(nil), manifest.Capabilities...)}
+		initParams := InitializeParams{APIVersion: ProtocolVersion, ID: manifest.ID, Version: manifest.Version, Workspace: workspace, Capabilities: append([]string(nil), manifest.Capabilities...), HostFeatures: []string{HostFeatureToolProgress}}
 		var initResult InitializeResult
 		initCtx, initCancel := context.WithTimeout(ctx, defaultCallTimeout)
 		err = worker.Call(initCtx, "initialize", initParams, &initResult)
@@ -306,6 +310,13 @@ func (h *Host) ExecuteTool(ctx context.Context, name, callID string, arguments j
 	}
 	callCtx, cancel := h.callContext(ctx)
 	defer cancel()
+	var progressCount atomic.Int32
+	callCtx = context.WithValue(callCtx, progressReporterKey{}, func(text string) bool {
+		if callCtx.Err() != nil || progressCount.Add(1) > MaxProgressEventsPerCall {
+			return false
+		}
+		return h.enqueueProgress(ProgressEvent{ExtensionID: ext.manifest.ID, ToolName: name, CallID: callID, Text: sanitizeProgress(text)})
+	})
 	var result ToolResult
 	err := ext.worker.Call(callCtx, "tool.execute", ToolExecuteParams{Name: name, CallID: callID, Arguments: arguments, Workspace: h.workspace}, &result)
 	if err != nil {
@@ -328,6 +339,57 @@ func (h *Host) ExecuteTool(ctx context.Context, name, callID string, arguments j
 		return ToolResult{}, errors.New("extension tool result is invalid or exceeds protocol limit")
 	}
 	return result, nil
+}
+
+// SetProgressHandler replaces the asynchronous progress consumer. It may be
+// called concurrently with tool execution; callbacks already in flight may
+// use the previous handler. The handler must return promptly. It is never
+// called from the extension process reader, and queue overflow drops updates.
+// Close does not wait for an in-flight handler callback.
+func (h *Host) SetProgressHandler(handler func(ProgressEvent)) {
+	h.mu.Lock()
+	h.progressHandler = handler
+	h.mu.Unlock()
+}
+
+func (h *Host) enqueueProgress(event ProgressEvent) bool {
+	event.Text = sanitizeProgress(event.Text)
+	if event.Text == "" {
+		return false
+	}
+	h.mu.RLock()
+	closed := h.closed
+	h.mu.RUnlock()
+	if closed {
+		return false
+	}
+	select {
+	case h.progressEvents <- event:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Host) dispatchProgress() {
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case event := <-h.progressEvents:
+			select {
+			case <-h.ctx.Done():
+				return
+			default:
+			}
+			h.mu.RLock()
+			handler := h.progressHandler
+			h.mu.RUnlock()
+			if handler != nil {
+				func() { defer func() { _ = recover() }(); handler(event) }()
+			}
+		}
+	}
 }
 
 func (h *Host) ExecuteCommand(ctx context.Context, name, arguments string) (string, error) {

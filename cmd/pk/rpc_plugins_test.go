@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -126,6 +127,97 @@ func TestRPCPluginSessionUsesFrozenManifestAndRejectsSchemaDrift(t *testing.T) {
 	}
 	_ = adapter.Close()
 }
+
+func TestRPCRelaysExtensionProgressWithPromptCorrelation(t *testing.T) {
+	workspace := t.TempDir()
+	manifest := extensions.Manifest{
+		APIVersion: extensions.ProtocolVersion,
+		ID:         "progress-fixture",
+		Version:    "1.0.0",
+		Executable: "fixture-worker",
+		Tools: []extensions.ToolSpec{{
+			Name:        "progress_tool",
+			Description: "emit a progress update",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		}},
+	}
+	host, report, err := extensions.NewHost(context.Background(), workspace, []extensions.Manifest{manifest}, func(context.Context, extensions.Manifest, string) (extensions.Worker, error) {
+		return rpcProgressFixtureWorker{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if len(report.Disabled) != 0 {
+		t.Fatalf("extension disabled: %v", report.Disabled)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 8)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard, requestTypes: map[string]string{}}
+	stopProgress := relayRPCPluginProgress(context.Background(), server, host, "prompt-42")
+	defer stopProgress()
+	type toolOutcome struct {
+		result extensions.ToolResult
+		err    error
+	}
+	toolDone := make(chan toolOutcome, 1)
+	go func() {
+		result, err := host.ExecuteTool(context.Background(), "progress_tool", "call-7", json.RawMessage(`{}`))
+		toolDone <- toolOutcome{result: result, err: err}
+	}()
+	var outcome toolOutcome
+	select {
+	case outcome = <-toolDone:
+		if outcome.err != nil {
+			t.Fatalf("execute progress tool: %v", outcome.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("extension tool completion blocked on progress event delivery")
+	}
+	if len(outcome.result.Content) != 1 || outcome.result.Content[0].Text != "finished" {
+		t.Fatalf("progress leaked into tool result: %+v", outcome.result)
+	}
+	select {
+	case raw := <-sink.events:
+		var event rpcEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatalf("decode progress event: %v", err)
+		}
+		if event.Version != rpcVersion || event.ID != "prompt-42" || event.Type != "tool_progress" {
+			t.Fatalf("unexpected progress envelope: %+v", event)
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok || payload["call_id"] != "call-7" || payload["name"] != "progress_tool" || payload["extension_id"] != "progress-fixture" || payload["text"] != "Scanning records" {
+			t.Fatalf("unexpected progress payload: %#v", event.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RPC did not relay extension progress")
+	}
+}
+
+type rpcProgressFixtureWorker struct{}
+
+func (rpcProgressFixtureWorker) Call(ctx context.Context, method string, params any, result any) error {
+	switch method {
+	case "initialize":
+		var init extensions.InitializeParams
+		encoded, _ := json.Marshal(params)
+		if err := json.Unmarshal(encoded, &init); err != nil {
+			return err
+		}
+		encoded, _ = json.Marshal(extensions.InitializeResult{APIVersion: extensions.ProtocolVersion, ID: init.ID, Tools: []string{"progress_tool"}})
+		return json.Unmarshal(encoded, result)
+	case "tool.execute":
+		if !extensions.ReportProgress(ctx, "Scanning records") {
+			return fmt.Errorf("progress event was not accepted")
+		}
+		encoded, _ := json.Marshal(extensions.ToolResult{Content: []extensions.Content{{Type: "text", Text: "finished"}}})
+		return json.Unmarshal(encoded, result)
+	default:
+		return nil
+	}
+}
+
+func (rpcProgressFixtureWorker) Close() error { return nil }
 
 func buildRPCWorkspaceStatsWorker(t *testing.T) string {
 	t.Helper()

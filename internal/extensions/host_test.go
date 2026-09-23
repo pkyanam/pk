@@ -416,6 +416,51 @@ type blockingWorker struct {
 	tools, commands []string
 }
 
+type progressFakeWorker struct{ fakeWorker }
+
+func (w *progressFakeWorker) Call(ctx context.Context, method string, params any, result any) error {
+	if method == "tool.execute" {
+		p := params.(ToolExecuteParams)
+		if !ReportProgress(ctx, "working") {
+			return errors.New("progress was not enabled")
+		}
+		return convertInto(ToolResult{Content: []Content{{Type: "text", Text: p.CallID}}}, result)
+	}
+	return w.fakeWorker.Call(ctx, method, params, result)
+}
+
+func TestHostDeliversProgressWithModelToolCallID(t *testing.T) {
+	workspace := t.TempDir()
+	manifest := statsManifest("progress", "progress_tool")
+	host, report, err := NewHost(context.Background(), workspace, []Manifest{manifest}, func(_ context.Context, m Manifest, root string) (Worker, error) {
+		return &progressFakeWorker{fakeWorker{id: m.ID, workspace: root, tools: namesOfTools(m.Tools), commands: namesOfCommands(m.Commands)}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if len(report.Loaded) != 1 {
+		t.Fatalf("load report: %+v", report)
+	}
+	got := make(chan ProgressEvent, 1)
+	host.SetProgressHandler(func(event ProgressEvent) { got <- event })
+	result, err := host.ExecuteTool(context.Background(), "progress_tool", "model-call-42", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) != 1 || result.Content[0].Text != "model-call-42" {
+		t.Fatalf("result=%+v", result)
+	}
+	select {
+	case event := <-got:
+		if event.ExtensionID != "progress" || event.ToolName != "progress_tool" || event.CallID != "model-call-42" || event.Text != "working" {
+			t.Fatalf("event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("progress callback was not delivered")
+	}
+}
+
 func (w *blockingWorker) Call(ctx context.Context, method string, params any, result any) error {
 	if method == "initialize" {
 		var p InitializeParams

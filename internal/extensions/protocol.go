@@ -7,8 +7,72 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 )
+
+const (
+	HostFeatureToolProgress  = "tool_progress"
+	MaxProgressTextBytes     = 4 << 10
+	MaxProgressEventsPerCall = 64
+)
+
+type ProgressEvent struct {
+	ExtensionID string `json:"extension_id"`
+	ToolName    string `json:"tool_name"`
+	CallID      string `json:"call_id"`
+	Text        string `json:"text"`
+}
+
+type progressReporterKey struct{}
+
+// ReportProgress emits sanitized, bounded progress only when the caller
+// provided a progress-capable context. It never writes to model context.
+func ReportProgress(ctx context.Context, text string) bool {
+	if ctx == nil {
+		return false
+	}
+	report, ok := ctx.Value(progressReporterKey{}).(func(string) bool)
+	if !ok {
+		return false
+	}
+	return report(sanitizeProgress(text))
+}
+
+var (
+	ansiControl         = regexp.MustCompile("\\x1b(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\x07]*(?:\\x07|\\x1b\\\\))")
+	bearerCredential    = regexp.MustCompile(`(?i)\bBearer\s+[a-z0-9._~+/-]+=*`)
+	jsonCredentialValue = regexp.MustCompile(`(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)"\s*:\s*")[^"]*`)
+	credentialValue     = regexp.MustCompile(`(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\s*[:=]\s*)[^\s,;"}]+`)
+)
+
+func sanitizeProgress(text string) string {
+	if !utf8.ValidString(text) {
+		text = strings.ToValidUTF8(text, "�")
+	}
+	text = ansiControl.ReplaceAllString(text, "")
+	text = bearerCredential.ReplaceAllString(text, "Bearer [redacted]")
+	text = jsonCredentialValue.ReplaceAllString(text, "$1[redacted]")
+	text = credentialValue.ReplaceAllString(text, "$1[redacted]")
+	var b strings.Builder
+	for _, r := range text {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	text = b.String()
+	if len(text) > MaxProgressTextBytes {
+		text = text[:MaxProgressTextBytes]
+		for !utf8.ValidString(text) {
+			text = text[:len(text)-1]
+		}
+	}
+	return text
+}
 
 type Request struct {
 	ID     string          `json:"id"`
@@ -40,6 +104,7 @@ type InitializeParams struct {
 	Version      string   `json:"version"`
 	Workspace    string   `json:"workspace"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	HostFeatures []string `json:"host_features,omitempty"`
 }
 
 type InitializeResult struct {
@@ -110,6 +175,8 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handl
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 4096), maxMessageSize)
 	writer := bufio.NewWriter(output)
+	var writerMu sync.Mutex
+	progressNegotiated := false
 	for scanner.Scan() {
 		var request Request
 		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
@@ -126,13 +193,55 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handl
 			var params InitializeParams
 			err = json.Unmarshal(request.Params, &params)
 			if err == nil {
+				for _, feature := range params.HostFeatures {
+					if feature == HostFeatureToolProgress {
+						progressNegotiated = true
+					}
+				}
 				result, err = handler.Initialize(ctx, params)
 			}
 		case "tool.execute":
 			var params ToolExecuteParams
 			err = json.Unmarshal(request.Params, &params)
 			if err == nil {
-				result, err = handler.ExecuteTool(ctx, params)
+				toolCtx := ctx
+				var active atomic.Bool
+				var count atomic.Int32
+				if progressNegotiated && params.CallID != "" {
+					active.Store(true)
+					toolCtx = context.WithValue(ctx, progressReporterKey{}, func(text string) bool {
+						if !active.Load() || count.Add(1) > MaxProgressEventsPerCall {
+							return false
+						}
+						text = sanitizeProgress(text)
+						if text == "" {
+							return false
+						}
+						line, marshalErr := json.Marshal(struct {
+							ID     string `json:"id"`
+							Method string `json:"method"`
+							Params struct {
+								Text string `json:"text"`
+							} `json:"params"`
+						}{ID: request.ID, Method: "tool.progress", Params: struct {
+							Text string `json:"text"`
+						}{Text: text}})
+						if marshalErr != nil || len(line) > maxMessageSize {
+							return false
+						}
+						writerMu.Lock()
+						defer writerMu.Unlock()
+						if !active.Load() {
+							return false
+						}
+						if _, writeErr := writer.Write(append(line, '\n')); writeErr != nil {
+							return false
+						}
+						return writer.Flush() == nil
+					})
+				}
+				result, err = handler.ExecuteTool(toolCtx, params)
+				active.Store(false)
 			}
 		case "command.execute":
 			var params CommandExecuteParams
@@ -158,12 +267,16 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handl
 		if len(line) > maxMessageSize {
 			return errors.New("extension response exceeds protocol message limit")
 		}
+		writerMu.Lock()
 		if _, err = writer.Write(append(line, '\n')); err != nil {
+			writerMu.Unlock()
 			return fmt.Errorf("write extension response: %w", err)
 		}
 		if err = writer.Flush(); err != nil {
+			writerMu.Unlock()
 			return fmt.Errorf("flush extension response: %w", err)
 		}
+		writerMu.Unlock()
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read extension request: %w", err)

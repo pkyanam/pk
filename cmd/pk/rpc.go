@@ -133,6 +133,54 @@ func (s *rpcServer) rejectSteer(requestID, message string) {
 	_ = s.emit(requestID, "input_rejected", map[string]any{"input_id": requestID, "session_id": sessionID, "message": message})
 }
 
+// relayRPCPluginProgress keeps extension progress out of runner/model output
+// and keeps the extension-host callback off the RPC output path. The extension
+// host already bounds and sanitizes events; this extra bounded queue drops
+// progress if the client cannot keep up.
+func relayRPCPluginProgress(ctx context.Context, server *rpcServer, host *extensions.Host, requestID string) func() {
+	if host == nil || server == nil {
+		return func() {}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	progressCtx, cancel := context.WithCancel(ctx)
+	queue := make(chan extensions.ProgressEvent, 16)
+	host.SetProgressHandler(func(event extensions.ProgressEvent) {
+		select {
+		case <-progressCtx.Done():
+			return
+		default:
+		}
+		select {
+		case queue <- event:
+		default:
+			// Progress is best effort. A slow or disconnected UI must not
+			// backpressure the extension worker or delay tool completion.
+		}
+	})
+	go func() {
+		for {
+			select {
+			case <-progressCtx.Done():
+				return
+			case event := <-queue:
+				if progressCtx.Err() != nil {
+					return
+				}
+				_ = server.emit(requestID, "tool_progress", map[string]any{
+					"call_id": event.CallID, "name": event.ToolName,
+					"extension_id": event.ExtensionID, "text": event.Text,
+				})
+			}
+		}
+	}()
+	return func() {
+		host.SetProgressHandler(nil)
+		cancel()
+	}
+}
+
 func (s *rpcServer) startReleaseOperation(requestID, operation, sourcePath string) {
 	if operation == "update" && strings.TrimSpace(sourcePath) != "" {
 		resolved, err := filepath.Abs(strings.TrimSpace(sourcePath))
@@ -769,6 +817,8 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load session plugins: %w", err)}
 				return
 			}
+			stopPluginProgress := relayRPCPluginProgress(broker.Context(), s, host, msg.ID)
+			defer stopPluginProgress()
 			finishPluginSchema, err := prepareRPCPluginSession(&opts, host)
 			if err != nil {
 				if host != nil {
