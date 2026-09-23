@@ -25,8 +25,10 @@ import (
 	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/pkyanam/pk/internal/skillinstall"
 	"github.com/pkyanam/pk/internal/subagents"
 	"github.com/pkyanam/pk/internal/tasks"
+	"github.com/pkyanam/pk/internal/websearch"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/session"
@@ -94,6 +96,7 @@ type rpcServer struct {
 	pluginPaths          []string
 	pluginIssues         []string
 	requestTypes         map[string]string
+	skillManagerFactory  func() skillinstall.Manager
 	broker               *interaction.Broker
 	loadAttachments      func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
 	prepareAdapter       func(context.Context, bool, string) (*codexAdapter, error)
@@ -1447,6 +1450,52 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "mcp_auth_status", payload)
+	case "web_status":
+		payload, err := rpcWebStatusPayload()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not inspect TinyFish configuration", "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "web_status", payload)
+	case "web_configure":
+		if err := s.webMutationAllowed(); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		var request struct {
+			Secret string `json:"secret"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil || request.Secret == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid TinyFish credential request", "recoverable": true})
+			return
+		}
+		if err := (websearch.SecretStore{Home: pkHome()}).Save(request.Secret); err != nil {
+			// Do not return validation/store errors here: they must never echo
+			// request data supplied alongside the secret.
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save TinyFish credential; check the key and pk credential store", "recoverable": true})
+			return
+		}
+		payload, err := rpcWebStatusPayload()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "TinyFish credential was saved, but its status could not be read", "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "web_status", payload)
+	case "web_clear":
+		if err := s.webMutationAllowed(); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		if err := (websearch.SecretStore{Home: pkHome()}).Clear(); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not clear TinyFish credential", "recoverable": true})
+			return
+		}
+		payload, err := rpcWebStatusPayload()
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "TinyFish credential was cleared, but its status could not be read", "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "web_status", payload)
 	case "tools":
 		payload, err := s.modelToolCatalog(s.ctx)
 		if err != nil {
@@ -1463,7 +1512,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "skill_catalog", map[string]any{"skills": catalog.Skills, "warnings": catalog.Warnings, "saved": catalog.Saved})
 	case "skill_search":
 		query := get("query")
-		manager := skillInstallManager()
+		manager := s.installManager()
 		s.startSkillOperation(msg.ID, "skill", "skill_search_started", "skill_search_results", map[string]any{"query": query}, func(ctx context.Context) (any, error) {
 			results, err := manager.Search(ctx, query)
 			if err != nil {
@@ -1473,7 +1522,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		})
 	case "skill_source_list":
 		source := get("source")
-		manager := skillInstallManager()
+		manager := s.installManager()
 		s.startSkillOperation(msg.ID, "skill", "skill_source_list_started", "skill_source_candidates", map[string]any{"source": source}, func(ctx context.Context) (any, error) {
 			candidates, err := manager.Discover(ctx, source)
 			if err != nil {
@@ -1483,7 +1532,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		})
 	case "skill_install":
 		source, skillPath := get("source"), get("path")
-		manager := skillInstallManager()
+		manager := s.installManager()
 		s.startSkillOperation(msg.ID, "skill", "skill_install_started", "skill_installed", map[string]any{"source": source, "path": skillPath}, func(ctx context.Context) (any, error) {
 			installed, err := manager.Install(ctx, source, skillPath)
 			if err != nil {
@@ -1492,7 +1541,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return map[string]any{"skill": installed, "next_session_only": true}, nil
 		})
 	case "skill_installed_list":
-		installed, err := skillInstallManager().List()
+		installed, err := s.installManager().List()
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
@@ -1504,7 +1553,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		name := get("name")
-		if err := skillInstallManager().Remove(name); err != nil {
+		if err := s.installManager().Remove(name); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}

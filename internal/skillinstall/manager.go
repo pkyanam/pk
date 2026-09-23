@@ -147,11 +147,28 @@ func (m Manager) Discover(ctx context.Context, source string) ([]Candidate, erro
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
+	if len(dirs) == 0 {
+		return nil, errors.New("repository contains no SKILL.md files; choose a repository with Agent Skills")
+	}
+	if s.wanted != "" {
+		matched := make([]string, 0, 1)
+		for _, dir := range dirs {
+			if dir == "." || strings.EqualFold(path.Base(dir), s.wanted) {
+				matched = append(matched, dir)
+			}
+		}
+		if len(matched) > 0 {
+			dirs = matched
+		} else if len(dirs) > maxCandidates {
+			return nil, fmt.Errorf("selected skill %q does not match a skill folder in %s/%s; reopen the specific skills.sh result or use its GitHub skill URL", s.wanted, s.owner, s.repo)
+		}
+	}
 	if len(dirs) > maxCandidates {
 		return nil, fmt.Errorf("repository has more than %d candidate skills; narrow the source to one skills.sh URL", maxCandidates)
 	}
 	out := make([]Candidate, 0, len(dirs))
 	inspectedBytes := 0
+	invalidSkillFiles := 0
 	for _, dir := range dirs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -167,15 +184,27 @@ func (m Manager) Discover(ctx context.Context, source string) ([]Candidate, erro
 		}
 		name, description, err := parseSkill(body)
 		if err != nil {
+			invalidSkillFiles++
 			continue
 		}
 		if s.wanted != "" && !strings.EqualFold(s.wanted, path.Base(dir)) && !strings.EqualFold(s.wanted, name) {
 			continue
 		}
-		out = append(out, Candidate{Name: name, Description: description, Source: s.owner + "/" + s.repo + "@" + ref, Path: dir, URL: "https://github.com/" + s.owner + "/" + s.repo + "/tree/" + escapePath(ref) + "/" + escapePath(dir)})
+		// Candidate.Source must round-trip through parseSource during Install.
+		// The compact owner/repo@value syntax intentionally means a skill
+		// selector, so encode the ref in an explicit GitHub tree URL here.
+		baseURL := "https://github.com/" + s.owner + "/" + s.repo + "/tree/" + escapePath(ref)
+		candidateURL := baseURL
+		if dir != "." {
+			candidateURL += "/" + escapePath(dir)
+		}
+		out = append(out, Candidate{Name: name, Description: description, Source: candidateURL, Path: dir, URL: candidateURL})
 	}
 	if s.wanted != "" && len(out) == 0 {
 		return nil, fmt.Errorf("skill %q was not found in %s/%s", s.wanted, s.owner, s.repo)
+	}
+	if len(out) == 0 && invalidSkillFiles == len(dirs) {
+		return nil, errors.New("repository has SKILL.md files, but none contain valid Agent Skills name and description frontmatter")
 	}
 	return out, nil
 }
@@ -473,6 +502,12 @@ func (m Manager) getBytes(ctx context.Context, c *http.Client, endpoint string, 
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return nil, errors.New("GitHub API rate limit reached; wait for the limit to reset, then retry skill browsing")
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, errors.New("GitHub repository or selected skill file was not found; check the source URL and ref")
+		}
 		return nil, fmt.Errorf("remote returned HTTP %d", resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))

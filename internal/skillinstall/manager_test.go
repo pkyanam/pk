@@ -2,6 +2,7 @@ package skillinstall
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -42,11 +43,16 @@ func TestDiscoverAndInstallCopyDataWithoutExecutingScripts(t *testing.T) {
 	if err != nil || len(candidates) != 1 || candidates[0].Name != "review" {
 		t.Fatalf("Discover() = %#v, %v", candidates, err)
 	}
-	installed, err := m.Install(context.Background(), "owner/repo", candidates[0].Path)
+	if candidates[0].Source != "https://github.com/owner/repo/tree/main/skills/review" {
+		t.Fatalf("candidate source does not preserve its ref in a round-trippable form: %q", candidates[0].Source)
+	}
+	// Exercise the real UI flow: install receives the source and path returned
+	// by Discover, rather than reconstructing a different source string.
+	installed, err := m.Install(context.Background(), candidates[0].Source, candidates[0].Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installed.Source != "owner/repo@main" {
+	if installed.Source != "https://github.com/owner/repo/tree/main/skills/review" {
 		t.Fatalf("source = %q", installed.Source)
 	}
 	info, err := os.Stat(filepath.Join(installed.Path, "install.sh"))
@@ -71,6 +77,97 @@ func TestDiscoverAndInstallCopyDataWithoutExecutingScripts(t *testing.T) {
 	}
 	if _, err := os.Stat(installed.Path); !os.IsNotExist(err) {
 		t.Fatalf("Remove left destination: %v", err)
+	}
+}
+
+func TestGitHubTreeSourceSelectsSkillPathAndRef(t *testing.T) {
+	source, err := parseSource("https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.owner != "vercel-labs" || source.repo != "agent-skills" || source.ref != "main" || source.wanted != "react-best-practices" {
+		t.Fatalf("parsed GitHub skill source = %+v", source)
+	}
+	generated, err := parseSource("https://github.com/vercel-labs/agent-skills/tree/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generated.owner != source.owner || generated.repo != source.repo || generated.ref != source.ref || generated.wanted != "" {
+		t.Fatalf("generated candidate source did not preserve repo/ref: %+v", generated)
+	}
+}
+
+func TestRootLevelSkillAndNoCompatibleSkillErrors(t *testing.T) {
+	rootClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Host == "api.github.com" && strings.HasSuffix(r.URL.Path, "/repo"):
+			return response(200, `{"default_branch":"main"}`), nil
+		case r.URL.Host == "api.github.com" && strings.Contains(r.URL.Path, "/git/trees/"):
+			return response(200, `{"tree":[{"path":"SKILL.md","type":"blob","mode":"100644"},{"path":"references/guide.md","type":"blob","mode":"100644"}]}`), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/SKILL.md"):
+			return response(200, "---\nname: root-guide\ndescription: A root skill.\n---\nInstructions."), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/references/guide.md"):
+			return response(200, "Reference."), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}
+	manager := Manager{Root: filepath.Join(t.TempDir(), "skills"), Client: rootClient}
+	candidates, err := manager.Discover(context.Background(), "owner/repo")
+	if err != nil || len(candidates) != 1 || candidates[0].Path != "." || candidates[0].Name != "root-guide" {
+		t.Fatalf("root skill discovery = %#v, %v", candidates, err)
+	}
+	installed, err := manager.Install(context.Background(), candidates[0].Source, candidates[0].Path)
+	if err != nil {
+		t.Fatalf("install root skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installed.Path, "references", "guide.md")); err != nil {
+		t.Fatalf("root skill reference missing: %v", err)
+	}
+
+	emptyClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.github.com" && strings.HasSuffix(r.URL.Path, "/repo") {
+			return response(200, `{"default_branch":"main"}`), nil
+		}
+		if r.URL.Host == "api.github.com" && strings.Contains(r.URL.Path, "/git/trees/") {
+			return response(200, `{"tree":[{"path":"README.md","type":"blob","mode":"100644"}]}`), nil
+		}
+		t.Fatalf("unexpected empty repository request %s", r.URL)
+		return nil, nil
+	})}
+	_, err = (Manager{Client: emptyClient}).Discover(context.Background(), "owner/repo")
+	if err == nil || !strings.Contains(err.Error(), "no SKILL.md files") {
+		t.Fatalf("incompatible repository error = %v", err)
+	}
+}
+
+func TestSkillSelectorNarrowsLargeRepositoryBeforeCandidateLimit(t *testing.T) {
+	var tree strings.Builder
+	tree.WriteString(`{"tree":[`)
+	for i := 0; i < maxCandidates+10; i++ {
+		if i > 0 {
+			tree.WriteByte(',')
+		}
+		fmt.Fprintf(&tree, `{"path":"skills/skill-%02d/SKILL.md","type":"blob","mode":"100644"}`, i)
+	}
+	tree.WriteString(`]}`)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Host == "api.github.com" && strings.HasSuffix(r.URL.Path, "/repo"):
+			return response(200, `{"default_branch":"main"}`), nil
+		case r.URL.Host == "api.github.com" && strings.Contains(r.URL.Path, "/git/trees/"):
+			return response(200, tree.String()), nil
+		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "/skills/skill-67/SKILL.md"):
+			return response(200, "---\nname: skill-67\ndescription: Target skill.\n---\nTarget."), nil
+		default:
+			t.Fatalf("selector failed to narrow metadata requests: %s", r.URL)
+			return nil, nil
+		}
+	})}
+	candidates, err := (Manager{Client: client}).Discover(context.Background(), "https://skills.sh/owner/repo/skill-67")
+	if err != nil || len(candidates) != 1 || candidates[0].Path != "skills/skill-67" {
+		t.Fatalf("narrowed candidates=%+v err=%v", candidates, err)
 	}
 }
 
@@ -120,6 +217,16 @@ func TestCrossHostRedirectIsRefusedWithoutMutatingSharedClient(t *testing.T) {
 	}
 	if shared.CheckRedirect != nil {
 		t.Fatal("manager mutated caller's shared client")
+	}
+}
+
+func TestGitHubRateLimitHasActionableMessage(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"X-Ratelimit-Remaining": []string{"0"}}, Body: io.NopCloser(strings.NewReader("rate limited"))}, nil
+	})}
+	_, err := (Manager{Client: client}).Discover(context.Background(), "owner/repo")
+	if err == nil || !strings.Contains(err.Error(), "rate limit reached") {
+		t.Fatalf("rate limit error = %v", err)
 	}
 }
 

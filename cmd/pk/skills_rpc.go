@@ -14,6 +14,13 @@ func skillInstallManager() skillinstall.Manager {
 	return skillinstall.Manager{Root: filepath.Join(pkHome(), "skills")}
 }
 
+func (s *rpcServer) installManager() skillinstall.Manager {
+	if s.skillManagerFactory != nil {
+		return s.skillManagerFactory()
+	}
+	return skillInstallManager()
+}
+
 func (s *rpcServer) skillMutationAllowed() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

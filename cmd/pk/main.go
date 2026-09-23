@@ -50,6 +50,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runSkillsCommand(ctx, args[1:], stdout, stderr)
 	case "provider":
 		return runProviderCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "web":
+		return runWebCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "update", "rollback", "version", "__install-artifacts":
 		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
@@ -574,6 +576,7 @@ func usage(out io.Writer) {
   pk plugin list|enable|disable|remove ID
   pk skills search QUERY | list | add SOURCE [SKILL] | remove NAME
   pk provider list|add|use  manage model providers
+  pk web status|setup|configure|clear
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...
   pk config [show|set model|set effort|set context-policy VALUE]
