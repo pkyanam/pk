@@ -4,7 +4,7 @@ Draft checkpoint; the morning report will update pending items below.
 
 ## Run it
 
-Run `pk` from your project directory. The installed release is `cada2b5`; use `/reload` while idle or relaunch `pk`. Fresh-session reload works before sending a first prompt and preserves the workspace/model/effort/provider.
+Run `pk` from your project directory. The installed release is `3a1e36c`; use `/reload` while idle or relaunch `pk`. Fresh-session reload works before sending a first prompt and preserves the workspace/model/effort/provider.
 
 New installation:
 
@@ -20,6 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/pkyanam/pk/main/install.sh | bash
 - Managed GitHub updates, rollback, and session-preserving reload. Installed processes use paired immutable Go/UI releases.
 - Image file and clipboard intake, bounded PDF text extraction and scanned-page previews, opt-in ImageGen, and configured TinyFish search/fetch with a zero-price Monid route and no paid fallback.
 - `/usage` reads durable provider token totals locally, distinguishes unavailable counts from zero, and reports per-metric coverage. Opening it does not call the model.
+- Extensions can opt into bounded metadata-only lifecycle notifications. The included run-observer example demonstrates the interface; mutating hooks and context transforms remain unsupported.
 
 See the [project checklist](project-checklist.md) for the verification level and limits of each feature. Configured integrations and local fixture tests are not proof that every external service or editor has been exercised.
 

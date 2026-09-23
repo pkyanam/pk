@@ -547,3 +547,10 @@ gates or imply that every backlog item is complete.
 
 - Clean GitHub `cada2b5` activated as `20260923T110343.361921000Z-6ee8c5cff48d-5ca53084`. Native Cmux reload, remote-mode arrow selection, and Enter advancement to Server ID were verified without saving configuration or calling a model. Existing user sessions were untouched.
 - The first full UI run had 124 passes and one obsolete wording assertion; that assertion was corrected. The managed updater then passed the complete Go and UI suites plus typecheck/build on its clean checkout before activation. Affected Go race checks also passed. The next install is reserved for separately reviewed lifecycle observer work.
+
+### 07:13 EDT — extension observers installed
+
+- Clean GitHub `3a1e36c` activated as `20260923T111231.073481000Z-38a3fdba468d-e2ae95da` after the managed updater passed full Go/UI suites, typecheck and build. Affected extension/runner/CLI race tests also passed.
+- Opt-in `run_start`, `response_complete`, and `run_end` notifications expose metadata only. Process workers use bounded one-way delivery; slow observers no longer time out the tool response channel. Shutdown queue accounting and invalid feature negotiation have regression coverage. Delivery remains best effort, not an audit-log guarantee.
+- The run-observer example passed a real subprocess handshake/event smoke without a provider request. The configured AgentMail checkout worker was rebuilt to include the exact-ID fixes, without reading private email or interrupting existing workers.
+- Next active checks: composer focus after selecting/copying responses, and redundant validation reads on cold session attachment. Overall benchmark superiority remains unproven.
