@@ -312,3 +312,10 @@ will do.
 - Output-compaction support remains default-off. The published pilot is exploratory, not evidence of general superiority. TinyFish requires an API key; authenticated search is not yet tested.
 - The existing 30-minute heartbeat now explicitly reserves the final stretch for validation, the edited Cmux/Cap video, and delivery by 08:00 EDT.
 - New user finding: `/tools` misleadingly appears empty before the first prompt, then resolves. Backend and UI owners are fixing initialization and loading-state handling. Plugin command UI and ACP saved-session loading are ready for the next validation checkpoint.
+
+### 2026-09-23 02:41 EDT — tool preview and plugin command checkpoint installed
+
+- Installed clean GitHub revision `769d1e2`, release `20260923T064043.054390000Z-78a5114c66a9-8501b7b4`. Includes pre-prompt core tool preview with explicit integration deferral, `/commands` discovery/invocation/cancellation, quieter child plugin startup, compact child activity, and ACP saved-session loading.
+- Isolated full Go race suite and vet passed; all 65 UI tests (298 assertions), typecheck/build and actual updater gates passed. An installed RPC smoke confirmed core tool preview before any prompt/model call. Existing user sessions were not interrupted.
+- Audited retained Unreal runtime behavior in `docs/unreal-foundation-audit.md`. Existing real-runner independent-tool rendezvous test passed three repeats; async overlap is verified, comparative token savings are not.
+- User feedback added task-only/no-file subagents, explicit dispatch constraints, bounded queueing, and concise structured results. Manager changes remain under review; event ordering and file-alias ownership limits require attention before shipping.
