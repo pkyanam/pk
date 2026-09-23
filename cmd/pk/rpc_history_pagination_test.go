@@ -58,6 +58,9 @@ func TestHistoryBeforeReturnsBoundedOlderPagesAndRejectsStaleSession(t *testing.
 	sink := &rpcEventSink{events: make(chan []byte, 4)}
 	server := &rpcServer{ctx: ctx, output: sink, diagnostics: io.Discard, sessionDir: sessionDir, session: sessionID, started: true, opts: runner.Options{Workspace: t.TempDir()}, requestTypes: map[string]string{}}
 	server.handle(rpcMessage{Version: 1, ID: "page", Type: "history_before", Payload: json.RawMessage(`{"session_id":"` + sessionID + `","before_sequence":` + strconv.FormatUint(cursor, 10) + `}`)}, make(chan turnDone, 1))
+	if started := readRPCEvent(t, sink); started.Type != "history_page_started" {
+		t.Fatalf("history page start event=%+v", started)
+	}
 	event := readRPCEvent(t, sink)
 	if event.Type != "history_page" || event.ID != "page" {
 		t.Fatalf("history page event=%+v", event)
@@ -96,9 +99,12 @@ func TestFreshSessionCanRequestLatestHistoryWithoutCursor(t *testing.T) {
 	if err := store.AppendInput(ctx, session.ID(sessionID), inbox.Input{ID: inbox.ID("first-prompt"), Kind: inbox.InputExternal, Payload: jsontext.Value(payload)}); err != nil {
 		t.Fatal(err)
 	}
-	sink := &rpcEventSink{events: make(chan []byte, 1)}
+	sink := &rpcEventSink{events: make(chan []byte, 2)}
 	server := &rpcServer{ctx: ctx, output: sink, diagnostics: io.Discard, sessionDir: sessionDir, session: sessionID, started: true, requestTypes: map[string]string{}}
 	server.handle(rpcMessage{Version: 1, ID: "latest", Type: "history_before", Payload: json.RawMessage(`{"session_id":"fresh-session-history","before_sequence":0}`)}, make(chan turnDone, 1))
+	if started := readRPCEvent(t, sink); started.Type != "history_page_started" {
+		t.Fatalf("latest history start event=%+v", started)
+	}
 	event := readRPCEvent(t, sink)
 	if event.Type != "history_page" || event.ID != "latest" {
 		t.Fatalf("latest history event=%+v", event)
@@ -106,5 +112,27 @@ func TestFreshSessionCanRequestLatestHistoryWithoutCursor(t *testing.T) {
 	encoded, _ := json.Marshal(event.Payload)
 	if !strings.Contains(string(encoded), "first prompt after starting a new session") || !strings.Contains(string(encoded), `"has_earlier":false`) {
 		t.Fatalf("latest history payload=%s", encoded)
+	}
+}
+
+func TestHistoryPageCancellationDoesNotBlockRPCLoop(t *testing.T) {
+	sink := &rpcEventSink{events: make(chan []byte, 4)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard, requestTypes: map[string]string{}}
+	started := make(chan struct{})
+	server.startSkillOperation("page", "history page", "history_page_started", "history_page", map[string]any{}, func(ctx context.Context) (any, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if event := readRPCEvent(t, sink); event.Type != "history_page_started" {
+		t.Fatalf("start event=%+v", event)
+	}
+	<-started
+	server.handle(rpcMessage{Version: 1, ID: "cancel", Type: "history_cancel"}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.Type != "history_cancel_requested" {
+		t.Fatalf("cancel event=%+v", event)
+	}
+	if event := readRPCEvent(t, sink); event.Type != "error" || event.Payload.(map[string]any)["cancelled"] != true {
+		t.Fatalf("canceled page terminal event=%+v", event)
 	}
 }

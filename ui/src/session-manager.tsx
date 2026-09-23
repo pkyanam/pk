@@ -1,0 +1,301 @@
+import { useKeyboard, useRenderer } from "@opentui/react"
+import { useEffect, useRef, useState } from "react"
+import type { ServerEvent } from "./protocol"
+
+export type ManagedSession = {
+  id: string
+  created_at: string
+  updated_at: string
+  workspace?: string
+  title?: string
+  preview?: string
+  item_count: number
+  active: boolean
+}
+
+export type TrashedSession = {
+  trash_id: string
+  session_id: string
+  archived_at: string
+  workspace?: string
+  title?: string
+  state: string
+}
+
+type SessionResult = { session_id: string; trash_id?: string; ok: boolean; error?: string }
+type SessionTab = "sessions" | "trash"
+type RequestKind = "sessions" | "trash" | "archive" | "restore" | "purge"
+type RequestInfo = { kind: RequestKind; query: string }
+
+export type SessionManagerProps = {
+  open: boolean
+  onClose: () => void
+  send: (type: string, payload?: Record<string, unknown>) => string | undefined
+  event?: ServerEvent
+  onLoad: (session: ManagedSession) => void
+}
+
+const colors = {
+  panel: "#181b1e", raised: "#202428", line: "#2b3035", text: "#e5e8eb",
+  muted: "#858e96", dim: "#5d666e", accent: "#8ab4a1", amber: "#d3ac72", red: "#d88787",
+}
+const listLimit = 500
+const maxQueryBytes = 512
+
+function formatDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "unknown date"
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+}
+
+function compactPath(path: string, max: number): string {
+  if (path.length <= max) return path
+  return `…${path.slice(-(max - 1))}`
+}
+
+export function SessionManager({ open, onClose, send, event, onLoad }: SessionManagerProps) {
+  const renderer = useRenderer()
+  const [tab, setTab] = useState<SessionTab>("sessions")
+  const [query, setQuery] = useState("")
+  const [sessions, setSessions] = useState<ManagedSession[]>([])
+  const [trash, setTrash] = useState<TrashedSession[]>([])
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [selectedIDs, setSelectedIDs] = useState<Set<string>>(() => new Set())
+  const [confirmPurge, setConfirmPurge] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [searchDirty, setSearchDirty] = useState(false)
+  const [searchMode, setSearchMode] = useState(false)
+  const [notice, setNotice] = useState("")
+  const pending = useRef(new Map<string, RequestInfo>())
+  const latestListRequest = useRef("")
+  const opened = useRef(false)
+  const visibleRows = Math.max(3, Math.min(12, Math.floor((renderer.height - 20) / 3)))
+
+  const sendRequest = (kind: RequestKind, type: string, payload?: Record<string, unknown>) => {
+    const id = send(type, payload)
+    if (!id) {
+      setNotice("pk is disconnected; this request was not sent.")
+      return ""
+    }
+    pending.current.set(id, { kind, query })
+    if (kind === "sessions" || kind === "trash") latestListRequest.current = id
+    setBusy(true)
+    setNotice(kind === "archive" ? "Moving sessions to recoverable trash…" : kind === "restore" ? "Restoring archived sessions…" : kind === "purge" ? "Permanently deleting archived sessions…" : "Loading sessions…")
+    return id
+  }
+
+  const refresh = (target: SessionTab = tab, search = query) => {
+    setSearchDirty(false)
+    const bounded = search.slice(0, maxQueryBytes)
+    if (target === "sessions") sendRequest("sessions", "sessions_list", { query: bounded, limit: listLimit })
+    else sendRequest("trash", "sessions_trash_list", { query: bounded })
+  }
+
+  useEffect(() => {
+    if (!open) {
+      opened.current = false
+      setConfirmPurge(false)
+      setSelectedIDs(new Set())
+      return
+    }
+    if (opened.current) return
+    opened.current = true
+    setTab("sessions")
+    setSelectedIDs(new Set())
+    setSelectedIndex(0)
+    refresh("sessions", "")
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !opened.current || !searchDirty) return
+    const timer = setTimeout(() => refresh(tab, query), 250)
+    return () => clearTimeout(timer)
+  }, [query, tab, open, searchDirty])
+
+  const visibleItems = tab === "sessions" ? sessions : trash
+  const rowKey = (index: number) => tab === "sessions" ? (sessions[index] as ManagedSession | undefined)?.id : (trash[index] as TrashedSession | undefined)?.trash_id
+
+  useEffect(() => {
+    setSelectedIndex((index) => visibleItems.length === 0 ? 0 : Math.max(0, Math.min(index, visibleItems.length - 1)))
+    setSelectedIDs(new Set())
+  }, [tab, sessions, trash])
+
+  const setTabAndRefresh = (next: SessionTab) => {
+    if (next === tab) return
+    setTab(next)
+    setSelectedIDs(new Set())
+    setSelectedIndex(0)
+    setNotice("")
+    refresh(next)
+  }
+
+  const toggleSelected = (index = selectedIndex) => {
+    const id = rowKey(index)
+    if (!id) return
+    if (tab === "sessions" && sessions[index]?.active) {
+      setNotice("This session is open in another view and cannot be archived here.")
+      return
+    }
+    setSelectedIDs((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selected = [...selectedIDs]
+  const runArchive = () => {
+    if (tab !== "sessions" || selected.length === 0 || busy) return
+    sendRequest("archive", "sessions_archive", { session_ids: selected })
+  }
+  const runRestore = () => {
+    if (tab !== "trash" || selected.length === 0 || busy) return
+    sendRequest("restore", "sessions_restore", { trash_ids: selected })
+  }
+  const runPurge = () => {
+    if (!confirmPurge || selected.length === 0 || busy) return
+    setConfirmPurge(false)
+    sendRequest("purge", "sessions_purge", { trash_ids: selected })
+  }
+
+  useEffect(() => {
+    if (!open || !event?.id) return
+    const request = pending.current.get(event.id)
+    if (!request) return
+    const data = event.payload ?? {}
+    if (event.type === "error") {
+      pending.current.delete(event.id)
+      if (request.kind === "sessions" || request.kind === "trash") {
+        if (event.id === latestListRequest.current) setBusy(false)
+      } else setBusy(false)
+      setNotice(String(data.message ?? "The session operation failed."))
+      return
+    }
+    const expected = request.kind === "sessions" ? "sessions"
+      : request.kind === "trash" ? "sessions_trash"
+        : request.kind === "archive" ? "sessions_archived"
+          : request.kind === "restore" ? "sessions_restored" : "sessions_purged"
+    if (event.type !== expected) return
+    pending.current.delete(event.id)
+    if (request.kind === "sessions" || request.kind === "trash") {
+      if (event.id !== latestListRequest.current) return
+      const rows = Array.isArray(data.sessions) ? data.sessions : []
+      if (request.kind === "sessions") setSessions(rows as ManagedSession[])
+      else setTrash(rows as TrashedSession[])
+      setBusy(false)
+      setNotice("")
+      return
+    }
+    const results = Array.isArray(data.results) ? data.results as SessionResult[] : []
+    const succeeded = results.filter((result) => result.ok).length
+    const failed = results.filter((result) => !result.ok)
+    setSelectedIDs(new Set())
+    setBusy(false)
+    const summary = failed.length > 0
+      ? `${succeeded} complete · ${failed.length} failed: ${failed[0]?.error ?? "operation failed"}`
+      : request.kind === "archive" ? `Archived ${succeeded} session${succeeded === 1 ? "" : "s"} · recoverable from Trash.`
+        : request.kind === "restore" ? `Restored ${succeeded} session${succeeded === 1 ? "" : "s"}.`
+          : `Permanently deleted ${succeeded} archived session${succeeded === 1 ? "" : "s"}.`
+    refresh(tab)
+    setNotice(summary)
+  }, [event, open])
+
+  useKeyboard((key) => {
+    if (!open) return
+    const name = key.name.toLowerCase()
+    if (searchMode) {
+      if (name === "escape" || name === "return") { setSearchMode(false); return }
+      if (name === "backspace") { setQuery((value) => value.slice(0, -1)); setSearchDirty(true); return }
+      if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+        setQuery((value) => `${value}${key.sequence}`.slice(0, maxQueryBytes))
+        setSearchDirty(true)
+      }
+      return
+    }
+    if (confirmPurge) {
+      if (name === "escape" || name === "n") setConfirmPurge(false)
+      else if (name === "y" || name === "return") runPurge()
+      return
+    }
+    if (name === "escape") { onClose(); return }
+    if (name === "/") { setSearchMode(true); return }
+    if (name === "1") { setTabAndRefresh("sessions"); return }
+    if (name === "2") { setTabAndRefresh("trash"); return }
+    if (name === "arrowup") { setSelectedIndex((index) => Math.max(0, index - 1)); return }
+    if (name === "arrowdown") { setSelectedIndex((index) => Math.min(visibleItems.length - 1, index + 1)); return }
+    if (name === "space" || key.sequence === " ") { toggleSelected(); return }
+    if (name === "a") { runArchive(); return }
+    if (name === "r") { runRestore(); return }
+    if (name === "p") { if (tab === "trash" && selected.length > 0) setConfirmPurge(true); return }
+    if (name === "c" && busy) { send("session_operation_cancel"); return }
+    if (name === "return" && tab === "sessions") {
+      const session = sessions[selectedIndex]
+      if (session && !session.active) onLoad(session)
+      else if (session?.active) setNotice("This session is already open.")
+    }
+  })
+
+  if (!open) return null
+
+  const start = Math.max(0, Math.min(selectedIndex - Math.floor(visibleRows / 2), Math.max(0, visibleItems.length - visibleRows)))
+  const page = visibleItems.slice(start, start + visibleRows)
+  const activeSession = tab === "sessions" ? sessions[selectedIndex] : undefined
+  const trashSession = tab === "trash" ? trash[selectedIndex] : undefined
+  const detailTitle = tab === "sessions" ? activeSession?.title || "Untitled session" : trashSession?.title || "Archived session"
+  const detailPreview = activeSession?.preview || (trashSession ? `Archived ${formatDate(trashSession.archived_at)} · ${trashSession.state}` : "Select a session to inspect its saved metadata.")
+
+  return <box style={{ position: "absolute", left: "6%", right: "6%", top: "7%", bottom: "7%", border: true, borderColor: colors.line, backgroundColor: colors.panel, padding: 2, flexDirection: "column", gap: 1 }}>
+    <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
+      <text fg={colors.text} content="Saved sessions" />
+      <text fg={colors.dim} content="Esc close" />
+    </box>
+    <text fg={colors.muted} content="Search, reopen, or clean up local conversation history. Archive is recoverable; purge permanently deletes archived data." />
+    <box style={{ flexDirection: "row", gap: 2 }}>
+      <box onMouseDown={() => setTabAndRefresh("sessions")} style={{ backgroundColor: tab === "sessions" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "sessions" ? colors.accent : colors.muted} content={`Sessions · ${sessions.length}  [1]`} /></box>
+      <box onMouseDown={() => setTabAndRefresh("trash")} style={{ backgroundColor: tab === "trash" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "trash" ? colors.accent : colors.muted} content={`Trash · ${trash.length}  [2]`} /></box>
+    </box>
+    <text fg={searchMode ? colors.accent : colors.muted} content={`/${query || "Filter title, workspace, or preview…"}${searchMode ? "▏" : ""}  ·  ${searchMode ? "type to search · Enter done" : "press / to search"}`} />
+    <text fg={colors.dim} content={busy ? notice : notice || `${visibleItems.length === 0 ? "No results" : `Showing ${start + 1}–${Math.min(start + page.length, visibleItems.length)} of ${visibleItems.length}`} · ${selected.length} selected`} />
+    <box style={{ flexDirection: "column", flexGrow: 1, minHeight: 3, border: ["top", "bottom"], borderColor: colors.line, paddingTop: 1, paddingBottom: 1 }}>
+      {page.length === 0 && <text fg={colors.dim} content={busy ? "Loading…" : tab === "sessions" ? "No saved sessions match this filter." : "Trash is empty. Archived sessions can be restored or permanently removed here."} />}
+      {page.map((item, localIndex) => {
+        const index = start + localIndex
+        const session = tab === "sessions" ? item as ManagedSession : undefined
+        const archived = tab === "trash" ? item as TrashedSession : undefined
+        const id = session?.id ?? archived?.trash_id ?? ""
+        const isSelected = selectedIDs.has(id)
+        const isCursor = index === selectedIndex
+        const title = session?.title || archived?.title || "Untitled session"
+        const workspace = session?.workspace || archived?.workspace || "Workspace unavailable"
+        const meta = session ? `${session.item_count} entries · updated ${formatDate(session.updated_at)}${session.active ? " · open now" : ""}` : `${archived?.state ?? "archived"} · ${formatDate(archived?.archived_at ?? "")}`
+        const line = `${isSelected ? "[x]" : "[ ]"} ${title}  ·  ${meta}`
+        return <box key={id} onMouseDown={() => { setSelectedIndex(index); toggleSelected(index) }} style={{ flexDirection: "column", minHeight: 2, backgroundColor: isCursor ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}>
+          <text fg={isCursor ? colors.accent : colors.text} content={line} />
+          <text fg={colors.dim} content={`${compactPath(workspace, Math.max(20, renderer.width - 25))}  ·  ${session?.preview ?? ""}`} />
+        </box>
+      })}
+    </box>
+    <box style={{ flexDirection: "column", borderColor: colors.line, paddingLeft: 1 }}>
+      <text fg={colors.text} content={detailTitle || "Session details"} />
+      <text fg={colors.muted} content={`${compactPath(activeSession?.workspace || trashSession?.workspace || "", Math.max(24, renderer.width - 28))}${activeSession ? `  ·  Created ${formatDate(activeSession.created_at)}` : ""}`} />
+      <text fg={colors.dim} content={detailPreview} />
+    </box>
+    {confirmPurge && <box style={{ border: true, borderColor: colors.red, backgroundColor: colors.raised, padding: 1, gap: 1, minHeight: 4, flexDirection: "column" }}>
+      <text fg={colors.red} content={`Permanently delete ${selected.length} archived session${selected.length === 1 ? "" : "s"}? This cannot be undone.`} />
+      <box style={{ flexDirection: "row", gap: 2 }}>
+        <box onMouseDown={runPurge} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content="Delete permanently · Y" /></box>
+        <box onMouseDown={() => setConfirmPurge(false)} style={{ backgroundColor: colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content="Keep archived · Esc" /></box>
+      </box>
+    </box>}
+    <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
+      <text fg={colors.dim} content="↑↓ move · Space select · Enter reopen · A archive · R restore · P purge" />
+      <box style={{ flexDirection: "row", gap: 1 }}>
+        {tab === "sessions" ? <box onMouseDown={runArchive} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Archive ${selected.length || "selected"}`} /></box> : <>
+          <box onMouseDown={runRestore} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Restore ${selected.length || "selected"}`} /></box>
+          <box onMouseDown={() => selected.length > 0 && setConfirmPurge(true)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content={`Purge ${selected.length || "selected"}`} /></box>
+        </>}
+      </box>
+    </box>
+  </box>
+}

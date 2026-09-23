@@ -3,6 +3,7 @@ import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
 import { memo, useEffect, useRef, useState } from "react"
 import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
+import { SessionManager, type ManagedSession } from "./session-manager"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
@@ -21,7 +22,7 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "plugin_commands" | "history" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "plugin_commands" | "history" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type PluginCommandRun = { id: string; name: string; startedAt: number; cancelRequested?: boolean }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean; source?: string; url?: string; installs?: number; id?: string }
@@ -30,7 +31,7 @@ type SkillCandidate = { name: string; description: string; source: string; path:
 type SkillInstalled = { name: string; description?: string; source?: string; path?: string }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
 type ExtensionCommand = { name: string; extension_id: string; command_name: string; description: string; enabled?: boolean; error?: string }
-type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string }
+type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string; transport?: string; url?: string; auth_mode?: string; auth_status?: string; credential_env?: string[] }
 type MCPToolOption = { server_id: string; server_tool_name: string; name: string; description: string; input_schema?: Record<string, unknown> }
 type ModelToolOption = { name: string; description: string; source?: string }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
@@ -47,6 +48,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/model", description: "Choose the model for the next turn", action: "model" },
   { name: "/effort", description: "Set reasoning effort", action: "effort" },
   { name: "/tasks", description: "Browse durable agent tasks", action: "tasks" },
+  { name: "/sessions", description: "Search, reopen, archive, or restore saved conversations", action: "sessions" },
   { name: "/skills", description: "Search skills.sh, review/install skills, and manage installed skills", action: "skills" },
   { name: "/plugins", description: "Inspect installed plugins and their state", action: "plugins" },
   { name: "/commands", description: "Browse namespaced plugin commands", action: "plugin_commands" },
@@ -123,6 +125,36 @@ function preview(value: unknown, limit = 180): string {
     const text = JSON.stringify(value)
     return text.length > limit ? `${text.slice(0, limit - 1)}…` : text
   } catch { return "" }
+}
+
+function selectedCopyText(selection: any): string {
+  if (!selection) return ""
+  const isWithin = (renderable: any, id: string) => {
+    let node = renderable
+    while (node) {
+      if (node.id === id) return true
+      node = node.parent
+    }
+    return false
+  }
+  const selected = selection.selectedRenderables ?? []
+  const transcript = selected.filter((item: any) => isWithin(item, "transcript"))
+  const composer = selected.filter((item: any) => isWithin(item, "composer"))
+  const scoped = transcript.length ? transcript : composer
+  const lines = new Map<number, Array<{ x: number; text: string }>>()
+  for (const renderable of scoped) {
+    const text = renderable.getSelectedText()
+    if (!text) continue
+    text.split("\n").forEach((line: string, index: number) => {
+      const y = renderable.y + index
+      const segments = lines.get(y) ?? []
+      segments.push({ x: renderable.x, text: line })
+      lines.set(y, segments)
+    })
+  }
+  return [...lines.entries()].sort(([a], [b]) => a - b)
+    .map(([, segments]) => segments.sort((a, b) => a.x - b.x).map((item) => item.text).join(""))
+    .join("\n")
 }
 
 function toolGroupKey(entries: Entry[]) {
@@ -260,6 +292,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
   const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | "history" | null>(null)
+  const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
+  const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
@@ -363,7 +397,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   useSelectionHandler((selection) => {
     if (selection.isDragging) return
-    const selected = selection.getSelectedText()
+    // OpenTUI's global selection can include renderables below the scrollbox
+    // viewport. Prefer transcript text whenever the drag touched the transcript;
+    // composer selections still work when they are the only selected region.
+    const selected = selectedCopyText(selection)
     if (!selected.trim()) {
       copiedSelection.current = ""
       return
@@ -409,6 +446,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setHistoryLoading(true)
     setHistoryDetailIndex(null)
     setSelector("history")
+  }
+
+  const cancelHistoryRead = () => {
+    if (!pendingHistoryRequest.current) return
+    transport.send("history_cancel" as any)
+    pendingHistoryRequest.current = ""
+    setHistoryLoading(false)
   }
 
   const requestEarlierHistory = (sessionID = historySessionID.current || sessionId, beforeSequence = historyBeforeSequence) => {
@@ -621,6 +665,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const handleEvent = useRef<(event: ServerEvent) => void>(() => {})
   handleEvent.current = (event) => {
+    setSessionManagerEvent(event)
     const data = event.payload ?? {}
     switch (event.type) {
       case "ready":
@@ -673,6 +718,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.session_id) setSessionId(String(data.session_id))
         break
       }
+      case "history_page_started":
+        if (event.id && event.id === pendingHistoryRequest.current) setHistoryLoading(true)
+        break
       case "history_page": {
         if (!event.id || event.id !== pendingHistoryRequest.current) break
         pendingHistoryRequest.current = ""
@@ -993,6 +1041,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           id: String(item.id), command: String(item.command ?? ""), arguments_count: Number(item.arguments_count ?? 0),
           environment_keys: Array.isArray(item.environment_keys) ? item.environment_keys.map(String) : [],
           working_directory: typeof item.working_directory === "string" ? item.working_directory : undefined,
+          transport: typeof item.transport === "string" ? item.transport : undefined,
+          url: typeof item.url === "string" ? safeProviderURL(item.url) : undefined,
+          auth_mode: typeof item.auth_mode === "string" ? item.auth_mode : undefined,
+          auth_status: typeof item.auth_status === "string" ? item.auth_status : undefined,
+          credential_env: Array.isArray(item.credential_env) ? item.credential_env.map(String) : [],
         })) : []
         const tools = Array.isArray(data.tools) ? data.tools.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({
           server_id: String(item.server_id ?? ""), server_tool_name: String(item.server_tool_name ?? ""),
@@ -1005,6 +1058,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setSelector("mcp")
         if (event.type === "mcp_updated" && data.next_session_only) addEntry("system", "MCP configuration saved · applies to new sessions. Use /new to start one.")
         if (!servers.length) addEntry("system", 'No MCP servers configured. Use /mcp add --id ID --command PATH to add one.')
+        break
+      }
+      case "mcp_auth_status": {
+        const id = String(data.id ?? "MCP server")
+        const status = String(data.status ?? "status updated")
+        addEntry("system", `${id} · ${status === "authenticated" ? "connected" : status === "authorizing" ? "waiting for browser consent" : status === "needs_login" ? "local sign-in cleared; sign in again to reconnect" : status}`)
+        if (status !== "authorizing") transport.send("mcp_list" as any)
         break
       }
       case "providers":
@@ -1549,6 +1609,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else addEntry("system", `Unsupported reasoning effort: ${args[0]}. Choose ${efforts.join(", ")}.`)
         break
       case "tasks": transport.send("task_list"); break
+      case "sessions": setSessionManagerOpen(true); break
       case "skills": {
         const [operation, ...rest] = args
         if (!operation || operation === "installed") openSkillsView("installed")
@@ -1562,11 +1623,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "plugins": transport.send("plugins_list" as any); break
       case "plugin_commands": transport.send("plugin_commands_list" as any); break
       case "mcp": {
-        const [operation, ...options] = args
+          const [operation, ...options] = args
         if (!operation || operation === "list") transport.send("mcp_list" as any)
         else if (operation === "remove" && options[0]) transport.send("mcp_remove" as any, { id: options[0] })
+        else if (operation === "login" && options[0]) transport.send("mcp_login" as any, { id: options[0] })
+        else if (operation === "logout" && options[0]) transport.send("mcp_logout" as any, { id: options[0] })
         else if (operation === "add") {
-          const server: { id?: string; command?: string; args: string[]; env: Record<string, string>; working_directory?: string } = { args: [], env: {} }
+          const server: { id?: string; command?: string; url?: string; args: string[]; env: Record<string, string>; working_directory?: string; auth?: Record<string, string> } = { args: [], env: {} }
           let invalid = ""
           for (let index = 0; index < options.length; index++) {
             const option = options[index]!
@@ -1574,6 +1637,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             if (value === undefined) { invalid = `Missing value after ${option}.`; break }
             if (option === "--id") server.id = value
             else if (option === "--command") server.command = value
+            else if (option === "--url") server.url = value
+            else if (option === "--auth") {
+              if (value === "oauth") server.auth = { mode: "oauth" }
+              else if (value === "bearer-env") server.auth = { mode: "bearer_env" }
+              else if (value === "header-env") server.auth = { mode: "header_env" }
+              else { invalid = "Auth must be oauth, bearer-env, or header-env."; break }
+            }
+            else if (option === "--bearer-env") { server.auth ??= { mode: "bearer_env" }; server.auth.bearer_env = value }
+            else if (option === "--header") { server.auth ??= { mode: "header_env" }; server.auth.header_name = value }
+            else if (option === "--header-env") { server.auth ??= { mode: "header_env" }; server.auth.header_value_env = value }
             else if (option === "--arg") server.args.push(value)
             else if (option === "--cwd") server.working_directory = value
             else if (option === "--env") {
@@ -1584,10 +1657,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
               server.env[key] = value.slice(separator + 1)
             } else { invalid = `Unknown MCP option: ${option}.`; break }
           }
-          if (!server.id || !server.command) invalid ||= 'Usage: /mcp add --id ID --command PATH [--arg ARG] [--env KEY=VALUE] [--cwd DIR]'
+          const remote = Boolean(server.url)
+          if (!server.id || (remote ? server.command : !server.command)) invalid ||= 'Use /mcp add --id ID --command PATH [--arg ARG] [--env KEY=VALUE] [--cwd DIR] or /mcp add --id ID --url URL [--auth oauth|bearer-env|header-env] [--bearer-env ENV|--header NAME --header-env ENV].'
+          if (server.url && server.command) invalid ||= "Choose either a remote --url or a local --command."
+          if (server.auth?.mode === "bearer_env" && !server.auth.bearer_env) invalid ||= "Bearer auth requires --bearer-env ENV."
+          if (server.auth?.mode === "header_env" && (!server.auth.header_name || !server.auth.header_value_env)) invalid ||= "Header auth requires --header NAME and --header-env ENV."
+          if (server.auth?.mode === "bearer_env" && server.auth.bearer_env && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(server.auth.bearer_env)) invalid ||= "Bearer credential reference must be an environment variable name."
+          if (server.auth?.mode === "header_env" && server.auth.header_value_env && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(server.auth.header_value_env)) invalid ||= "Header credential reference must be an environment variable name."
           if (invalid) addEntry("system", invalid)
           else transport.send("mcp_add" as any, { server })
-        } else addEntry("system", 'Usage: /mcp · /mcp add --id ID --command PATH [--arg ARG] [--env KEY=VALUE] [--cwd DIR] · /mcp remove ID')
+        } else addEntry("system", 'Usage: /mcp · /mcp add --id ID --command PATH [--arg ARG] [--env KEY=VALUE] [--cwd DIR] · /mcp add --id ID --url URL [--auth oauth|bearer-env|header-env] · /mcp login|logout ID · /mcp remove ID')
         break
       }
       case "tools": {
@@ -1692,6 +1771,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       case "new":
         if (busy) { addEntry("system", "Wait for the active turn to finish before starting a new session."); break }
+        cancelHistoryRead()
         transport.send("new")
         setEntries([])
         sessionHasPrompt.current = false
@@ -1705,6 +1785,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "attach":
         if (!args[0]) { addEntry("system", "Usage: /attach SESSION_ID"); break }
+        cancelHistoryRead()
         historySessionID.current = ""
         pendingHistoryRequest.current = ""
         setHistoryEntries([])
@@ -1874,7 +1955,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
     } else if (selector === "mcp") {
       const server = mcpServers[index]
-      if (server) addEntry("system", `MCP ${server.id} · ${server.command} · ${server.arguments_count} args · environment keys: ${server.environment_keys.join(", ") || "none"} · ${server.working_directory || "default working directory"}. Use /mcp remove ${server.id} to remove it; changes apply to new sessions.`)
+      if (server) addEntry("system", server.url
+        ? `MCP ${server.id} · remote ${server.url} · auth ${server.auth_mode ?? "anonymous"} (${server.auth_status ?? "configured"})${server.credential_env?.length ? ` · credential env ${server.credential_env.join(", ")}` : ""}. OAuth: /mcp login ${server.id} or /mcp logout ${server.id}. Remove with /mcp remove ${server.id}; configuration changes apply to new sessions.`
+        : `MCP ${server.id} · ${server.command} · ${server.arguments_count} args · environment keys: ${server.environment_keys.join(", ") || "none"} · ${server.working_directory || "default working directory"}. Use /mcp remove ${server.id} to remove it; changes apply to new sessions.`)
     } else if (selector === "providers") {
       const provider = index === 0 ? null : providers[index - 1]
       const id = provider?.id ?? "native"
@@ -1924,6 +2007,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   useKeyboard((key) => {
+    if (sessionManagerOpen) return
     const isEscape = key.name === "escape" || key.name === "esc"
     const commandModifier = key.super === true || key.meta === true
     if ((commandModifier || key.ctrl) && key.name.toLowerCase() === "v") {
@@ -1932,7 +2016,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if ((commandModifier && key.name.toLowerCase() === "c") || (key.ctrl && key.name.toLowerCase() === "y")) {
-      const selection = renderer.getSelection()?.getSelectedText() ?? ""
+      const selection = selectedCopyText(renderer.getSelection())
       if (selection) {
         key.preventDefault()
         copyToClipboard(selection)
@@ -2013,8 +2097,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           setModelToolsLoading(false)
         }
         if (selector === "history" && pendingHistoryRequest.current) {
-          pendingHistoryRequest.current = ""
-          setHistoryLoading(false)
+          cancelHistoryRead()
         }
         setSelector(null); textarea.current?.focus(); return
       }
@@ -2118,7 +2201,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
               : skillsView === "review" ? []
                 : skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
         : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
-          : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: "configured" }))
+          : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: server.url
+            ? `${server.url} · ${server.auth_mode ?? "anonymous"} · ${server.auth_status ?? "configured"}${server.credential_env?.length ? ` · env ${server.credential_env.join(", ")}` : ""}`
+            : `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: server.auth_status ?? "configured" }))
             : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
   const selectorPageSize = selector === "history" ? Math.max(3, Math.min(6, Math.floor((renderer.height - 20) / 2))) : selector === "skills"
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
@@ -2150,10 +2235,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
       <box style={{ flexDirection: "row", height: 1 }}>
-        <text fg={palette.text} content="p k  ·  /skills  /plugins  /mcp  /provider" />
+        <text selectable={false} fg={palette.text} content="p k  ·  /skills  /plugins  /mcp  /provider" />
       </box>
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-        <text fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
+        <text selectable={false} fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
       </box>
       <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
         {groupTranscript(entries).map((item) => item.kind === "entry"
@@ -2176,7 +2261,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
         </box>}
         <box style={{ flexDirection: "row", height: 1 }}>
-          <text fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
+          <text selectable={false} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
           <textarea id="composer" ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
@@ -2198,8 +2283,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-      <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
-          <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
+      <text selectable={false} fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
+          <text selectable={false} fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
       {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
@@ -2244,6 +2329,26 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>)}
         <text fg={palette.dim} content={question.answering ? "Sending answer…" : question.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
       </box>}
+      <SessionManager
+        open={sessionManagerOpen}
+        onClose={() => setSessionManagerOpen(false)}
+        send={(type, payload) => transport.send(type as any, payload)}
+        event={sessionManagerEvent}
+        onLoad={(session: ManagedSession) => {
+          if (busy || turnActive.current || question || maintenance) {
+            addEntry("system", "Finish the active turn before opening a saved session.")
+            return
+          }
+          setSessionManagerOpen(false)
+          historySessionID.current = ""
+          pendingHistoryRequest.current = ""
+          setHistoryEntries([])
+          setHistoryHasEarlier(false)
+          setHistoryBeforeSequence(0)
+          transport.send("attach", { session_id: session.id })
+          setEntries([{ id: entryId.current++, role: "system", text: `Attaching to session ${session.id.slice(0, 8)}…` }])
+        }}
+      />
     </box>
   )
 }

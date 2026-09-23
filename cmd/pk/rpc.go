@@ -1114,17 +1114,19 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "history cursor belongs to a different or no-longer-active session", "recoverable": true})
 			return
 		}
-		store, err := localfile.New(sessionDir)
-		if err != nil {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
-			return
-		}
-		entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, request.SessionID, request.BeforeSequence)
-		if err != nil {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
-			return
-		}
-		_ = s.emit(msg.ID, "history_page", map[string]any{"session_id": request.SessionID, "entries": entries, "has_earlier": hasEarlier, "before_sequence": beforeSequence, "truncated": truncated})
+		s.startSkillOperation(msg.ID, "history page", "history_page_started", "history_page", map[string]any{"session_id": request.SessionID}, func(ctx context.Context) (any, error) {
+			store, err := localfile.New(sessionDir)
+			if err != nil {
+				return nil, err
+			}
+			entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(ctx, store, request.SessionID, request.BeforeSequence)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"session_id": request.SessionID, "entries": entries, "has_earlier": hasEarlier, "before_sequence": beforeSequence, "truncated": truncated}, nil
+		})
+	case "history_cancel":
+		s.cancelRPCOperation(msg.ID, "history page", "history_cancel_requested")
 	case "plugins_list":
 		payload, err := listRPCPlugins(userPluginService())
 		if err != nil {
