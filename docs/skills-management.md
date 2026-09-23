@@ -1,6 +1,8 @@
 # Managed skill sources
 
-`pk` can search the public skills.sh directory and install a skill selected from a public GitHub repository. Managed files live under `$PK_HOME/skills` (normally `~/.pk/skills`) and are included in the skill directories for new sessions.
+Use `pk skills search QUERY` to search skills.sh, `pk skills list` to inspect local installs, `pk skills add SOURCE [SKILL]` to install from a public GitHub repository, and `pk skills remove NAME` to remove a pk-managed skill. Managed files live under `$PK_HOME/skills` (normally `~/.pk/skills`) and are included in the skill directories for new sessions.
+
+When a source has one discovered skill, `add` selects it directly. If there are several, it prints their names and paths; pass one of those as `SKILL` to choose explicitly. Skill instructions apply to new sessions; use `/new` in the TUI after a change.
 
 Search uses `https://skills.sh/api/search`, the unauthenticated endpoint currently called by the upstream [`vercel-labs/skills` CLI](https://github.com/vercel-labs/skills/blob/main/src/find.ts). This endpoint is not the documented stable API: skills.sh documents `/api/v1/skills/search` separately and requires Vercel OIDC for it. Search is best-effort; if it is unavailable, browse a repository directly with `owner/repo` or a public GitHub/skills.sh skill URL.
 

@@ -1,0 +1,19 @@
+# Privacy and data handling
+
+`pk` has no first-party usage analytics or crash-reporting service. The OpenTUI process inherits `DO_NOT_TRACK=1` from the Go launcher; Bun documents that this opts out of its anonymous crash reports. A regression test checks that a caller's `DO_NOT_TRACK=0` does not override the launcher setting. This covers pk and its bundled UI, not model providers, extensions, MCP servers, or other external services.
+
+Network access follows an explicit action or configured feature:
+
+- Model requests send the current prompt, captured session context, tool declarations, and selected tool results to the configured model provider. ChatGPT login/refresh contacts OpenAI authentication endpoints.
+- A model tool call to web search or fetch sends the search query or requested URLs/content to TinyFish. The feature requires `TINYFISH_API_KEY` and is included only when configured.
+- Skill search sends the search terms to skills.sh. Skill discovery/install reads the selected public GitHub source. These actions run only when requested.
+- Updates and extension discovery/install contact GitHub when invoked. Rollback selects a locally installed release. Configured remote MCP servers and explicitly enabled extensions can make their own network requests when used; pk cannot promise their data handling.
+- ImageGen contacts the selected Codex image driver only when the user/model invokes that tool. There is no automatic startup update poll.
+
+Conversation history and credentials are stored locally; file permissions do not encrypt them at rest. pk stores its config, sessions, task records, cached context snapshots, attachments, and credentials under `$PK_HOME` (normally `~/.pk`); the pk home directory is created with owner-only permissions, and sensitive files use owner-only modes. Saved history and snapshots include prompts, model responses, tool calls/results, and loaded skill/tool context. Detached-task output is also persisted. Full command output artifacts may be stored under the workspace's `.pk` data directory. User-selected attachment text is included in the next model request; images may be sent to a vision-capable provider. Clipboard capture happens only after an explicit paste action.
+
+pk reads workspace instructions and discovers configured skills when constructing context. Further file access can occur through model-invoked tools. Bash and installed extensions run with the operating-system permissions of the pk user; a workspace is not a security sandbox. Treat third-party skills, extensions, and MCP tools as code/instructions you have chosen to trust.
+
+Use the history controls to review saved sessions. To erase remaining local pk state, exit pk and remove the relevant data under `$PK_HOME` and any workspace `.pk` artifacts you no longer want. This also removes local credentials and task records; it does not revoke credentials held by a provider or delete provider-side request history. pk does not currently provide a single “erase all data” command.
+
+The UI dependency is OpenTUI on Bun. Bun's telemetry setting is equivalent to `DO_NOT_TRACK`, and its documentation says the setting controls anonymous crash reports: [Bun telemetry configuration](https://bun.sh/docs/runtime/bunfig#telemetry).

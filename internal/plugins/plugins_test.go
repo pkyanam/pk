@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -240,5 +241,81 @@ func TestLoadRejectsPrivateConfigCorruption(t *testing.T) {
 	}
 	if _, err := service.List(); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported config version error=%v", err)
+	}
+}
+
+func TestRemoveForgetsExternalManifestWithoutDeletingIt(t *testing.T) {
+	home := t.TempDir()
+	external := filepath.Join(t.TempDir(), "manifest.json")
+	writePluginManifestForTest(t, external, "external")
+	service := Service{Home: home}
+	if _, err := service.Enable(external); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Remove("external"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(external); err != nil {
+		t.Fatalf("external manifest was deleted: %v", err)
+	}
+	plugins, err := service.List()
+	if err != nil || len(plugins) != 0 {
+		t.Fatalf("plugins after removal=%+v err=%v", plugins, err)
+	}
+}
+
+func TestRemoveDeletesOnlyManagedPluginFolder(t *testing.T) {
+	home := t.TempDir()
+	pluginDir := filepath.Join(home, "plugins", "managed")
+	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(pluginDir, "manifest.json")
+	writePluginManifestForTest(t, manifest, "managed")
+	service := Service{Home: home}
+	if _, err := service.Enable(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Remove("managed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pluginDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed plugin directory still exists: %v", err)
+	}
+}
+
+func TestRemoveRefusesSymlinkedManagedRoot(t *testing.T) {
+	home, externalRoot := t.TempDir(), t.TempDir()
+	if err := os.Symlink(externalRoot, filepath.Join(home, "plugins")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	pluginDir := filepath.Join(externalRoot, "managed")
+	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(pluginDir, "manifest.json")
+	writePluginManifestForTest(t, manifest, "managed")
+	service := Service{Home: home}
+	if _, err := service.Enable(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Remove("managed"); err == nil {
+		t.Fatal("remove accepted symlinked managed root")
+	}
+	if _, err := os.Stat(manifest); err != nil {
+		t.Fatalf("external plugin was deleted: %v", err)
+	}
+}
+
+func writePluginManifestForTest(t *testing.T, path, id string) {
+	t.Helper()
+	manifest := testManifest(id, "tool_"+id)
+	manifest.Executable = "/bin/echo"
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

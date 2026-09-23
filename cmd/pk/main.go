@@ -44,6 +44,10 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runACPCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "mcp":
 		return runMCPCommand(ctx, args[1:], stdout, stderr)
+	case "plugin":
+		return runPluginCommand(ctx, args[1:], stdout, stderr)
+	case "skills":
+		return runSkillsCommand(ctx, args[1:], stdout, stderr)
 	case "provider":
 		return runProviderCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "update", "rollback", "version", "__install-artifacts":
@@ -559,6 +563,9 @@ func usage(out io.Writer) {
   pk rpc                     start the JSONL frontend backend
   pk acp                     serve Agent Client Protocol v1 over stdio
   pk mcp list|add|remove     manage explicitly configured MCP servers
+  pk plugin discover|add     discover and install pk extensions from a source
+  pk plugin list|enable|disable|remove ID
+  pk skills search QUERY | list | add SOURCE [SKILL] | remove NAME
   pk provider list|add|use  manage model providers
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...

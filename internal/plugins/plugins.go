@@ -171,6 +171,90 @@ func (s Service) Disable(id string) error {
 	})
 }
 
+// Remove forgets a plugin ID atomically. Managed content under Home/plugins/ID
+// is removed after the config update; explicit external manifest paths are
+// never deleted by this method.
+func (s Service) Remove(id string) error {
+	id = strings.TrimSpace(id)
+	if !pluginIDPattern.MatchString(id) {
+		return errors.New("plugin ID is required and must be a valid plugin ID")
+	}
+	return s.withLock(func() error {
+		cfg, err := s.load()
+		if err != nil {
+			return err
+		}
+		index := -1
+		for i := range cfg.Plugins {
+			if cfg.Plugins[i].ID == id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return fmt.Errorf("plugin %q is not registered", id)
+		}
+		manifestPath := cfg.Plugins[index].ManifestPath
+		cfg.Plugins = append(cfg.Plugins[:index], cfg.Plugins[index+1:]...)
+		if err := s.save(cfg); err != nil {
+			return err
+		}
+		managedRoot := filepath.Join(s.configPathHome(), "plugins")
+		managedDir := filepath.Join(managedRoot, id)
+		if !pathWithin(managedDir, manifestPath) {
+			return nil // external manifest entry: forget-only.
+		}
+		info, err := os.Lstat(managedDir)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect managed plugin directory: %w", err)
+		}
+		rootInfo, err := os.Lstat(managedRoot)
+		if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+			return errors.New("plugin entry was removed but managed plugin root is not a real directory; files were left in place")
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("managed plugin path is not a real directory; config entry was removed but files were left in place")
+		}
+		if err := os.RemoveAll(managedDir); err != nil {
+			return fmt.Errorf("plugin entry was removed but managed files could not be deleted: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s Service) configPathHome() string {
+	home, err := filepath.Abs(s.Home)
+	if err != nil {
+		return s.Home
+	}
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		return resolved
+	}
+	return home
+}
+
+func pathWithin(root, target string) bool {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = resolved
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
+		target = resolved
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // EnabledManifests returns only explicitly enabled, currently valid manifests.
 // Invalid entries are returned as diagnostics while valid entries remain usable.
 func (s Service) EnabledManifests() ([]extensions.Manifest, []error, error) {

@@ -43,6 +43,9 @@ func launchOpenTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 		"PK_EXECUTABLE":            executable,
 		"PK_RELOAD_TOKEN":          token,
 		"PK_RELOAD_SUPERVISOR_PID": strconv.Itoa(os.Getpid()),
+		// Bun enables anonymous crash reports by default. Keep the frontend's
+		// runtime opt-out explicit regardless of the caller's environment.
+		"DO_NOT_TRACK": "1",
 	}
 	for name, flagName := range map[string]string{"PK_MODEL": "--model", "PK_EFFORT": "--effort", "PK_WORKSPACE": "--workspace", "PK_SESSION": "--session"} {
 		for i, arg := range args {
