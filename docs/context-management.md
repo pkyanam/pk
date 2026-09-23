@@ -1,7 +1,6 @@
 # Context management
 
-The context manager is implemented in the current source tree and is pending
-release. In the TUI, open `/usage` to see the selected model's context budget,
+The context manager is available in v0.1.5. In the TUI, open `/usage` to see the selected model's context budget,
 the latest request composition, and recorded provider usage. Press `E` to edit
 limits or `C` to compact saved history. Compaction runs only while the
 foreground session is idle. It does not add a synthetic conversation turn.
