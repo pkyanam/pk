@@ -599,43 +599,48 @@ func userHome() string {
 
 func usage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
-  pk [OPTIONS]               start an interactive agent in the current directory
-  pk --plain [OPTIONS]       use the line-based interactive fallback
-  pk -p PROMPT [OPTIONS]     send one prompt and exit
-  pk rpc                     start the JSONL frontend backend
-  pk acp                     serve Agent Client Protocol v1 over stdio
-  pk mcp list|add|remove     manage explicitly configured MCP servers
-  pk plugin discover|add     discover and install pk extensions from a source
-  pk plugin list|enable|disable|remove ID
-  pk skills search QUERY | list | add SOURCE [SKILL] | remove NAME
-  pk provider list|add|use  manage model providers
-  pk web status|setup|configure|clear
-  pk task create -p PROMPT   start a durable background task
+  pk [OPTIONS]                  open the full-screen TUI in the current directory
+  pk --plain [OPTIONS]          use the line-based interactive interface
+  pk -p PROMPT [OPTIONS]        run one prompt and exit (canonical one-shot form)
+
+Start work:
+  pk task create -p PROMPT      start a durable background task
   pk task list|status|attach|cancel|resume ...
-  pk config [show|set model|set effort|set context-policy|image-driver VALUE]
-  pk login
-  pk logout
-  pk status
-  pk update [--source DIR]    update from official GitHub main, or local DIR
-  pk --update                 alias for pk update
-  pk rollback
-  pk version
-  pk run -p PROMPT [OPTIONS]
+  pk -p PROMPT --jsonl          emit assistant and tool events as JSONL
+
+Setup:
+  pk login | logout | status    manage ChatGPT login
+  pk config [show|set ...]      view or change model, effort, context policy, image driver
+  pk provider list|add|use ...  configure and select an OpenAI-compatible provider
+
+Tools and integrations:
+  pk skills search|list|add|remove ...  install portable SKILL.md resources
+  pk plugin discover|add|list|enable|disable|remove ...  manage pk extensions
+  pk mcp list|add|remove ...    manage explicitly configured MCP servers
+  pk web status|setup|configure|clear  configure TinyFish Search and Fetch
+  pk acp                        serve the supported Agent Client Protocol v1 subset over stdio
+
+Maintenance and automation:
+  pk update [--source DIR]      install the latest official paired release; DIR builds local source
+  pk --update                   alias for pk update
+  pk rollback | version
+  pk rpc                        run the versioned JSONL backend over stdin/stdout
 
 Run options:
-  --model MODEL              model ID (default gpt-6-luna)
-  --effort EFFORT            reasoning effort (default medium)
-  --context-policy POLICY   full tool output or compact large Bash results (default from config)
-  --workspace DIR            working directory for tools
-  --session ID               resume a saved session
-  --file PATH                attach a text, PDF, or image (repeatable; relative to workspace)
-  --extension MANIFEST       load an extension manifest explicitly (repeatable; new sessions only)
-  --image-driver MODEL       explicitly enable ImageGen using a separate model (new sessions only)
-  --provider ID|native       select a configured model provider for this run
-  --use-codex                reuse existing Codex credentials read-only
-  --jsonl                    write assistant and tool events as JSONL
+  --model MODEL                 model ID (default gpt-6-luna)
+  --effort EFFORT               reasoning effort (default medium)
+  --context-policy POLICY       full tool output or compact large Bash results
+  --workspace DIR               working directory for tools
+  --session ID                  resume a saved session
+  --file PATH                   attach a text, PDF, or image (repeatable)
+  --extension MANIFEST          load an extension manifest explicitly (repeatable)
+  --image-driver MODEL          opt in to ImageGen with a separate model
+  --provider ID|native          select a configured provider or native ChatGPT
+  --use-codex                   reuse existing Codex credentials read-only
 
-Interactive commands: /help, /exit, /quit. Ctrl-C cancels the current run and exits.`)
+TUI commands: /help, /exit, /new, /tasks, /sessions, /model, /effort,
+              /provider, /plugins, /mcp, /skills, /history, /update.
+Plain-mode commands: /help, /exit, /quit. Ctrl-C cancels the active run and exits.`)
 }
 
 // codexAdapter checks pk-owned credentials before each model request. A
