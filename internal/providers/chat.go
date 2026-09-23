@@ -60,7 +60,11 @@ func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ 
 	}
 	body := map[string]any{"model": request.Model.ID, "messages": messages, "stream": true, "stream_options": map[string]any{"include_usage": true}}
 	if request.Model.MaxOutputTokens != nil {
-		body["max_completion_tokens"] = *request.Model.MaxOutputTokens
+		if adapter.provider.Protocol == ProtocolCloudflareWorkersAI {
+			body["max_tokens"] = *request.Model.MaxOutputTokens
+		} else {
+			body["max_completion_tokens"] = *request.Model.MaxOutputTokens
+		}
 	}
 	if adapter.provider.SupportsReasoningEffort && request.Model.ReasoningEffort != "" {
 		if !request.Model.ReasoningEffort.Valid() {
@@ -105,7 +109,11 @@ func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ 
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return llm.Response{}, fmt.Errorf("chat completion endpoint returned HTTP %d", response.StatusCode)
+		message := fmt.Sprintf("chat completion endpoint returned HTTP %d", response.StatusCode)
+		if adapter.provider.Protocol == ProtocolCloudflareWorkersAI && len(request.Tools) > 0 && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity) {
+			message += "; this Workers AI model may not support function calling—choose a model marked for function calling in the model catalog"
+		}
+		return llm.Response{}, errors.New(message)
 	}
 	return decodeChatStream(ctx, response.Body)
 }

@@ -59,7 +59,7 @@ func NewClient(provider Provider) (*Client, error) {
 			return nil, err
 		}
 		client.remote, client.adapter = remote, adapter
-	case ProtocolChatCompletions:
+	case ProtocolChatCompletions, ProtocolCloudflareWorkersAI:
 		client.chat = newChatAdapter(provider, key, baseURL)
 		client.adapter = client.chat
 	case ProtocolAnthropic:
@@ -176,6 +176,9 @@ func (provider Provider) Models(ctx context.Context) ([]Model, error) {
 	}
 	if provider.Protocol == ProtocolAnthropic {
 		return listAnthropicModels(ctx, baseURL, key)
+	}
+	if provider.Protocol == ProtocolCloudflareWorkersAI {
+		return listCloudflareWorkersAIModels(ctx, baseURL, key)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {

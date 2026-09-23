@@ -19,6 +19,7 @@ type Preset struct {
 	SupportsReasoningEffort bool     `json:"supports_reasoning_effort"`
 	DocsURL                 string   `json:"docs_url"`
 	CompatibilityNote       string   `json:"compatibility_note"`
+	RequiresAccountID       bool     `json:"requires_account_id,omitempty"`
 }
 
 const openAICompatibilityNote = "OpenAI-style API compatibility; available models and supported features vary by provider and model."
@@ -34,6 +35,12 @@ var presetCatalog = []Preset{
 		ID: "cerebras", Label: "Cerebras", APIStyle: openAIStyle, Protocol: ProtocolChatCompletions,
 		BaseURL: "https://api.cerebras.ai/v1", APIKeyEnv: "CEREBRAS_API_KEY",
 		DocsURL: "https://inference-docs.cerebras.ai/", CompatibilityNote: openAICompatibilityNote,
+	},
+	{
+		ID: "cloudflare-workers-ai", Label: "Cloudflare Workers AI", APIStyle: openAIStyle, Protocol: ProtocolCloudflareWorkersAI,
+		BaseURL: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", APIKeyEnv: "CLOUDFLARE_API_TOKEN", RequiresAccountID: true,
+		DocsURL:           "https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/",
+		CompatibilityNote: "Direct Workers AI account endpoint using Chat Completions; model availability and tool calling vary by model. This is not AI Gateway.",
 	},
 	{
 		ID: "gemini", Label: "Google Gemini", APIStyle: openAIStyle, Protocol: ProtocolChatCompletions,
@@ -92,6 +99,11 @@ func PresetByID(id string) (Preset, bool) {
 // provider ID defaults to the preset's ID; model remains empty for live
 // discovery, and effort uses pk's normal configured default.
 func NewPresetProvider(presetID, providerID, apiKey, model, effort string) (Provider, error) {
+	return NewPresetProviderWithAccountID(presetID, providerID, apiKey, "", model, effort)
+}
+
+// NewPresetProviderWithAccountID constructs presets that need an account-scoped endpoint.
+func NewPresetProviderWithAccountID(presetID, providerID, apiKey, accountID, model, effort string) (Provider, error) {
 	preset, ok := PresetByID(presetID)
 	if !ok {
 		return Provider{}, fmt.Errorf("unknown provider preset %q", presetID)
@@ -100,16 +112,26 @@ func NewPresetProvider(presetID, providerID, apiKey, model, effort string) (Prov
 	if providerID == "" {
 		providerID = preset.ID
 	}
+	accountID = strings.TrimSpace(accountID)
+	baseURL := preset.BaseURL
+	if preset.RequiresAccountID {
+		if len(accountID) != 32 || !isHexAccountID(accountID) {
+			return Provider{}, fmt.Errorf("Cloudflare account ID must be 32 hexadecimal characters")
+		}
+		baseURL = "https://api.cloudflare.com/client/v4/accounts/" + strings.ToLower(accountID) + "/ai/v1"
+	} else if accountID != "" {
+		return Provider{}, fmt.Errorf("preset %q does not use an account ID", presetID)
+	}
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" || len(apiKey) > 4096 {
 		return Provider{}, fmt.Errorf("API key is required and must be at most 4096 bytes")
 	}
 	defaultEffort := strings.ToLower(strings.TrimSpace(effort))
-	if defaultEffort == "" && preset.Protocol != ProtocolAnthropic {
+	if defaultEffort == "" && preset.Protocol != ProtocolAnthropic && preset.Protocol != ProtocolCloudflareWorkersAI {
 		defaultEffort = config.DefaultEffort
 	}
 	provider := Provider{
-		ID: providerID, Protocol: preset.Protocol, BaseURL: preset.BaseURL,
+		ID: providerID, Protocol: preset.Protocol, BaseURL: baseURL,
 		APIKey: apiKey, DefaultModel: strings.TrimSpace(model), DefaultEffort: defaultEffort,
 		SupportsReasoningEffort: preset.SupportsReasoningEffort,
 	}
@@ -117,4 +139,13 @@ func NewPresetProvider(presetID, providerID, apiKey, model, effort string) (Prov
 		return Provider{}, err
 	}
 	return provider, nil
+}
+
+func isHexAccountID(value string) bool {
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

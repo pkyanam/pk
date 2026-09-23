@@ -13,12 +13,13 @@ Available starting with v0.1.3. Use `/provider setup` (or choose **Connect a pro
    a prompt, pk starts a fresh session automatically and labels that transition in the UI; otherwise
    the choice applies to the new session already being created.
 
-The catalog currently contains nine presets:
+The catalog currently contains ten presets:
 
 | Preset | API | Protocol |
 | --- | --- | --- |
 | Anthropic | Native Anthropic Messages | `anthropic_messages` |
 | Cerebras | OpenAI-compatible | `chat_completions` |
+| Cloudflare Workers AI | OpenAI-compatible Chat Completions | `cloudflare_workers_ai` |
 | Google Gemini | OpenAI-compatible | `chat_completions` |
 | Groq | OpenAI-compatible | `chat_completions` |
 | Mistral | OpenAI-compatible | `chat_completions` |
@@ -68,8 +69,35 @@ printf '%s' "$MY_MODEL_API_KEY" | pk provider add --id team \
 Use `pk provider models ID` to query the configured endpoint's `/models` route, `pk provider use ID`
 to select the default for new runs, `pk provider use native` to return to ChatGPT/Codex, and
 `pk provider remove ID` to delete a provider. Supported protocols are `responses`,
-`chat_completions`, and `anthropic_messages`. Set
+`chat_completions`, `anthropic_messages`, and `cloudflare_workers_ai`. Set
 `--reasoning-effort` only when a compatible endpoint accepts that request field.
+
+### Cloudflare Workers AI
+
+Setup references: [Cloudflare REST API setup](https://developers.cloudflare.com/workers-ai/get-started/rest-api/) and [OpenAI compatibility](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/).
+
+Workers AI is configured as a direct Cloudflare account endpoint; this setup does not use AI
+Gateway. It needs a Cloudflare account ID and an API token with Workers AI access. The provider
+uses Cloudflare's OpenAI-compatible Chat Completions endpoint for streamed text and tool calls.
+Model discovery uses Cloudflare's account-scoped model catalog and returns text-generation model
+names such as `@cf/...`; catalog availability does not guarantee a model is enabled for the account.
+Tool support varies by model, and pk shows the function-calling badge only when the catalog reports
+it. If a selected model rejects tool calls, choose one marked for function calling.
+
+In the TUI, choose **Cloudflare Workers AI**, enter the 32-character account ID, paste the API token
+into the masked field, and choose a discovered model. The token is stored in pk's private provider
+config. CLI setup is also available without putting the token in shell history or process arguments:
+
+```sh
+printf '%s' "$CLOUDFLARE_API_TOKEN" | pk provider add \
+  --preset cloudflare-workers-ai \
+  --account-id 0123456789abcdef0123456789abcdef \
+  --api-key-stdin
+pk provider models cloudflare-workers-ai
+```
+
+The integration is verified with local HTTP fixtures for setup, catalog parsing, streaming, and a
+tool-call/result round trip. No live Cloudflare account request is part of these tests.
 
 Provider records live in `~/.pk/providers.json` (or `$PK_HOME/providers.json`). The file is protected
 with mode `0600` inside pk's private directory; API keys stored there are **not encrypted**. You can

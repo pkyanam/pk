@@ -1637,7 +1637,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		store := rpcProviderStore()
-		provider, err := putRPCProviderPreset(store, request.PresetID, id, request.APIKey, request.DefaultModel, request.DefaultEffort)
+		provider, err := putRPCProviderPresetWithAccount(store, request.PresetID, id, request.APIKey, request.AccountID, request.DefaultModel, request.DefaultEffort)
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return

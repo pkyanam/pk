@@ -128,6 +128,17 @@ func TestRPCProviderPresetAddStoresKeyWithoutEchoAndPreservesDefaults(t *testing
 	if got.APIKey != "new-secret" || got.DefaultModel != "old-model" || got.DefaultEffort != "low" {
 		t.Fatalf("preset reconnect lost credentials/defaults: %+v", got)
 	}
+	accountID := "0123456789abcdef0123456789abcdef"
+	server.handle(rpcMessage{Version: 1, ID: "add-cloudflare", Type: "provider_preset_add", Payload: json.RawMessage(`{"preset_id":"cloudflare-workers-ai","account_id":"` + accountID + `","api_key":"cloudflare-private-token"}`)}, make(chan turnDone, 1))
+	cloudflareUpdated := readRPCEvent(t, sink)
+	cloudflareJSON, _ := json.Marshal(cloudflareUpdated.Payload)
+	if cloudflareUpdated.Type != "providers_updated" || strings.Contains(string(cloudflareJSON), "cloudflare-private-token") {
+		t.Fatalf("Workers AI setup response=%+v json=%s", cloudflareUpdated, cloudflareJSON)
+	}
+	cloudflare, err := store.Get("cloudflare-workers-ai")
+	if err != nil || cloudflare.Protocol != providers.ProtocolCloudflareWorkersAI || cloudflare.APIKey != "cloudflare-private-token" || cloudflare.BaseURL != "https://api.cloudflare.com/client/v4/accounts/"+accountID+"/ai/v1" {
+		t.Fatalf("Workers AI config=%+v err=%v", cloudflare, err)
+	}
 }
 
 func TestRPCProviderSelectOnlyBeforeSessionPrompt(t *testing.T) {

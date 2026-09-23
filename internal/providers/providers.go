@@ -19,9 +19,10 @@ import (
 type Protocol string
 
 const (
-	ProtocolResponses       Protocol = "responses"
-	ProtocolChatCompletions Protocol = "chat_completions"
-	ProtocolAnthropic       Protocol = "anthropic_messages"
+	ProtocolResponses           Protocol = "responses"
+	ProtocolChatCompletions     Protocol = "chat_completions"
+	ProtocolAnthropic           Protocol = "anthropic_messages"
+	ProtocolCloudflareWorkersAI Protocol = "cloudflare_workers_ai"
 )
 
 var providerIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
@@ -54,14 +55,19 @@ func (provider Provider) Validate() error {
 	if !providerIDPattern.MatchString(provider.ID) {
 		return fmt.Errorf("invalid provider ID %q", provider.ID)
 	}
-	if provider.Protocol != ProtocolResponses && provider.Protocol != ProtocolChatCompletions && provider.Protocol != ProtocolAnthropic {
-		return fmt.Errorf("provider %q protocol must be responses, chat_completions, or anthropic_messages", provider.ID)
+	if provider.Protocol != ProtocolResponses && provider.Protocol != ProtocolChatCompletions && provider.Protocol != ProtocolAnthropic && provider.Protocol != ProtocolCloudflareWorkersAI {
+		return fmt.Errorf("provider %q uses an unsupported protocol", provider.ID)
 	}
 	base, err := NormalizeBaseURL(provider.BaseURL)
 	if err != nil {
 		return fmt.Errorf("provider %q: %w", provider.ID, err)
 	}
 	_ = base
+	if provider.Protocol == ProtocolCloudflareWorkersAI {
+		if _, err := cloudflareAccountID(base); err != nil {
+			return fmt.Errorf("provider %q: %w", provider.ID, err)
+		}
+	}
 	if provider.APIKey != "" && provider.APIKeyEnv != "" {
 		return fmt.Errorf("provider %q must use either an API key value or an environment variable, not both", provider.ID)
 	}
@@ -78,6 +84,9 @@ func (provider Provider) Validate() error {
 		return fmt.Errorf("provider %q has an unsupported default reasoning effort", provider.ID)
 	}
 	if provider.Protocol == ProtocolAnthropic && provider.SupportsReasoningEffort {
+		return fmt.Errorf("provider %q does not support the generic reasoning-effort option", provider.ID)
+	}
+	if provider.Protocol == ProtocolCloudflareWorkersAI && provider.SupportsReasoningEffort {
 		return fmt.Errorf("provider %q does not support the generic reasoning-effort option", provider.ID)
 	}
 	return nil
@@ -161,13 +170,16 @@ func Summarize(provider Provider) Summary {
 }
 
 type Model struct {
-	ID            string `json:"id"`
-	Object        string `json:"object,omitempty"`
-	OwnedBy       string `json:"owned_by,omitempty"`
-	ContextTokens *int64 `json:"context_tokens,omitempty"`
-	InputTokens   *int64 `json:"input_tokens,omitempty"`
-	OutputTokens  *int64 `json:"output_tokens,omitempty"`
-	LimitsSource  string `json:"limits_source,omitempty"`
+	ID            string   `json:"id"`
+	Object        string   `json:"object,omitempty"`
+	OwnedBy       string   `json:"owned_by,omitempty"`
+	Task          string   `json:"task,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	ContextTokens *int64   `json:"context_tokens,omitempty"`
+	InputTokens   *int64   `json:"input_tokens,omitempty"`
+	OutputTokens  *int64   `json:"output_tokens,omitempty"`
+	LimitsSource  string   `json:"limits_source,omitempty"`
 }
 
 // UnmarshalJSON keeps optional advertised limits when a provider exposes them.
@@ -177,10 +189,13 @@ type Model struct {
 // capability catalog.
 func (model *Model) UnmarshalJSON(data []byte) error {
 	var base struct {
-		ID           string `json:"id"`
-		Object       string `json:"object"`
-		OwnedBy      string `json:"owned_by"`
-		LimitsSource string `json:"limits_source"`
+		ID           string   `json:"id"`
+		Object       string   `json:"object"`
+		OwnedBy      string   `json:"owned_by"`
+		Task         string   `json:"task"`
+		Description  string   `json:"description"`
+		Capabilities []string `json:"capabilities"`
+		LimitsSource string   `json:"limits_source"`
 	}
 	if err := json.Unmarshal(data, &base); err != nil {
 		return err
@@ -189,7 +204,8 @@ func (model *Model) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	model.ID, model.Object, model.OwnedBy, model.LimitsSource = base.ID, base.Object, base.OwnedBy, base.LimitsSource
+	model.ID, model.Object, model.OwnedBy = base.ID, base.Object, base.OwnedBy
+	model.Task, model.Description, model.Capabilities, model.LimitsSource = base.Task, base.Description, base.Capabilities, base.LimitsSource
 	model.ContextTokens = firstPositiveInteger(fields, "context_tokens", "context_window", "context_length", "max_model_len")
 	model.InputTokens = firstPositiveInteger(fields, "input_tokens", "input_token_limit", "inputTokenLimit", "max_input_tokens")
 	model.OutputTokens = firstPositiveInteger(fields, "output_tokens", "output_token_limit", "outputTokenLimit", "max_output_tokens", "max_tokens")

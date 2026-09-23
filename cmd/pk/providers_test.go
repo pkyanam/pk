@@ -38,6 +38,25 @@ func TestProviderCommandsStoreKeyFromStdinAndListRedactedSummary(t *testing.T) {
 	}
 }
 
+func TestProviderCLIAddsCloudflareWorkersAIPresetFromStdin(t *testing.T) {
+	store := providers.Store{Home: filepath.Join(t.TempDir(), "pk")}
+	secret := "cloudflare-cli-token-fixture"
+	var out, errOut strings.Builder
+	code := runProviderCommandWithStore(context.Background(), []string{"add", "--preset", "cloudflare-workers-ai", "--account-id", "0123456789abcdef0123456789abcdef", "--api-key-stdin"}, strings.NewReader(secret), &out, &errOut, store)
+	if code != 0 || !strings.Contains(out.String(), "Saved provider") || strings.Contains(out.String(), secret) || strings.Contains(errOut.String(), secret) {
+		t.Fatalf("Workers AI CLI setup code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	provider, err := store.Get("cloudflare-workers-ai")
+	if err != nil || provider.APIKey != secret || provider.Protocol != providers.ProtocolCloudflareWorkersAI || !strings.Contains(provider.BaseURL, "/accounts/0123456789abcdef0123456789abcdef/ai/v1") || provider.DefaultEffort != "" {
+		t.Fatalf("stored Workers AI provider=%+v err=%v", provider, err)
+	}
+	var invalidOut, invalidErr strings.Builder
+	code = runProviderCommandWithStore(context.Background(), []string{"add", "--preset", "cloudflare-workers-ai", "--account-id", "bad", "--api-key-stdin"}, strings.NewReader("token"), &invalidOut, &invalidErr, store)
+	if code == 0 || strings.Contains(invalidErr.String(), "token") {
+		t.Fatalf("invalid Cloudflare account setup code=%d out=%q err=%q", code, invalidOut.String(), invalidErr.String())
+	}
+}
+
 func TestProviderSetPreservesCredentialsOnlyForSameEndpoint(t *testing.T) {
 	store := providers.Store{Home: filepath.Join(t.TempDir(), "pk")}
 	if err := store.Put(providers.Provider{ID: "custom", Protocol: providers.ProtocolChatCompletions, BaseURL: "https://old.example.test/v1", APIKey: "old-secret", DefaultModel: "old-model"}); err != nil {

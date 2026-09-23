@@ -18,7 +18,7 @@ func TestPresetCatalogIsStableCompatibleAndSecretFree(t *testing.T) {
 			t.Fatalf("empty or duplicate preset ID: %+v", preset)
 		}
 		seen[preset.ID] = true
-		if preset.APIStyle == "openai_compatible" && preset.Protocol != ProtocolResponses && preset.Protocol != ProtocolChatCompletions {
+		if preset.APIStyle == "openai_compatible" && preset.Protocol != ProtocolResponses && preset.Protocol != ProtocolChatCompletions && preset.Protocol != ProtocolCloudflareWorkersAI {
 			t.Errorf("preset %s uses unhandled protocol %q", preset.ID, preset.Protocol)
 		}
 		if preset.ID == "anthropic" && (preset.APIStyle != "anthropic_messages" || preset.Protocol != ProtocolAnthropic || !strings.Contains(strings.ToLower(preset.CompatibilityNote), "not an openai-compatible")) {
@@ -37,6 +37,9 @@ func TestPresetCatalogIsStableCompatibleAndSecretFree(t *testing.T) {
 	}
 	if preset, ok := PresetByID("anthropic"); !ok || preset.APIStyle != "anthropic_messages" {
 		t.Fatal("Anthropic must be listed explicitly as its native Messages API")
+	}
+	if preset, ok := PresetByID("cloudflare-workers-ai"); !ok || preset.Protocol != ProtocolCloudflareWorkersAI || !preset.RequiresAccountID {
+		t.Fatal("Workers AI preset must be a separately labeled account-scoped direct endpoint")
 	}
 	presets[0].Label = "mutated"
 	if Presets()[0].Label == "mutated" {

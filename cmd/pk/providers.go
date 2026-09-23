@@ -132,8 +132,10 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 	flags := flag.NewFlagSet("provider add", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	id := flags.String("id", "", "provider ID")
-	protocol := flags.String("protocol", "", "responses, chat_completions, or anthropic_messages")
+	protocol := flags.String("protocol", "", "responses, chat_completions, anthropic_messages, or cloudflare_workers_ai")
 	baseURL := flags.String("base-url", "", "OpenAI-compatible API root URL (bare hosts default to /v1)")
+	presetID := flags.String("preset", "", "use a built-in provider preset")
+	accountID := flags.String("account-id", "", "Cloudflare account ID for Workers AI")
 	keyEnv := flags.String("api-key-env", "", "environment variable containing the API key")
 	keyStdin := flags.Bool("api-key-stdin", false, "read an API key from stdin and store it in the private provider config")
 	model := flags.String("model", "", "default model ID")
@@ -141,7 +143,7 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 	reasoning := flags.Bool("reasoning-effort", false, "send reasoning_effort when supported by the provider")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: pk provider add --id ID --protocol responses|chat_completions|anthropic_messages --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort low|medium|high|xhigh|max] [--reasoning-effort]")
+			fmt.Fprintln(stdout, "Usage: pk provider add --id ID --protocol responses|chat_completions|anthropic_messages|cloudflare_workers_ai --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort low|medium|high|xhigh|max] [--reasoning-effort]\n       pk provider add --preset cloudflare-workers-ai --account-id ID --api-key-stdin [--id ID] [--model ID]")
 			return 0
 		}
 		fmt.Fprintf(stderr, "pk provider add: %v\n", err)
@@ -156,6 +158,7 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 		return 2
 	}
 	provider := providers.Provider{ID: *id, Protocol: providers.Protocol(*protocol), BaseURL: *baseURL, APIKeyEnv: strings.TrimSpace(*keyEnv), DefaultModel: strings.TrimSpace(*model), DefaultEffort: strings.TrimSpace(*effort), SupportsReasoningEffort: *reasoning}
+	var apiKey string
 	if *keyStdin {
 		key, err := io.ReadAll(io.LimitReader(input, 4097))
 		if err != nil {
@@ -166,9 +169,27 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 			fmt.Fprintln(stderr, "pk provider add: API key exceeds 4 KiB")
 			return 2
 		}
-		provider.APIKey = strings.TrimSpace(string(key))
+		apiKey = strings.TrimSpace(string(key))
 	}
-	if provider.DefaultEffort == "" {
+	if *presetID != "" {
+		if *protocol != "" || *baseURL != "" || *keyEnv != "" || !*keyStdin {
+			fmt.Fprintln(stderr, "pk provider add: --preset requires --api-key-stdin and cannot be combined with --protocol, --base-url, or --api-key-env")
+			return 2
+		}
+		var err error
+		provider, err = providers.NewPresetProviderWithAccountID(*presetID, *id, apiKey, *accountID, *model, *effort)
+		if err != nil {
+			fmt.Fprintf(stderr, "pk provider add: %v\n", err)
+			return 2
+		}
+	} else {
+		if *accountID != "" {
+			fmt.Fprintln(stderr, "pk provider add: --account-id is only valid with --preset cloudflare-workers-ai")
+			return 2
+		}
+		provider.APIKey = apiKey
+	}
+	if provider.DefaultEffort == "" && provider.Protocol != providers.ProtocolAnthropic && provider.Protocol != providers.ProtocolCloudflareWorkersAI {
 		provider.DefaultEffort = config.DefaultEffort
 	}
 	if !allowUpdate {
@@ -196,5 +217,5 @@ func runProviderPut(ctx context.Context, args []string, input io.Reader, stdout,
 }
 
 func printProviderUsage(out io.Writer) {
-	fmt.Fprintln(out, "Usage: pk provider presets | list | use ID|native | add --id ID --protocol responses|chat_completions|anthropic_messages --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort VALUE] [--reasoning-effort] | models ID | remove ID")
+	fmt.Fprintln(out, "Usage: pk provider presets | list | use ID|native | add --id ID --protocol responses|chat_completions|anthropic_messages|cloudflare_workers_ai --base-url URL [--api-key-env NAME | --api-key-stdin] [--model ID] [--effort VALUE] [--reasoning-effort] | add --preset cloudflare-workers-ai --account-id ID --api-key-stdin [--id ID] [--model ID] | models ID | remove ID")
 }

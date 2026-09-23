@@ -83,12 +83,16 @@ func preserveProviderCredentials(store providers.Store, provider *providers.Prov
 }
 
 func putRPCProviderPreset(store providers.Store, presetID, id, key string, model, effort *string) (providers.Provider, error) {
-	preset, ok := providers.PresetByID(presetID)
+	return putRPCProviderPresetWithAccount(store, presetID, id, key, "", model, effort)
+}
+
+func putRPCProviderPresetWithAccount(store providers.Store, presetID, id, key, accountID string, model, effort *string) (providers.Provider, error) {
+	_, ok := providers.PresetByID(presetID)
 	if !ok {
 		return providers.Provider{}, fmt.Errorf("unknown provider preset")
 	}
 	id = strings.TrimSpace(id)
-	provider, err := providers.NewPresetProvider(presetID, id, key, "", "")
+	provider, err := providers.NewPresetProviderWithAccountID(presetID, id, key, accountID, "", "")
 	if err != nil {
 		return providers.Provider{}, err
 	}
@@ -101,7 +105,8 @@ func putRPCProviderPreset(store providers.Store, presetID, id, key string, model
 			continue
 		}
 		existingBase, _ := providers.NormalizeBaseURL(existing.BaseURL)
-		if existing.Protocol != provider.Protocol || existingBase != preset.BaseURL {
+		newBase, _ := providers.NormalizeBaseURL(provider.BaseURL)
+		if existing.Protocol != provider.Protocol || existingBase != newBase {
 			return providers.Provider{}, fmt.Errorf("provider ID already belongs to a different endpoint")
 		}
 		// Reconnecting with a key alone must not reset the user's model or effort.
@@ -125,6 +130,7 @@ type providerPresetAddRequest struct {
 	PresetID      string  `json:"preset_id"`
 	ID            string  `json:"id,omitempty"`
 	APIKey        string  `json:"api_key"`
+	AccountID     string  `json:"account_id,omitempty"`
 	DefaultModel  *string `json:"default_model,omitempty"`
 	DefaultEffort *string `json:"default_effort,omitempty"`
 }
