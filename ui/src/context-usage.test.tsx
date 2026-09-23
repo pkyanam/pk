@@ -65,9 +65,9 @@ describe("context usage grid", () => {
   test("marks live requests and unavailable snapshots clearly", async () => {
     const live = await testRender(<ContextUsage snapshot={snapshot({ pending: true })} />, { width: 80, height: 24 })
     renderers.push(live)
-    const liveFrame = await live.waitForFrame((value) => value.includes("This request is in progress"))
+    const liveFrame = await live.waitForFrame((value) => value.includes("No completed response is recorded"))
     const compactLive = liveFrame.replace(/\s+/g, " ")
-    expect(compactLive).toContain("byte composition and provider usage appear after it completes")
+    expect(compactLive).toContain("It may still be running or have been interrupted")
     expect(compactLive).toContain("input tokens —")
     expect(compactLive).not.toContain("System prompt")
 

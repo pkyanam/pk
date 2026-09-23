@@ -66,6 +66,13 @@ pk run -p "Summarize this repository" --use-codex
 
 If that token has expired, refresh it with `codex login`. pk does not refresh or delete it.
 
+pk uses native ChatGPT/Codex login by default. Starting with v0.1.3, `/provider setup` lets you choose a preset, paste its API key, and select a
+model returned by the provider. If the current conversation already has a prompt, choosing the
+model starts a fresh session automatically and the UI labels the transition; no manual `/new` is
+needed.
+See [model providers](providers.md) for supported protocols, credential storage, and capability
+limits.
+
 ## Choose defaults
 
 The initial defaults are `gpt-6-luna` and `medium` reasoning effort. Inspect or change them with:
@@ -154,7 +161,8 @@ does not transfer or consume the queued files. See [attachment formats and bound
 
 `/usage` opens a local view of provider-reported token totals saved for the current session. It makes
 no provider request and shows per-metric response coverage so unavailable counts are not mistaken
-for zero.
+for zero. See [token usage and request size](usage.md) for the difference between session totals,
+latest-response counters, and the request-composition view.
 
 Esc closes an open picker or stops the active turn. Ctrl-D detaches from an idle session and closes
 the interface while preserving its durable conversation; with no session it closes pk. Ctrl-C

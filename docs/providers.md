@@ -1,32 +1,101 @@
-# OpenAI-compatible providers
+# Model providers
 
-`pk` keeps ChatGPT/Codex as the default provider. You can add an explicit OpenAI-compatible provider for Responses API or Chat Completions deployments; the protocol is selected by you and is never guessed from the server.
+ChatGPT/Codex login remains pk's native default. Other providers use credentials and endpoints that
+you configure explicitly. Provider setup does not change the native ChatGPT login.
 
-Configure a local endpoint without an API key:
+## Connect a preset in the TUI
+
+Available starting with v0.1.3. Use `/provider setup` (or choose **Connect a provider** from `/provider`):
+
+1. Search the built-in provider catalog and select a preset.
+2. Paste its API key into the masked field and save.
+3. pk queries that endpoint's model list. Choose a model. If the current conversation already has
+   a prompt, pk starts a fresh session automatically and labels that transition in the UI; otherwise
+   the choice applies to the new session already being created.
+
+The catalog currently contains nine presets:
+
+| Preset | API | Protocol |
+| --- | --- | --- |
+| Anthropic | Native Anthropic Messages | `anthropic_messages` |
+| Cerebras | OpenAI-compatible | `chat_completions` |
+| Google Gemini | OpenAI-compatible | `chat_completions` |
+| Groq | OpenAI-compatible | `chat_completions` |
+| Mistral | OpenAI-compatible | `chat_completions` |
+| OpenAI API | OpenAI Responses | `responses` |
+| OpenRouter | OpenAI-compatible | `chat_completions` |
+| Together AI | OpenAI-compatible | `chat_completions` |
+| xAI | OpenAI Responses | `responses` |
+
+Presets are connection templates, not account checks. Model discovery shows IDs returned by the
+configured endpoint; it does not guarantee that your account is entitled to use a model, that the
+model is available in your region, or that it supports every feature pk can send.
+
+## CLI configuration
+
+List configured providers:
 
 ```sh
-pk provider add --id local --protocol chat_completions --base-url http://127.0.0.1:8080 --model qwen3
+pk provider list
 ```
 
-Configure a remote endpoint using an environment variable for its key:
+`pk provider presets` prints public connection metadata, not credentials.
+
+Configure a local endpoint without a key:
+
+```sh
+pk provider add --id local --protocol chat_completions \
+  --base-url http://127.0.0.1:8080 --model qwen3
+```
+
+Configure a remote endpoint with an environment-backed key:
 
 ```sh
 export MY_MODEL_API_KEY=...
-pk provider add --id team --protocol responses --base-url https://models.example/v1 \
-  --api-key-env MY_MODEL_API_KEY --model my-model --effort medium --reasoning-effort
+pk provider add --id team --protocol responses \
+  --base-url https://models.example/v1 --api-key-env MY_MODEL_API_KEY \
+  --model my-model --effort medium
 ```
 
-For a key you do not want in the process environment, pipe it to stdin so it is saved in the private provider file instead of command history or process arguments:
+Or read a key from standard input so it does not appear in shell history or process arguments:
 
 ```sh
-printf '%s' "$MY_MODEL_API_KEY" | pk provider add --id team --protocol chat_completions \
-  --base-url https://models.example/v1 --api-key-stdin --model my-model
+printf '%s' "$MY_MODEL_API_KEY" | pk provider add --id team \
+  --protocol chat_completions --base-url https://models.example/v1 \
+  --api-key-stdin --model my-model
 ```
 
-Provider records are stored in `$PK_HOME/providers.json` (normally `~/.pk/providers.json`) with mode `0600` inside a mode `0700` directory. `pk provider list` shows only whether a key is configured and, for environment-backed keys, the variable name. It never displays literal key values.
+Use `pk provider models ID` to query the configured endpoint's `/models` route, `pk provider use ID`
+to select the default for new runs, `pk provider use native` to return to ChatGPT/Codex, and
+`pk provider remove ID` to delete a provider. Supported protocols are `responses`,
+`chat_completions`, and `anthropic_messages`. Set
+`--reasoning-effort` only when a compatible endpoint accepts that request field.
 
-Use `pk provider models ID` to query the configured endpoint’s `/models` route. `pk provider remove ID` deletes a provider. Bare origins normalize to `/v1`; explicit paths such as `/v1` are preserved. Plain HTTP is allowed only for loopback addresses; remote endpoints must use HTTPS.
+Provider records live in `~/.pk/providers.json` (or `$PK_HOME/providers.json`). The file is protected
+with mode `0600` inside pk's private directory; API keys stored there are **not encrypted**. You can
+instead store only an environment-variable name with `--api-key-env`. Provider list output reports
+whether a key is configured and never prints its value.
 
-The Responses adapter uses `/responses` and the Chat Completions adapter uses `/chat/completions`; both stream model responses and preserve tool calls and usage data. `--reasoning-effort` is opt-in because many compatible models do not accept that request field. The Chat Completions bridge currently represents image tool results as an omitted-image notice; the portable mapping is text-only.
+Remote endpoints must use HTTPS. Plain HTTP is allowed only for loopback addresses. Bare API origins
+normalize to `/v1`; explicit API-root paths are preserved. The selected provider's configuration is
+bound to saved sessions; attach requires the same provider identity and configuration fingerprint.
 
-Use `pk provider use ID` to select the default for new sessions, or `pk provider use native` to return to the built-in Codex provider. Interactive sessions can select a provider before their first prompt; once a session has started, its provider is fixed. Saved sessions retain their provider identity and fingerprint, so attach requires that same provider configuration and rejects changed endpoints or credentials.
+## Protocol notes
+
+Responses and Chat Completions adapters stream responses and preserve supported tool calls and usage
+fields. Chat Completions accepts HTTP(S) image references and bounded base64 PNG/JPEG/GIF/WebP image
+data in image-bearing tool results; this is not a promise that every endpoint or model supports
+images. It does not provide a portable mapping for all Responses features. Provider-specific
+capabilities and billing rules remain controlled by that provider.
+
+The native Anthropic Messages adapter uses Anthropic's Messages API.
+It sends image blocks only for supported base64 images returned by tools; it does not currently map
+user-message image inputs. Generic reasoning-effort settings are not mapped to Anthropic-specific
+thinking options. For the official `api.anthropic.com` HTTPS endpoint, pk requests ephemeral prompt
+caching; this depends on Anthropic's cache rules and prompt size, and cache writes may cost more than
+uncached input. Custom gateways do not receive that cache setting. No cache hit or savings are
+guaranteed.
+
+OpenAI API-key access uses the OpenAI Responses API and is separate from native ChatGPT/Codex login.
+See the [getting-started guide](getting-started.md) for the interactive setup flow and
+[provider presets source](../internal/providers/presets.go) for current catalog metadata.

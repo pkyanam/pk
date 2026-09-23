@@ -81,10 +81,10 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("Ask pk to inspect")
     expect(frame).toContain("Ask pk to inspect")
     expect(frame).toContain("^P menu")
-    expect(frame).toContain("Starting · cache —")
+    expect(frame).toContain(width < 105 ? "Starting · latest tokens —" : "Starting · latest input/output/cache —")
     expect(frame.split("\n")[0]).not.toContain("Starting")
     expect(frame.split("\n")[0]).not.toContain("cache")
-    expect(frame.indexOf("Starting · cache —")).toBeLessThan(frame.indexOf("Ask pk to inspect"))
+    expect(frame.indexOf(width < 105 ? "Starting · latest tokens —" : "Starting · latest input/output/cache —")).toBeLessThan(frame.indexOf("Ask pk to inspect"))
     expect(frame.indexOf("Ask pk to inspect")).toBeLessThan(frame.indexOf("Enter send"))
     expect(frame).not.toContain("\\n")
     expect(frame.split("\n")).toHaveLength(height + 1)
@@ -102,12 +102,29 @@ describe("OpenTUI application", () => {
     const request = fake.sent.find((item) => item.type === "session_usage")!
     expect(request.payload?.session_id).toBe("session-usage-1")
     expect(setup.captureCharFrame()).toContain("Loading recorded usage")
-    expect(setup.captureCharFrame()).toContain("Ready · cache —")
     act(() => fake.emit({ version: 1, id: request.id, type: "session_usage", payload: {
       session_id: "session-usage-1", response_count: 3, input_tokens: 300, output_tokens: null,
       cached_input_tokens: 120, uncached_input_tokens: 180,
+      context: {
+        available: true, measurement: "json_value_bytes", request_ordinal: 3, pending: false,
+        categories: [
+          { id: "system_prompt", items: 1, bytes: 1200 }, { id: "tool_schemas", items: 2, bytes: 600 },
+          { id: "tool_calls", items: 1, bytes: 100 }, { id: "tool_results", items: 1, bytes: 80 },
+          { id: "messages", items: 2, bytes: 500 }, { id: "other_input", items: 0, bytes: 0 },
+        ], total_bytes: 2480,
+        latest_provider_usage: { input_tokens: 300, input_tokens_available: true, output_tokens: 40, output_tokens_available: true, cached_input_tokens: 120, cached_input_tokens_available: true, cache_write_input_tokens: null, cache_write_input_tokens_available: false },
+        context_limit_tokens: null,
+      },
       coverage: { input_responses: 2, output_responses: 0, cached_input_responses: 1, uncached_input_responses: 1 },
     } }))
+    const firstPage = await setup.waitForFrame((value) => value.includes("Context composition · request 3"))
+    expect(firstPage).toContain("2.4 KiB JSON-value bytes")
+    await act(async () => { for (let index = 0; index < 4; index++) setup.mockInput.pressKey("ARROW_DOWN") })
+    const contextPage = await setup.waitForFrame((value) => value.includes("Latest provider usage"))
+    expect(contextPage).toContain("System prompt")
+    expect(contextPage).toContain("input tokens 300")
+    if (width >= 105) expect(contextPage).toContain("cache-write tokens —")
+    await act(async () => { for (let index = 0; index < 12; index++) setup.mockInput.pressKey("ARROW_DOWN") })
     const frame = await setup.waitForFrame((value) => value.includes("2/3 responses"))
     expect(frame).toContain("3 recorded responses")
     expect(frame).toContain("Input tokens")
@@ -116,7 +133,15 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("Unavailable · 0/3 responses")
     expect(frame).toContain("Cached input")
     expect(frame).toContain("120 · 1/3 responses")
+    expect(frame).toContain("Refresh · R")
     expect(frame).not.toContain("$")
+    await act(async () => { for (let index = 0; index < 30; index++) setup.mockInput.pressKey("ARROW_DOWN") })
+    const scrolled = setup.captureCharFrame()
+    expect(scrolled).toContain("Context window capacity · unavailable")
+    await act(async () => { await setup.mockInput.pressKeys(["ESCAPE"], 100) })
+    const idle = await setup.waitForFrame((value) => !value.includes("Session token usage"))
+    expect(idle).toContain("Ready ·")
+    expect(idle).toContain("in 300")
   })
 
   test("keeps /usage honest for fresh sessions and ignores results after session changes or close", async () => {
@@ -1724,7 +1749,7 @@ describe("OpenTUI application", () => {
     act(() => fake.emit({ version: 1, id: prompt.id, type: "question", payload: { id: "q-parallel", text: "Choose", choices: ["A", "B"] } }))
     act(() => fake.emit({ version: 1, id: prompt.id, type: "tool_call", payload: { call_id: "parallel-tool", name: "Bash", state: "running", command_preview: "sleep 1" } }))
     const frame = await setup.waitForFrame((value) => value.includes("Waiting for your answer"))
-    expect(frame).toMatch(/Waiting for your answer · [0-9]+s · [0-9]+s total · cache —/)
+    expect(frame).toMatch(/Waiting for your answer · [0-9]+s · [0-9]+s total · latest input\/output\/cache —/)
     expect(frame).not.toContain("Running 1 tool")
     act(() => fake.emit({ version: 1, id: prompt.id, type: "question_answered", payload: { id: "q-parallel" } }))
     await setup.flush()
@@ -1898,26 +1923,26 @@ describe("OpenTUI application", () => {
     expect(setup.captureCharFrame()).toContain("Waiting for model")
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)) })
     await setup.flush()
-    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [1-9]s · [1-9]s total · cache —/)
+    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [1-9]s · [1-9]s total · latest tokens —/)
     act(() => fake.emit({ version: 1, id: "tool", type: "tool_call", payload: { call_id: "tool", name: "Bash", state: "running", command_preview: "go test ./..." } }))
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Running 1 tool")
-    expect(setup.captureCharFrame()).toMatch(/Running 1 tool · [0-1]s · [1-9]s total · cache —/)
+    expect(setup.captureCharFrame()).toMatch(/Running 1 tool · [0-1]s · [1-9]s total · latest tokens —/)
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)) })
     act(() => fake.emit({ version: 1, id: "tool-update", type: "tool_call", payload: { call_id: "tool", name: "Bash", state: "running", command_preview: "go test ./..." } }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toMatch(/Running 1 tool · [1-9]s · [1-9]s total · cache —/)
+    expect(setup.captureCharFrame()).toMatch(/Running 1 tool · [1-9]s · [1-9]s total · latest tokens —/)
     act(() => fake.emit({ version: 1, id: "tool-done", type: "tool_call", payload: { call_id: "tool", name: "Bash", state: "completed", command_preview: "go test ./..." } }))
     act(() => fake.emit({ version: 1, id: "final", type: "assistant", payload: { text: "All tests pass." } }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [0-1]s · [3-9]s total · cache —/)
+    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [0-1]s · [3-9]s total · latest tokens —/)
     expect(setup.captureCharFrame()).toContain("All tests pass.")
     act(() => fake.emit({ version: 1, id: "question", type: "question", payload: { id: "phase-question", text: "Continue?", choices: ["Yes", "No"] } }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toMatch(/Waiting for your answer · [0-1]s · [3-9]s total · cache —/)
+    expect(setup.captureCharFrame()).toMatch(/Waiting for your answer · [0-1]s · [3-9]s total · latest tokens —/)
     act(() => fake.emit({ version: 1, id: "answer", type: "question_answered", payload: { id: "phase-question" } }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [0-1]s · [3-9]s total · cache —/)
+    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [0-1]s · [3-9]s total · latest tokens —/)
     act(() => fake.emit({ version: 1, id: "turn-done", type: "turn_finished", payload: {} }))
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Ready")
@@ -2495,6 +2520,91 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "provider_select")).toBe(false)
   })
 
+  test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("connects a preset, masks its key, and applies a discovered model at $width × $height", async ({ width, height }) => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", provider_id: "native" } }))
+    await act(async () => { await setup.mockInput.typeText("/provider setup") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const catalog = fake.sent.find((item) => item.type === "provider_presets_list")!
+    act(() => fake.emit({ version: 1, id: catalog.id, type: "provider_presets", payload: { presets: [
+      { id: "compatible", label: "Compatible API", protocol: "chat_completions", api_style: "openai_compatible", base_url: "https://api.example/v1", compatibility_note: "OpenAI-compatible" },
+      { id: "anthropic", label: "Anthropic", protocol: "anthropic_messages", api_style: "anthropic_messages", base_url: "https://api.anthropic.com/v1", compatibility_note: "Native Messages API" },
+    ] } }))
+    await setup.waitForFrame((frame) => frame.includes("Connect a provider") && frame.includes("Compatible API"))
+    await act(async () => setup.mockInput.pressKeys(["a", "n", "t", "h", "r", "o", "p", "i", "c"], 20))
+    expect(setup.captureCharFrame()).toContain("Anthropic")
+    expect(setup.captureCharFrame()).not.toContain("Compatible API")
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Connect Anthropic")
+    const secret = "sk-test-provider-secret-" + "x".repeat(100)
+    await act(async () => setup.mockInput.typeText(secret))
+    const masked = await setup.waitForFrame((frame) => frame.includes("••••"))
+    expect(masked).not.toContain(secret)
+    expect(masked).not.toContain("sk-test-provider-secret")
+    expect(masked).toContain("••••")
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const add = fake.sent.find((item) => item.type === "provider_preset_add")!
+    expect(add.payload).toEqual({ preset_id: "anthropic", api_key: secret })
+    const submitting = setup.captureCharFrame()
+    expect(submitting).not.toContain(secret)
+    act(() => fake.emit({ version: 1, id: add.id, type: "providers_updated", payload: {
+      added_provider_id: "anthropic", providers: [{ id: "anthropic", protocol: "anthropic_messages", base_url: "https://api.anthropic.com/v1", api_key_configured: true, default_model: "", supports_reasoning_effort: false }],
+    } }))
+    const modelsRequest = fake.sent.filter((item) => item.type === "provider_models").at(-1)!
+    expect(modelsRequest.payload?.provider_id).toBe("anthropic")
+    act(() => fake.emit({ version: 1, id: modelsRequest.id, type: "provider_models", payload: { provider_id: "anthropic", models: [{ id: "claude-sonnet", object: "model" }, { id: "claude-haiku", object: "model" }] } }))
+    await setup.waitForFrame((frame) => frame.includes("claude-sonnet"))
+    expect(setup.captureCharFrame()).toContain("Choose a model · anthropic")
+    const search = (setup.renderer.root as any).findDescendantById("provider-model-search")
+    expect(search).toBeDefined()
+    await act(async () => setup.mockInput.pressKeys(["h", "a", "i", "k", "u"], 20))
+    expect(setup.captureCharFrame()).toContain("claude-haiku")
+    expect(setup.captureCharFrame()).not.toContain("claude-sonnet")
+    act(() => setup.mockInput.pressEnter())
+    const fresh = fake.sent.find((item) => item.type === "provider_select")!
+    expect(fresh.payload).toEqual({ provider_id: "anthropic", model: "claude-haiku" })
+    expect(setup.captureCharFrame()).not.toContain(secret)
+  })
+
+  test("a failed new-session request preserves the old transcript and clears a staged provider model", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { session_id: "old-session", model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => setup.mockInput.typeText("keep this conversation"))
+    act(() => setup.mockInput.pressEnter())
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "assistant", payload: { text: "Old session response stays visible." } }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: { session_id: "old-session" } }))
+    await setup.waitForFrame((frame) => frame.includes("Old session response stays visible."))
+
+    await act(async () => setup.mockInput.typeText("/provider models custom"))
+    act(() => setup.mockInput.pressEnter())
+    const modelsRequest = fake.sent.filter((item) => item.type === "provider_models").at(-1)!
+    act(() => fake.emit({ version: 1, id: modelsRequest.id, type: "provider_models", payload: { provider_id: "custom", models: [{ id: "model-to-use" }] } }))
+    await setup.waitForFrame((frame) => frame.includes("model-to-use"))
+    act(() => setup.mockInput.pressEnter())
+    const failedNew = fake.sent.filter((item) => item.type === "new").at(-1)!
+    expect(failedNew).toBeDefined()
+    act(() => fake.emit({ version: 1, id: failedNew.id, type: "error", payload: { request_type: "new", message: "new session unavailable" } }))
+    await setup.waitForFrame((frame) => frame.includes("Old session response stays visible.") && frame.includes("new session unavailable"))
+
+    await act(async () => setup.mockInput.typeText("/new"))
+    act(() => setup.mockInput.pressEnter())
+    const laterNew = fake.sent.filter((item) => item.type === "new").at(-1)!
+    act(() => fake.emit({ version: 1, id: laterNew.id, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+    expect(fake.sent.filter((item) => item.type === "provider_select")).toHaveLength(0)
+  })
+
   test("provider model results do not reopen a selector dismissed during discovery", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
@@ -2739,10 +2849,10 @@ describe("OpenTUI application", () => {
     frame = setup.captureCharFrame()
     expect(frame).toContain("The delegated check passed.")
     expect(frame).toContain("Waiting for model")
-    expect(frame).not.toContain("Ready · cache")
+    expect(frame).not.toContain("Ready · latest")
 
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
-    frame = await setup.waitForFrame((value) => value.includes("Ready · cache"))
+    frame = await setup.waitForFrame((value) => value.includes("Ready · latest"))
     expect(frame).toContain("The delegated check passed.")
   })
 
@@ -2798,7 +2908,7 @@ describe("OpenTUI application", () => {
     const frame = await setup.waitForFrame((value) => value.includes("Found 12 files"))
     expect(frame).toContain("/ext:acme:stats")
     expect(frame).toContain("Found 12 files")
-    expect(frame).toContain("Ready · cache")
+    expect(frame).toContain("Ready · latest")
   })
 
   test("/tools distinguishes an uninitialized first-turn catalog from an empty registry", async () => {

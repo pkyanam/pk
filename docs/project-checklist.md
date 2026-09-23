@@ -143,6 +143,10 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 ### Latest reported defects and compatibility requests
 
+- [~] Guided provider setup: searchable major-provider presets, masked key entry, live model discovery, and explicit session-bound model selection. Native Anthropic Messages and nine endpoint presets are committed; final TUI integration and release verification are in progress. Provider compatibility is fixture-tested, not a live account certification.
+- [~] Animate the launch ASCII pk wordmark with a short mint transition targeting 60 FPS, reduced-motion support, and idle renderer restoration. Component tests pass; integrated release pending.
+- [~] Label cached input in tokens and show latest input/output counts above the composer. Add a `/usage` category grid with session totals kept separate from the latest matched request. Byte composition must not masquerade as exact token attribution or context-window occupancy; unknown model capacity stays unavailable.
+
 - [~] Fix `/sessions` overlapping previews, navigation back to the top, select-all/clear, and confusing purge controls. Installed from clean revision `19f79b7` after full build/test gates. Fifteen focused tests cover 63-session navigation, select-all/clear, purge guidance, and 80×24 Unicode rendering; native interactive retest remains. Purge applies to archived sessions in Trash.
 - [x] Fix copied Markdown exposing concealed formatting delimiters while preserving literal code and partial selections. Installed v0.1.1 copies rendered cells within the visible transcript, with exact wrapped/Unicode/partial-selection fixtures; all 143 UI tests passed. Native cross-terminal coverage remains separate.
 - [ ] Evaluate and implement explicit compatibility adapters for community plugin formats where practical. Current plugins use pk.extensions/v1; OpenCode, Codex, Claude Code, and Pi executable plugin bundles are not drop-in compatible. Shared SKILL.md and MCP support do not imply bundle compatibility.

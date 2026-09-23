@@ -89,7 +89,7 @@ export function ContextUsage({ snapshot }: { snapshot?: ContextUsageSnapshot | n
   if (snapshot?.pending) {
     return <box id="context-usage" style={{ flexDirection: "column", gap: 1 }}>
       <text fg="#e5e8eb" content={snapshot.request_ordinal > 0 ? `Context composition · request ${snapshot.request_ordinal}` : "Context composition"} />
-      <text fg="#d3ac72" content="This request is in progress; byte composition and provider usage appear after it completes." />
+      <text fg="#d3ac72" content="No completed response is recorded for this request. It may still be running or have been interrupted." />
       <text fg="#858e96" content="Latest provider usage · input tokens — · cached tokens — · cache-write tokens — · output tokens —" />
       <text fg="#5d666e" content="Context window capacity · unavailable (no validated limit)" />
     </box>
