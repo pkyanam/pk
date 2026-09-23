@@ -518,3 +518,8 @@ gates or imply that every backlog item is complete.
 - Clean GitHub revision `b5aa90b` activated as `20260923T103610.264877000Z-e6a9b9b1a6d2-34126c4e`. Full Go suite and all 123 UI tests passed; affected Go race suites and opt-in real Poppler test passed.
 - Native Cmux reload returned the owned fresh session with its ASCII welcome. `/skills available` now shows Monid’s actual folded description rather than `>` and compact skill descriptions. No model requests were needed. The user’s separate workspace was untouched.
 - Installed one-shot smoke used an isolated home/workspace and one localhost fake-provider request. Its PDF prompt referenced the rendered page and the folded skill description reached both request and saved snapshot; root independently verified the persisted 8,089-byte PNG is mode 0600. The initial inspection script used the wrong snapshot filename, then verified the correct SHA-256-named snapshot. No external model call was made.
+
+### 06:40 EDT — public installer and startup checkpoint
+
+- Downloaded the public raw GitHub `install.sh` and ran it with isolated PK_BIN_DIR/PK_LIB_DIR destinations. It built clean `3fe1908`; the resulting launcher reported that revision. The normal installation and running sessions were untouched.
+- Fixed the startup measurement PTY child to use its intended temporary workspace. Installed b5aa90b reached its ready frame in about 0.5 seconds in this small shared-machine run; RPC catalog warm median was 10.5 ms. Raw results and reproduction are in `docs/performance.md`. No model calls.

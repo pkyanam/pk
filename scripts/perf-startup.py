@@ -56,6 +56,7 @@ def measure(pk, fn, samples):
 def tui_first_frame(pk, env, cwd):
     pid, fd = pty.fork()
     if pid == 0:
+        os.chdir(cwd)
         os.execve(str(pk), [str(pk)], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     started = time.perf_counter()
@@ -149,8 +150,8 @@ def main():
             "rpc_ready": measure(pk, lambda: rpc(False), args.samples),
             "rpc_tool_catalog_preview": measure(pk, lambda: rpc(True), args.samples),
         }
-        tui_first = tui_first_frame(pk, env, base)
-        tui_warm = [tui_first_frame(pk, env, base) for _ in range(args.tui_samples - 1)]
+        tui_first = tui_first_frame(pk, env, workspace)
+        tui_warm = [tui_first_frame(pk, env, workspace) for _ in range(args.tui_samples - 1)]
         results["tui_first_ready_frame"] = {
             "first_process_ms": round(tui_first, 2),
             "warm": stats(tui_warm) if tui_warm else None,

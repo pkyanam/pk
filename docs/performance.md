@@ -97,3 +97,13 @@ Reproduce with:
 ```sh
 go test ./cmd/pk -run '^$' -bench '^BenchmarkAssistantHistoryPreviewLarge$' -benchmem -count=3
 ```
+
+## Installed startup checkpoint (06:40 EDT)
+
+A small local check of installed `b5aa90b` on Darwin arm64 measured a 509 ms first TUI ready frame and 490–508 ms across two later launches. RPC ready/catalog warm medians were 11.0/10.5 ms (three samples each). No provider request was made. These small samples are not cold-cache or comparative claims; other development work shared this machine. Raw results: [`startup-b5aa90b-20260923/result.json`](../benchmarks/results/startup-b5aa90b-20260923/result.json).
+
+The startup script now changes the PTY child to the supplied temporary workspace before exec. Earlier runs accidentally inherited the invoking directory for the TUI leg, so those TUI timings are not a controlled before/after baseline.
+
+```sh
+python3 scripts/perf-startup.py ~/.local/bin/pk --samples 3 --tui-samples 3
+```

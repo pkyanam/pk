@@ -1,0 +1,58 @@
+{
+  "executable": "/Users/preetham/.local/bin/pk",
+  "version": "pk release 20260923T103610.264877000Z-e6a9b9b1a6d2-34126c4e",
+  "os": "Darwin",
+  "architecture": "arm64",
+  "samples_per_command": 3,
+  "tui_samples": 3,
+  "help": {
+    "first_process_ms": 12.23,
+    "warm": {
+      "n": 3,
+      "median_ms": 12.02,
+      "p95_ms": 13.7,
+      "min_ms": 11.64,
+      "max_ms": 13.7
+    }
+  },
+  "version_command": {
+    "first_process_ms": 13.27,
+    "warm": {
+      "n": 3,
+      "median_ms": 12.36,
+      "p95_ms": 13.55,
+      "min_ms": 11.22,
+      "max_ms": 13.55
+    }
+  },
+  "rpc_ready": {
+    "first_process_ms": 12.29,
+    "warm": {
+      "n": 3,
+      "median_ms": 10.96,
+      "p95_ms": 11.0,
+      "min_ms": 10.72,
+      "max_ms": 11.0
+    }
+  },
+  "rpc_tool_catalog_preview": {
+    "first_process_ms": 10.32,
+    "warm": {
+      "n": 3,
+      "median_ms": 10.53,
+      "p95_ms": 11.03,
+      "min_ms": 10.49,
+      "max_ms": 11.03
+    }
+  },
+  "tui_first_ready_frame": {
+    "first_process_ms": 509.2,
+    "warm": {
+      "n": 2,
+      "median_ms": 499.24,
+      "p95_ms": 508.3,
+      "min_ms": 490.18,
+      "max_ms": 508.3
+    }
+  }
+}
