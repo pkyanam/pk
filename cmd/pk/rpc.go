@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/interaction"
@@ -71,6 +72,8 @@ type rpcServer struct {
 	taskFollowCancel    context.CancelFunc
 	requestTypes        map[string]string
 	broker              *interaction.Broker
+	loadAttachments     func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
+	prepareAdapter      func(context.Context, bool, string) (*codexAdapter, error)
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -106,20 +109,7 @@ func (s *rpcServer) serve() error {
 	for !s.quit {
 		select {
 		case result := <-finished:
-			s.mu.Lock()
-			s.active = false
-			s.activeCancel = nil
-			broker := s.broker
-			s.broker = nil
-			session := s.session
-			s.mu.Unlock()
-			if broker != nil {
-				broker.Close()
-			}
-			if result.err != nil {
-				_ = s.emit(result.id, "error", map[string]any{"message": result.err.Error(), "recoverable": true})
-			}
-			_ = s.emit(result.id, "turn_finished", map[string]any{"session_id": session, "text": result.text})
+			s.completeTurn(result)
 		case input := <-lines:
 			if input.err != nil {
 				if input.err != io.EOF {
@@ -146,7 +136,7 @@ func (s *rpcServer) serve() error {
 	}
 	if s.activeCancel != nil {
 		s.activeCancel()
-		<-finished
+		s.completeTurn(<-finished)
 	}
 	if s.taskFollowCancel != nil {
 		s.taskFollowCancel()
@@ -155,6 +145,23 @@ func (s *rpcServer) serve() error {
 		_ = s.adapter.Close()
 	}
 	return nil
+}
+
+func (s *rpcServer) completeTurn(result turnDone) {
+	s.mu.Lock()
+	s.active = false
+	s.activeCancel = nil
+	broker := s.broker
+	s.broker = nil
+	sessionID := s.session
+	s.mu.Unlock()
+	if broker != nil {
+		broker.Close()
+	}
+	if result.err != nil {
+		_ = s.emit(result.id, "error", map[string]any{"message": result.err.Error(), "recoverable": true})
+	}
+	_ = s.emit(result.id, "turn_finished", map[string]any{"session_id": sessionID, "text": result.text})
 }
 
 type turnDone struct {
@@ -232,6 +239,18 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
 	case "prompt":
+		text := get("text")
+		if strings.TrimSpace(text) == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "prompt text is empty", "recoverable": true})
+			return
+		}
+		var files []string
+		if raw := payload["files"]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &files); err != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "files must be an array of paths: " + err.Error(), "recoverable": true})
+				return
+			}
+		}
 		s.mu.Lock()
 		if !s.started {
 			s.mu.Unlock()
@@ -243,32 +262,16 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "a turn is already running", "recoverable": true})
 			return
 		}
-		s.mu.Unlock()
-		text := get("text")
-		if strings.TrimSpace(text) == "" {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": "prompt text is empty", "recoverable": true})
-			return
-		}
-		if s.adapter == nil {
-			client, err := prepareAdapter(s.ctx, s.useCodex, s.codexPath)
-			if err != nil {
-				_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
-				return
-			}
-			s.adapter = client
-		}
-		s.mu.Lock()
-		s.opts.Prompt = text
-		s.opts.SessionID = s.session
-		s.opts.Adapter = s.adapter
-		opts := s.opts
+		workspace, sessionID := s.opts.Workspace, s.session
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
 		s.active = true
-		broker := interaction.NewBroker(ctx, s.session)
+		broker := interaction.NewBroker(ctx, sessionID)
 		s.broker = broker
+		opts := s.opts
+		opts.SessionID = sessionID
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "turn_started", map[string]any{"session_id": s.session})
+		_ = s.emit(msg.ID, "turn_started", map[string]any{"session_id": sessionID})
 		go func() {
 			for {
 				select {
@@ -283,7 +286,73 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}()
 		go func() {
+			if err := ctx.Err(); err != nil {
+				finished <- turnDone{id: msg.ID, err: err}
+				return
+			}
+			if len(files) > 0 {
+				resolved, err := workspaceAttachmentPaths(workspace, files)
+				if err != nil {
+					finished <- turnDone{id: msg.ID, err: err}
+					return
+				}
+				loader := s.loadAttachments
+				if loader == nil {
+					loader = loadPromptAttachments
+				}
+				var loaded []attachments.Attachment
+				text, loaded, err = loader(ctx, workspace, text, resolved)
+				if err != nil {
+					finished <- turnDone{id: msg.ID, err: fmt.Errorf("load attachments: %w", err)}
+					return
+				}
+				if err := ctx.Err(); err != nil {
+					finished <- turnDone{id: msg.ID, err: err}
+					return
+				}
+				summaries := make([]map[string]any, 0, len(loaded))
+				for _, item := range loaded {
+					summaries = append(summaries, map[string]any{"path": item.Path, "kind": item.Kind, "content_type": item.ContentType, "truncated": item.Truncated, "pages_extracted": item.PagesExtracted, "pages_total": item.PagesTotal})
+				}
+				_ = s.emit(msg.ID, "attachments_loaded", map[string]any{"files": summaries})
+			}
+			if err := ctx.Err(); err != nil {
+				finished <- turnDone{id: msg.ID, err: err}
+				return
+			}
+			s.mu.Lock()
+			client := s.adapter
+			s.mu.Unlock()
+			if client == nil {
+				prepare := s.prepareAdapter
+				if prepare == nil {
+					prepare = prepareAdapter
+				}
+				var err error
+				client, err = prepare(ctx, s.useCodex, s.codexPath)
+				if err != nil {
+					finished <- turnDone{id: msg.ID, err: err}
+					return
+				}
+				s.mu.Lock()
+				if s.adapter == nil {
+					s.adapter = client
+				} else if client != s.adapter {
+					_ = client.Close()
+					client = s.adapter
+				}
+				s.mu.Unlock()
+			}
+			if err := ctx.Err(); err != nil {
+				finished <- turnDone{id: msg.ID, err: err}
+				return
+			}
+			s.mu.Lock()
+			opts.SessionID = s.session
+			opts.Adapter = client
+			s.mu.Unlock()
 			out := &rpcRunnerOutput{server: s, id: msg.ID}
+			opts.Prompt = text
 			opts.Output = out
 			opts.JSONL = true
 			opts.Diagnostics = s.diagnostics
@@ -540,6 +609,31 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	default:
 		_ = s.emit(msg.ID, "error", map[string]any{"message": "unknown command type " + msg.Type, "recoverable": true})
 	}
+}
+
+// workspaceAttachmentPaths converts absolute paths inside the selected workspace
+// to the loader's workspace-relative form. Relative paths are already interpreted
+// from that workspace, never from the process's unrelated launch directory.
+func workspaceAttachmentPaths(workspace string, paths []string) ([]string, error) {
+	resolved := make([]string, 0, len(paths))
+	root, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace: %w", err)
+	}
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			return nil, errors.New("attachment path must not be empty")
+		}
+		if filepath.IsAbs(path) {
+			rel, err := filepath.Rel(root, filepath.Clean(path))
+			if err != nil {
+				return nil, fmt.Errorf("resolve attachment %q: %w", path, err)
+			}
+			path = rel
+		}
+		resolved = append(resolved, path)
+	}
+	return resolved, nil
 }
 
 func taskPayload(t tasks.Task) map[string]any {

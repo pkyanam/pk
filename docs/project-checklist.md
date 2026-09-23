@@ -23,7 +23,8 @@ Updated 2026-09-22. This checklist consolidates the user's project requests from
 - [x] Make the TUI command surface easy to discover from the Codex-style slash-command menu, including session, task, status, login, cancellation, model, and effort controls.
 - [x] Support installing/running `pk` from the current project folder with that folder as the working directory, and document PATH setup for the installed binary.
 - [~] Push implementation in frequent reviewable increments and relaunch/notify the user at meaningful shipped checkpoints. Commits `fd9633c`, `4f0a57e`, and `1636be2` are recorded; continue this through remaining work rather than waiting for one large final batch.
-- [~] Finish attachment support for image/PDF/file inputs against provider/model capability. Attachment code exists in the working tree; document exact support/limits and run provider-backed or fixture validation before claiming broad support.
+- [~] Finish attachment support for image/PDF/file inputs against provider/model capability. The one-shot `pk run --file` and RPC routes are implemented and have initial live PDF-text and ViewImage smokes; OpenTUI has no file picker yet. See `docs/attachments-design.md` for strict bounds and limits.
+- [~] Investigate whether the Codex CLI exposes model-invokable image generation through the existing ChatGPT/Codex login. Capability is not confirmed and no implementation exists; keep any work gated on primary-source evidence.
 - [~] Finish optional mouse interaction and polish the terminal experience. Keyboard paths are tested; mouse-specific behavior still needs a focused real-terminal check.
 - [~] Make rich tool cards compact, grouped, and expandable/clickable with readable built-in Markdown rendering. Current tool previews/results are implemented; the requested interaction and visual polish need explicit validation against the latest layout.
 

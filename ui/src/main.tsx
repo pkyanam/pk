@@ -1,10 +1,14 @@
-import { createCliRenderer } from "@opentui/core"
+import { createCliRenderer, getTreeSitterClient } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { PkApp } from "./app"
 import { PkTransport } from "./transport"
 
 const workspace = process.env.PK_WORKSPACE || process.cwd()
 const session = process.env.PK_SESSION || undefined
+const markdownClient = getTreeSitterClient()
+await markdownClient.initialize()
+await markdownClient.preloadParser("markdown")
+await markdownClient.preloadParser("markdown_inline")
 const renderer = await createCliRenderer({
   exitOnCtrlC: false,
   targetFps: 30,

@@ -23,6 +23,8 @@ September 2026. It contains no credentials, account details, or private task IDs
 - A later installed PTY smoke at 120×36 showed a Bash `pwd`/`ls` call with its command, output, and
   exit result; then a Luna progress message; then a second Bash `printf` producing `PK_RICH_OK`; and
   finally the assistant response. Tool details updated in place without object-string artifacts.
+- A live Luna question smoke presented MINT/BLUE choices, accepted a freeform `BLUE` answer, passed
+  it through the same `AskUser` tool call to Bash, and returned `BLUE` in the final answer.
 
 ## Automated checks
 
@@ -36,9 +38,12 @@ September 2026. It contains no credentials, account details, or private task IDs
 - The OpenTUI build, TypeScript check, and seven renderer tests passed after tool-preview rendering.
   Renderer coverage verifies completed tool rows retain their result excerpts. The transcript tail is
   capped in code; no large-scale long-loop stress test has been run.
+- On checkpoint `1636be2`, root reports the full Go race suite and vet, ten UI tests, and hosted CI
+  passing after the foreground AskUser and transcript-scroll changes. A separate RPC fake test covers
+  cancellation without continuing the model turn.
 - The GitHub Actions workflow runs Go build, vet, and race tests for pk and the public composition
   module on Linux and macOS. It retains the pinned Unreal Agent v0.1.1 race-test suite in UTC on
   Linux. A separate Linux/macOS OpenTUI job installs dependencies with `bun install
   --frozen-lockfile`, builds the frontend, typechecks it, and runs the Bun tests with Bun 1.3.14.
-  The hosted workflow rerun passed on the earlier mockup-only commit; later source changes still need
-  their own hosted run.
+  The hosted workflow passed on checkpoint `1636be2`; later attachment changes still need their own
+  hosted run.

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	jsontext "encoding/json/jsontext"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -61,34 +64,51 @@ func TestRPCReadySurvivesMissingCredentialsSoLoginCanRecover(t *testing.T) {
 	}
 	t.Setenv("PK_HOME", home)
 	workspace := t.TempDir()
-	commands := strings.Join([]string{
-		`{"version":1,"id":"start-1","type":"start","payload":{"workspace":"` + workspace + `"}}`,
-		`{"version":1,"id":"prompt-1","type":"prompt","payload":{"text":"hello"}}`,
-		`{"version":1,"id":"shutdown-1","type":"shutdown"}`,
-	}, "\n") + "\n"
-	var stdout, stderr bytes.Buffer
-	if code := rpcMain(context.Background(), strings.NewReader(commands), &stdout, &stderr); code != 0 {
-		t.Fatalf("rpcMain exit=%d stderr=%q", code, stderr.String())
+	reader, writer := io.Pipe()
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- rpcMain(context.Background(), reader, sink, &stderr) }()
+	if _, err := fmt.Fprintf(writer, "%s\n%s\n",
+		`{"version":1,"id":"start-1","type":"start","payload":{"workspace":"`+workspace+`"}}`,
+		`{"version":1,"id":"prompt-1","type":"prompt","payload":{"text":"hello"}}`); err != nil {
+		t.Fatal(err)
 	}
 	var events []rpcEvent
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
-		var event rpcEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			t.Fatal(err)
-		}
-		events = append(events, event)
-	}
-	if len(events) < 3 || events[0].Type != "ready" {
-		t.Fatalf("events=%+v", events)
-	}
 	var payload map[string]any
-	for _, event := range events {
-		if event.Type == "error" && event.ID == "prompt-1" {
-			payload = event.Payload.(map[string]any)
+	deadline := time.After(5 * time.Second)
+	for payload == nil {
+		select {
+		case data := <-sink.events:
+			var event rpcEvent
+			if err := json.Unmarshal(data, &event); err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+			if event.Type == "error" && event.ID == "prompt-1" {
+				payload = event.Payload.(map[string]any)
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for missing-credential error: %+v", events)
 		}
+	}
+	if len(events) == 0 || events[0].Type != "ready" {
+		t.Fatalf("events=%+v", events)
 	}
 	if payload == nil || payload["request_type"] != "prompt" {
 		t.Fatalf("missing recoverable prompt error: %+v", events)
+	}
+	if _, err := fmt.Fprintln(writer, `{"version":1,"id":"shutdown-1","type":"shutdown"}`); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Close()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("rpcMain exit=%d stderr=%q", code, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RPC server did not stop")
 	}
 }
 
@@ -219,6 +239,121 @@ func TestTailUTF8TruncationKeepsValidText(t *testing.T) {
 	if !utf8.ValidString(got) || !strings.HasSuffix(got, "after") {
 		t.Fatalf("tail=%q valid=%v", got, utf8.ValidString(got))
 	}
+}
+
+func TestRPCPromptAttachmentsReachModelAsNewInput(t *testing.T) {
+	workspace, sessions := t.TempDir(), t.TempDir()
+	selectedDir := t.TempDir() // Explicit user-selected input may live outside workspace.
+	file := filepath.Join(selectedDir, "reference.txt")
+	const marker = "ATTACHMENT_SENTINEL_9721"
+	if err := os.WriteFile(file, []byte("reference body: "+marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model := &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "done", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "Read the file."}}}}}}}
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}, requestTypes: map[string]string{}}
+	finished := make(chan turnDone, 1)
+	payload, _ := json.Marshal(map[string]any{"text": "Summarize this reference.", "files": []string{file}})
+	server.handle(rpcMessage{Version: 1, ID: "attached-turn", Type: "prompt", Payload: payload}, finished)
+	select {
+	case result := <-finished:
+		if result.err != nil {
+			t.Fatalf("runner error: %v", result.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner did not finish")
+	}
+	model.mu.Lock()
+	requests := append([]llm.Request(nil), model.requests...)
+	model.mu.Unlock()
+	if len(requests) == 0 {
+		t.Fatal("model received no requests")
+	}
+	var found bool
+	for _, request := range requests {
+		for _, item := range request.Input {
+			if message, ok := item.Data.(llm.Message); ok && strings.Contains(message.Text, marker) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("selected file content did not reach model input; requests=%+v", requests)
+	}
+	_ = server.adapter.Close()
+}
+
+func TestRPCPromptUsesAdapterPreparedDuringAsyncSetup(t *testing.T) {
+	model := &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "reply", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "adapter is ready"}}}}}}}
+	adapter := &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	workspace, sessions := t.TempDir(), t.TempDir()
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, requestTypes: map[string]string{}, prepareAdapter: func(context.Context, bool, string) (*codexAdapter, error) { return adapter, nil }}
+	finished := make(chan turnDone, 1)
+	server.handle(rpcMessage{Version: 1, ID: "prepared-turn", Type: "prompt", Payload: json.RawMessage(`{"text":"hello"}`)}, finished)
+	select {
+	case result := <-finished:
+		if result.err != nil {
+			t.Fatalf("runner error: %v", result.err)
+		}
+		if strings.TrimSpace(result.text) != "adapter is ready" {
+			t.Fatalf("result text=%q", result.text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not finish")
+	}
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("prepared adapter was not used by runner")
+	}
+	if server.adapter != adapter {
+		t.Fatal("prepared adapter was not retained on RPC server")
+	}
+	if server.broker != nil {
+		server.broker.Close()
+	}
+	_ = adapter.Close()
+}
+
+func TestRPCCancelInterruptsBlockedAttachmentSetup(t *testing.T) {
+	workspace, sessions := t.TempDir(), t.TempDir()
+	entered := make(chan struct{})
+	model := &mockModelAdapter{replies: []adapterReply{{response: llm.Response{ID: "unexpected", Stop: llm.StopComplete}}}}
+	sink := &rpcEventSink{events: make(chan []byte, 32)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: &bytes.Buffer{}, cfgPath: filepath.Join(t.TempDir(), "config.json"), sessionDir: sessions, started: true, opts: runner.Options{Workspace: workspace, SessionDir: sessions, Model: "gpt-6-luna", Effort: "medium"}, adapter: &codexAdapter{credential: auth.Credential{AccessToken: "fake"}, client: model, useCodex: true, semaphore: make(chan struct{}, 1)}, requestTypes: map[string]string{}}
+	server.loadAttachments = func(ctx context.Context, workspace, prompt string, paths []string) (string, []attachments.Attachment, error) {
+		close(entered)
+		<-ctx.Done()
+		return "", nil, ctx.Err()
+	}
+	finished := make(chan turnDone, 1)
+	server.handle(rpcMessage{Version: 1, ID: "blocked-turn", Type: "prompt", Payload: json.RawMessage(`{"text":"read it","files":["slow.pdf"]}`)}, finished)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attachment setup did not start asynchronously")
+	}
+	server.handle(rpcMessage{Version: 1, ID: "cancel-setup", Type: "cancel"}, finished)
+	select {
+	case result := <-finished:
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("setup result error=%v, want context.Canceled", result.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel did not interrupt blocked attachment setup")
+	}
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("model calls=%d, expected cancellation before model run", calls)
+	}
+	if server.broker != nil {
+		server.broker.Close()
+	}
+	_ = server.adapter.Close()
 }
 
 func TestRPCQuestionUsesBrokerAndContinuesRunner(t *testing.T) {

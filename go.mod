@@ -4,6 +4,8 @@ go 1.27.0
 
 require github.com/unreallabsai/unreal-agent v0.1.1
 
+require github.com/giraffesyo/pdf v0.6.0
+
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

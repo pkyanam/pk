@@ -564,8 +564,16 @@ func RunWorker(ctx context.Context, id string, run func(context.Context, WorkerO
 	continuing := t.Attempts >= 1
 	for {
 		inputCtx, cancelInputs := context.WithCancel(ctx)
+		turnCtx, cancelTurn := context.WithCancel(ctx)
 		inputs := make(chan Input, 32)
-		go pumpInputs(inputCtx, dir, inputs)
+		inputPumpDone := make(chan error, 1)
+		go func() {
+			err := pumpInputs(inputCtx, dir, inputs)
+			inputPumpDone <- err
+			if err != nil {
+				cancelTurn()
+			}
+		}()
 		runOptions := t.Options
 		if continuing && t.SessionID != "" {
 			runOptions.Prompt = "Continue the previous task without repeating completed work. Original request:\n\n" + t.Options.Prompt
@@ -581,8 +589,13 @@ func RunWorker(ctx context.Context, id string, run func(context.Context, WorkerO
 			defer w.mu.Unlock()
 			_, _ = appendEvent(dir, &t, Event{Type: "session", SessionID: sessionID})
 		}}
-		runErr = run(ctx, options, w)
+		runErr = run(turnCtx, options, w)
+		cancelTurn()
 		cancelInputs()
+		inputPumpErr := <-inputPumpDone
+		if inputPumpErr != nil {
+			runErr = inputPumpErr
+		}
 		if ctx.Err() != nil && runErr == nil {
 			runErr = ctx.Err()
 		}
@@ -789,12 +802,16 @@ type inputEnvelope struct {
 	Text string `json:"text"`
 }
 
-func pumpInputs(ctx context.Context, dir string, out chan<- Input) {
+func pumpInputs(ctx context.Context, dir string, out chan<- Input) error {
 	defer close(out)
 	offsetPath := filepath.Join(dir, "input.offset")
 	var offset int64
 	if b, e := os.ReadFile(offsetPath); e == nil {
-		_, _ = fmt.Sscanf(string(b), "%d", &offset)
+		if _, e = fmt.Sscanf(string(b), "%d", &offset); e != nil || offset < 0 {
+			return fmt.Errorf("corrupt task input offset %q", string(b))
+		}
+	} else if !errors.Is(e, os.ErrNotExist) {
+		return fmt.Errorf("read task input offset: %w", e)
 	}
 	for {
 		f, err := os.Open(filepath.Join(dir, "inputs.jsonl"))
@@ -804,13 +821,17 @@ func pumpInputs(ctx context.Context, dir string, out chan<- Input) {
 			for {
 				line, e := reader.ReadString('\n')
 				if e != nil {
+					if !errors.Is(e, io.EOF) {
+						_ = f.Close()
+						return fmt.Errorf("read task input queue: %w", e)
+					}
 					break
 				}
 				next := offset + int64(len(line))
 				var env inputEnvelope
-				if json.Unmarshal([]byte(strings.TrimSpace(line)), &env) != nil {
-					offset = next
-					continue
+				if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &env); err != nil || env.ID == "" || strings.TrimSpace(env.Text) == "" {
+					_ = f.Close()
+					return fmt.Errorf("corrupt task input queue record at byte %d", offset)
 				}
 				ack := make(chan error, 1)
 				input := Input{ID: env.ID, Text: env.Text, Ack: func(ackErr error) {
@@ -835,29 +856,32 @@ func pumpInputs(ctx context.Context, dir string, out chan<- Input) {
 				case out <- input:
 				case <-ctx.Done():
 					f.Close()
-					return
+					return nil
 				}
 				select {
 				case ackErr := <-ack:
 					if ackErr == nil {
 						offset = next
 					} else {
-						time.Sleep(200 * time.Millisecond)
+						_ = f.Close()
+						return fmt.Errorf("persist accepted task input %q: %w", env.ID, ackErr)
 					}
 				case <-ctx.Done():
-					f.Close()
-					return
+					_ = f.Close()
+					return nil
 				}
 				if ctx.Err() != nil {
-					f.Close()
-					return
+					_ = f.Close()
+					return nil
 				}
 			}
 			f.Close()
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("open task input queue: %w", err)
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

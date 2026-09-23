@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { destroyTreeSitterClient, getTreeSitterClient } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 import { act } from "react"
 import type { ServerEvent } from "./protocol"
@@ -11,6 +12,14 @@ afterEach(() => {
   for (const item of openRenderers.splice(0)) {
     act(() => item.renderer.destroy())
   }
+  return destroyTreeSitterClient()
+})
+
+beforeEach(async () => {
+  const client = getTreeSitterClient()
+  await client.initialize()
+  await client.preloadParser("markdown")
+  await client.preloadParser("markdown_inline")
 })
 
 function fakeTransport() {
@@ -61,6 +70,30 @@ describe("OpenTUI application", () => {
     expect(frame.indexOf(`Loop event ${count - 1}`)).toBeLessThan(frame.indexOf("Message"))
   })
 
+  test("mouse wheel preserves a manual scroll position while new rows arrive", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => {
+      for (let index = 0; index < 50; index++) fake.emit({ version: 1, id: `scroll-${index}`, type: "task_output", payload: { role: "user", text: `Scroll item ${index}` } })
+    })
+    await setup.flush()
+    const transcript = (setup.renderer.root as any).findDescendantById("transcript")
+    const bottom = transcript.scrollTop
+    expect(bottom).toBeGreaterThan(0)
+    await act(async () => setup.mockMouse.scroll(10, 8, "up"))
+    await setup.flush()
+    const manualOffset = transcript.scrollTop
+    expect(manualOffset).toBeLessThan(bottom)
+    act(() => fake.emit({ version: 1, id: "new-row", type: "task_output", payload: { role: "user", text: "New while reading" } }))
+    await setup.flush()
+    expect(transcript.scrollTop).toBe(manualOffset)
+    await act(async () => setup.mockMouse.scroll(10, 8, "down"))
+    await setup.flush()
+    expect(transcript.scrollTop).toBeGreaterThan(manualOffset)
+  })
+
   test("executes a selected slash command from the multiline composer", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
@@ -85,6 +118,23 @@ describe("OpenTUI application", () => {
     const frame = await setup.waitForFrame((value) => value.includes("Select model"))
     expect(frame).toContain("Select model")
     expect(frame).toContain("Luna")
+  })
+
+  test("mouse opens the slash model selector and picks a model", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    await act(async () => { await setup.mockInput.typeText("/") })
+    await setup.flush()
+    let frame = setup.captureCharFrame()
+    let row = frame.split("\n").findIndex((line) => line.includes("/model"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("/model"), row))
+    frame = await setup.waitForFrame((value) => value.includes("Select model"))
+    row = frame.split("\n").findIndex((line) => line.includes("Sol · balanced"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Sol · balanced"), row))
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "set_model" && item.payload?.model === "gpt-6-sol")).toBe(true)
   })
 
   test("an unrelated RPC error does not clear a submitted turn or disable cancel", async () => {
@@ -151,17 +201,60 @@ describe("OpenTUI application", () => {
       payload: { call_id: "call-1", name: "Bash", state: "running", command_preview: "bun test", arguments_preview: { cmd: "bun test" }, elapsed_ms: 41000 },
     }))
     act(() => fake.emit({ version: 1, id: "assistant", type: "assistant", payload: { text: "Tests are complete." } }))
+    await setup.flush()
     act(() => fake.emit({
       version: 1, id: "tool-finished", type: "tool_call",
       payload: { call_id: "call-1", name: "Bash", state: "completed", command_preview: "bun test", arguments_preview: { cmd: "bun test" }, elapsed_ms: 42000, operations: [{ type: "shell", state: "completed", output_excerpt: "6 pass", exit_code: 0 }] },
     }))
     act(() => fake.emit({ version: 1, id: "turn-end", type: "turn_finished", payload: {} }))
-    const frame = await setup.waitForFrame((value) => value.includes("Bash · completed") && value.includes("6 pass"))
-    expect(frame).toContain("Bash · completed")
-    expect(frame).toContain("6 pass")
+    const frame = await setup.waitForFrame((value) => value.includes("Bash · bun test"))
+    expect(frame).toContain("Bash · bun test")
+    expect(frame).toContain("Tests are complete.")
+    expect(frame).not.toContain("6 pass")
     expect(frame).toContain("bun test")
     expect(frame).not.toContain("[object Object]")
-    expect(frame.indexOf("Bash · completed")).toBeLessThan(frame.lastIndexOf("pk"))
+    const toolRow = frame.split("\n").findIndex((line) => line.includes("Bash · bun test"))
+    await act(async () => setup.mockMouse.click(8, toolRow))
+    const expanded = await setup.waitForFrame((value) => value.includes("6 pass"))
+    expect(expanded).toContain("$ bun test")
+    act(() => setup.mockInput.pressKey("o", { ctrl: true }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("6 pass")
+  })
+
+  test("groups adjacent tools but keeps assistant updates as timeline boundaries", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    const tool = (id: string, command: string) => fake.emit({ version: 1, id, type: "tool_call", payload: { call_id: id, name: "Bash", state: "completed", command_preview: command, elapsed_ms: 1000, operations: [{ type: "shell", state: "completed", output_excerpt: `${command} output`, exit_code: 0 }] } })
+    act(() => tool("cmd-1", "go test ./a"))
+    act(() => tool("cmd-2", "go test ./b"))
+    act(() => fake.emit({ version: 1, id: "commentary", type: "assistant", payload: { text: "Between the test groups." } }))
+    act(() => tool("cmd-3", "go test ./c"))
+    const frame = await setup.waitForFrame((value) => value.includes("Between the test groups."))
+    expect(frame).toContain("Ran 2 commands")
+    expect(frame).toContain("go test ./c")
+    expect(frame).not.toContain("go test ./a output")
+    const groupLine = frame.split("\n").findIndex((line) => line.includes("Ran 2 commands"))
+    await act(async () => setup.mockMouse.click(8, groupLine))
+    const expanded = await setup.waitForFrame((value) => value.includes("go test ./a output"))
+    expect(expanded).toContain("go test ./b output")
+    expect(expanded.indexOf("Ran 2 commands")).toBeLessThan(expanded.indexOf("Between the test groups."))
+    expect(expanded.indexOf("Between the test groups.")).toBeLessThan(expanded.indexOf("go test ./c"))
+  })
+
+  test("renders headings, lists, code fences, and links in markdown replies", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, id: "markdown", type: "assistant", payload: { text: "# Heading\n\n- List item\n\n```sh\nprintf hello\n```\n\n[Docs](https://example.com)" } }))
+    const frame = await setup.waitForFrame((value) => value.includes("Heading"))
+    expect(frame).toContain("List item")
+    expect(frame).toContain("printf hello")
+    expect(frame).toContain("Docs")
+    expect(frame).not.toContain("# Heading")
   })
 
   test("answers a foreground model question through its stable RPC id", async () => {
@@ -191,6 +284,20 @@ describe("OpenTUI application", () => {
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.id === "confirm-18" && item.payload?.answer === "No")).toBe(true)
+  })
+
+  test("mouse click answers the selected model question option", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, id: "question", type: "question", payload: { id: "mouse-choice", text: "Pick one", choices: ["Mint", "Blue"] } }))
+    const frame = await setup.waitForFrame((value) => value.includes("Pick one"))
+    const row = frame.split("\n").findIndex((line) => line.includes("Blue"))
+    await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("Blue"), row))
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.id === "mouse-choice" && item.payload?.answer === "Blue")).toBe(true)
+    expect(setup.captureCharFrame()).toContain("Sending answer…")
   })
 
 })

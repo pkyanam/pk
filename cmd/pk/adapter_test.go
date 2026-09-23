@@ -21,14 +21,16 @@ type mockModelAdapter struct {
 	mu         sync.Mutex
 	replies    []adapterReply
 	calls      int
+	requests   []llm.Request
 	closed     bool
 	started    chan struct{}
 	continueCh chan struct{}
 }
 
-func (adapter *mockModelAdapter) Respond(ctx context.Context, _ llm.Request, _ llm.RequestOptions) (llm.Response, error) {
+func (adapter *mockModelAdapter) Respond(ctx context.Context, request llm.Request, _ llm.RequestOptions) (llm.Response, error) {
 	adapter.mu.Lock()
 	adapter.calls++
+	adapter.requests = append(adapter.requests, request)
 	adapter.mu.Unlock()
 	if adapter.started != nil {
 		select {

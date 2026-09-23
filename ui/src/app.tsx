@@ -5,7 +5,7 @@ import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 
 type Role = "user" | "assistant" | "system" | "tool"
-type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; detail?: string }
+type Entry = { id: number; role: Role; text: string; callId?: string; toolName?: string; toolState?: string; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string }
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
@@ -38,10 +38,16 @@ const palette = {
 }
 const markdownStyle = SyntaxStyle.fromStyles({
   default: { fg: palette.text },
-  heading: { fg: palette.text, bold: true },
-  link: { fg: palette.blue, underline: true },
-  code: { fg: palette.accent },
-  quote: { fg: palette.muted },
+  "markup.heading": { fg: palette.text, bold: true },
+  "markup.heading.1": { fg: palette.text, bold: true },
+  "markup.list": { fg: palette.accent },
+  "markup.link": { fg: palette.blue, underline: true },
+  "markup.link.url": { fg: palette.blue, underline: true },
+  "markup.raw": { fg: palette.accent },
+  "markup.raw.block": { fg: palette.accent },
+  "markup.quote": { fg: palette.muted, italic: true },
+  "markup.bold": { fg: palette.text, bold: true },
+  "markup.italic": { fg: palette.text, italic: true },
 })
 
 function shortTime(milliseconds: number) {
@@ -60,6 +66,31 @@ function preview(value: unknown, limit = 180): string {
     const text = JSON.stringify(value)
     return text.length > limit ? `${text.slice(0, limit - 1)}…` : text
   } catch { return "" }
+}
+
+function toolGroupKey(entries: Entry[]) {
+  return entries[0]?.callId ?? `tool-${entries[0]?.id ?? "unknown"}`
+}
+
+function groupTranscript(entries: Entry[]): Array<{ kind: "entry"; entry: Entry } | { kind: "tools"; entries: Entry[] }> {
+  const grouped: Array<{ kind: "entry"; entry: Entry } | { kind: "tools"; entries: Entry[] }> = []
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index]!
+    if (entry.role !== "tool") {
+      grouped.push({ kind: "entry", entry })
+      index++
+      continue
+    }
+    const run = [entry]
+    while (index + run.length < entries.length) {
+      const next = entries[index + run.length]!
+      if (next.role !== "tool" || next.toolName !== entry.toolName) break
+      run.push(next)
+    }
+    grouped.push({ kind: "tools", entries: run })
+    index += run.length
+  }
+  return grouped
 }
 
 function parseSlashWords(input: string): string[] {
@@ -92,6 +123,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [activeTaskId, setActiveTaskId] = useState("")
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(() => new Set())
   const entryId = useRef(1)
   const waiting = useRef(false)
   const turnActive = useRef(false)
@@ -115,7 +147,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       const error = preview(item?.error_excerpt)
       return [item?.type ?? "operation", item?.state, error || output, item?.exit_code === undefined ? "" : `exit ${item.exit_code}`].filter(Boolean).join(" · ")
     }).filter(Boolean).join("\n") : ""
-    const detail = [data.command_preview || data.arguments_preview, operation].map((item) => preview(item, 260)).filter(Boolean).join("\n")
+    const detail = preview(operation, 900)
     const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded"].includes(status.toLowerCase())
     const error = preview(data.status?.error ?? data.error)
     const displayState = error ? "failed" : terminal ? status : status === "awaiting" ? "working" : status
@@ -126,6 +158,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         callId, toolName: name, toolState: displayState,
         startedAt: previous?.startedAt ?? startedAt,
         elapsedMs: Number.isFinite(data.elapsed_ms) ? Number(data.elapsed_ms) : undefined,
+        commandPreview: preview(data.command_preview || data.arguments_preview, 120),
         detail,
       }
       return (previous ? current.map((entry) => entry.callId === callId ? next : entry) : [...current, next]).slice(-300)
@@ -441,8 +474,52 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     textarea.current?.focus()
   }
 
+  const activateSelectorOption = (index: number) => {
+    if (selector === "tasks") {
+      const task: any = tasks[index]
+      if (task?.task_id) transport.send("task_attach", { task_id: task.task_id })
+      else if (task?.session_id) runSlashCommand(`/attach ${task.session_id}`)
+      setSelector(null)
+      textarea.current?.focus()
+    } else commitSelector(index)
+  }
+
+  const submitQuestionAnswer = (answer: string) => {
+    if (!question || question.answering || !answer) return
+    transport.send("answer_question" as any, { id: question.id, answer })
+    setQuestion({ ...question, answering: true, submittedAnswer: answer })
+    if (textarea.current) textarea.current.initialValue = ""
+    setDraft("")
+  }
+
+  const toggleToolGroup = (key: string) => {
+    setExpandedToolGroups((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const toggleLastToolGroup = () => {
+    const groups = groupTranscript(entries).filter((item): item is { kind: "tools"; entries: Entry[] } => item.kind === "tools")
+    const last = groups[groups.length - 1]
+    if (last) toggleToolGroup(toolGroupKey(last.entries))
+  }
+
+  const leftMouseDown = (event: { button: number; preventDefault: () => void; stopPropagation: () => void }, action: () => void) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    action()
+  }
+
   useKeyboard((key) => {
     const isEscape = key.name === "escape" || key.name === "esc"
+    if (!question && !selector && key.ctrl && key.name === "o") {
+      toggleLastToolGroup()
+      return
+    }
     if (question) {
       if (question.answering) return
       if (isEscape) {
@@ -461,10 +538,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (key.name === "return" && !(textarea.current?.plainText ?? draft).trim() && question.choices.length) {
         key.preventDefault()
         const answer = question.choices[questionIndex]
-        if (answer) {
-          transport.send("answer_question" as any, { id: question.id, answer })
-          setQuestion({ ...question, answering: true, submittedAnswer: answer })
-        }
+        if (answer) submitQuestionAnswer(answer)
         return
       }
     }
@@ -474,13 +548,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (key.name === "up") { setSelectionIndex((index) => (index - 1 + count) % count); return }
       if (key.name === "down") { setSelectionIndex((index) => (index + 1) % count); return }
       if (key.name === "return") {
-        if (selector === "tasks") {
-          const task: any = tasks[selectionIndex]
-          if (task?.task_id) transport.send("task_attach", { task_id: task.task_id })
-          else if (task?.session_id) runSlashCommand(`/attach ${task.session_id}`)
-          setSelector(null)
-          textarea.current?.focus()
-        } else commitSelector(selectionIndex)
+        activateSelectorOption(selectionIndex)
         key.preventDefault()
         return
       }
@@ -560,8 +628,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         <text fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
         <text fg={palette.dim} content={usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"} />
       </box>
-      <scrollbox stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }} focused={!selector}>
-        {entries.map((entry) => <TranscriptEntry key={entry.id} entry={entry} clock={clock} />)}
+      <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }} focused={!selector}>
+        {groupTranscript(entries).map((item) => item.kind === "entry"
+          ? <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
+          : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
         {busy && tools.length === 0 && <box style={{ flexDirection: "row", gap: 1, paddingLeft: 2, height: 1 }}><text fg={palette.accent} content="◌" /><text fg={palette.muted} content="Thinking…" /></box>}
       </scrollbox>
       <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
@@ -573,20 +643,27 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <textarea ref={textarea} focused={!selector} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
-          {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} style={{ flexDirection: "row", gap: 2, backgroundColor: slashWindowStart + localIndex === slashIndex % filteredCommands.length ? palette.panel : palette.raised, height: 1 }}>
+          {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
+            setSlashIndex(slashWindowStart + localIndex)
+            if (item.action === "task" || item.action === "attach") {
+              textarea.current!.initialValue = `${item.name} `
+              setDraft(`${item.name} `)
+              textarea.current?.focus()
+            } else runSlashCommand(item.name)
+          })} style={{ flexDirection: "row", gap: 2, backgroundColor: slashWindowStart + localIndex === slashIndex % filteredCommands.length ? palette.panel : palette.raised, height: 1 }}>
             <text fg={palette.accent} content={item.name} />
             <text fg={palette.muted} content={item.description} />
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-          <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ^D detach`} />
+          <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
       {selector && <box style={{ position: "absolute", left: "25%", right: "25%", top: "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : "Saved sessions"} />
         <box style={{ height: 1 }} />
-        {selectedOptions.map((option, index) => <box key={option.value} style={{ flexDirection: "row", gap: 1, backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
+        {selectedOptions.map((option, index) => <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "row", gap: 1, backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
           <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
           <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
           {option.value === (selector === "model" ? model : effort) && <text fg={palette.dim} content="current" />}
@@ -597,14 +674,52 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
         <text fg={palette.text} content={question.text} />
-        {question.choices.map((choice, index) => <box key={`${question.id}-${index}`} style={{ flexDirection: "row", gap: 1, backgroundColor: index === questionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
-          <text fg={index === questionIndex ? palette.accent : palette.muted} content={index === questionIndex ? "›" : " "} />
-          <text fg={index === questionIndex ? palette.text : palette.muted} content={choice} />
+        {question.choices.map((choice, index) => <box key={`${question.id}-${index}`} onMouseOver={() => !question.answering && setQuestionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => submitQuestionAnswer(choice))} style={{ flexDirection: "row", gap: 1, backgroundColor: index === questionIndex ? palette.panel : palette.raised, paddingLeft: 1, height: 1 }}>
+          <text fg={question.answering ? palette.dim : index === questionIndex ? palette.accent : palette.muted} content={index === questionIndex && !question.answering ? "›" : " "} />
+          <text fg={question.answering ? palette.dim : index === questionIndex ? palette.text : palette.muted} content={choice} />
         </box>)}
         <text fg={palette.dim} content={question.answering ? "Sending answer…" : question.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
       </box>}
     </box>
   )
+}
+
+function ToolTranscriptGroup({ entries, clock, expanded, onToggle }: { entries: Entry[]; clock: number; expanded: boolean; onToggle: () => void }) {
+  const renderer = useRenderer()
+  const first = entries[0]!
+  const failed = entries.some((entry) => entry.toolState === "failed")
+  const running = entries.some((entry) => !["completed", "complete", "failed", "canceled", "cancelled", "succeeded"].includes((entry.toolState ?? "").toLowerCase()))
+  const elapsed = entries.reduce((total, entry) => total + (entry.elapsedMs ?? (entry.startedAt ? Math.max(0, clock - entry.startedAt) : 0)), 0)
+  const summary = entries.length > 1
+    ? `${first.toolName ?? "tool"} · Ran ${entries.length} ${first.toolName === "Bash" ? "commands" : "calls"}`
+    : `${first.toolName ?? "tool"} · ${first.commandPreview || "operation"}`
+  const color = failed ? palette.red : running ? palette.accent : palette.green
+  const available = Math.max(24, Math.min(112, renderer.width - 24))
+  const compactSummary = summary.length > available ? `${summary.slice(0, available - 1)}…` : summary
+  return <box focusable onMouseDown={(event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    onToggle()
+    event.currentTarget?.focus()
+  }} onKeyDown={(key) => {
+    if (key.name === "return" || key.name === "space") {
+      key.preventDefault()
+      onToggle()
+    }
+  }} style={{ flexDirection: "column", width: "100%", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: failed ? palette.red : palette.accent }}>
+    <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
+      <text fg={color} content={running ? "◌" : failed ? "!" : "✓"} />
+      <text fg={palette.text} content={compactSummary} />
+      <text fg={palette.dim} content={shortTime(elapsed)} />
+      <text fg={palette.dim} content={expanded ? "▾" : "›"} />
+    </box>
+    {expanded && entries.map((entry) => <box key={entry.callId} style={{ flexDirection: "column", paddingLeft: 2, paddingBottom: 1 }}>
+      {entry.commandPreview && <text fg={palette.muted} content={`$ ${entry.commandPreview}`} />}
+      {entry.detail && <text fg={entry.toolState === "failed" ? palette.red : palette.dim} content={entry.detail} />}
+      {entry.text && entry.text !== entry.detail && <text fg={palette.red} content={entry.text} />}
+    </box>)}
+  </box>
 }
 
 function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
@@ -618,7 +733,7 @@ function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
     {entry.detail ? <text fg={palette.muted} content={entry.detail} /> : entry.text ? <text fg={palette.red} content={entry.text} /> : null}
   </box>
   const isUser = entry.role === "user"
-  return <box style={{ flexDirection: "column", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
+  return <box style={{ flexDirection: "column", width: "100%", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
     <text fg={isUser ? palette.blue : palette.accent} content={isUser ? "you" : "pk"} />
     {isUser ? <text fg={palette.text} content={entry.text} /> : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
   </box>

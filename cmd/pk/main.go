@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/runner"
@@ -104,13 +105,22 @@ func hasPromptFlag(args []string) bool {
 }
 
 func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	options, useCodex, codexPath, err := parseRunArgs(args, stderr)
+	options, useCodex, codexPath, files, err := parseRunArgsWithFiles(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		fmt.Fprintf(stderr, "pk run: %v\n", err)
 		return 2
+	}
+	if len(files) > 0 {
+		var loaded []attachments.Attachment
+		options.Prompt, loaded, err = loadPromptAttachments(ctx, options.Workspace, options.Prompt, files)
+		if err != nil {
+			fmt.Fprintf(stderr, "pk run: load attachments: %v\n", err)
+			return 2
+		}
+		writeAttachmentSummary(stderr, loaded)
 	}
 	client, err := prepareAdapter(ctx, useCodex, codexPath)
 	if err != nil {
@@ -263,7 +273,12 @@ func readPromptLine(ctx context.Context, reader *bufio.Reader, closer io.Closer)
 }
 
 func parseRunArgs(args []string, stderr io.Writer) (runner.Options, bool, string, error) {
-	return parseCommandArgs(args, stderr, true)
+	options, useCodex, codexPath, _, err := parseRunArgsWithFiles(args, stderr)
+	return options, useCodex, codexPath, err
+}
+
+func parseRunArgsWithFiles(args []string, stderr io.Writer) (runner.Options, bool, string, []string, error) {
+	return parseCommandArgsWithFiles(args, stderr, true)
 }
 
 func parseInteractiveArgs(args []string, stderr io.Writer) (runner.Options, bool, string, error) {
@@ -271,17 +286,23 @@ func parseInteractiveArgs(args []string, stderr io.Writer) (runner.Options, bool
 }
 
 func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runner.Options, bool, string, error) {
+	options, useCodex, codexPath, _, err := parseCommandArgsWithFiles(args, stderr, requirePrompt)
+	return options, useCodex, codexPath, err
+}
+
+func parseCommandArgsWithFiles(args []string, stderr io.Writer, requirePrompt bool) (runner.Options, bool, string, []string, error) {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var options runner.Options
 	var useCodex bool
 	var codexAuth string
 	var skills stringList
+	var files stringList
 	flags.StringVar(&options.Prompt, "p", "", "prompt to send")
 	flags.StringVar(&options.Prompt, "prompt", "", "prompt to send")
 	defaults, configErr := config.Load(filepath.Join(pkHome(), "config.json"))
 	if configErr != nil {
-		return runner.Options{}, false, "", fmt.Errorf("load config: %w", configErr)
+		return runner.Options{}, false, "", nil, fmt.Errorf("load config: %w", configErr)
 	}
 	flags.StringVar(&options.Model, "model", defaults.Model, "model ID (default from pk config)")
 	flags.StringVar(&options.Effort, "effort", defaults.Effort, "reasoning effort: low, medium, high, xhigh, max")
@@ -292,32 +313,35 @@ func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runn
 	flags.BoolVar(&useCodex, "use-codex", false, "explicitly reuse existing Codex ChatGPT credentials read-only")
 	flags.StringVar(&codexAuth, "codex-auth-file", "", "Codex auth file used with --use-codex")
 	flags.Var(&skills, "skills-dir", "directory containing <skill>/SKILL.md; may be repeated")
+	if requirePrompt {
+		flags.Var(&files, "file", "attach a text, PDF, or image file; may be repeated")
+	}
 	if err := flags.Parse(args); err != nil {
-		return runner.Options{}, false, "", err
+		return runner.Options{}, false, "", nil, err
 	}
 	options.Effort = strings.ToLower(strings.TrimSpace(options.Effort))
 	if flags.NArg() != 0 {
-		return runner.Options{}, false, "", fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		return runner.Options{}, false, "", nil, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
 	if requirePrompt && strings.TrimSpace(options.Prompt) == "" {
-		return runner.Options{}, false, "", errors.New("-p/--prompt is required")
+		return runner.Options{}, false, "", nil, errors.New("-p/--prompt is required")
 	}
 	if codexAuth != "" && !useCodex {
-		return runner.Options{}, false, "", errors.New("--codex-auth-file requires --use-codex")
+		return runner.Options{}, false, "", nil, errors.New("--codex-auth-file requires --use-codex")
 	}
 	if !config.ValidEffort(options.Effort) {
-		return runner.Options{}, false, "", fmt.Errorf("unsupported reasoning effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)", options.Effort)
+		return runner.Options{}, false, "", nil, fmt.Errorf("unsupported reasoning effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)", options.Effort)
 	}
 	if options.Workspace == "" {
 		var err error
 		options.Workspace, err = os.Getwd()
 		if err != nil {
-			return runner.Options{}, false, "", fmt.Errorf("get working directory: %w", err)
+			return runner.Options{}, false, "", nil, fmt.Errorf("get working directory: %w", err)
 		}
 	}
 	workspace, err := filepath.Abs(options.Workspace)
 	if err != nil {
-		return runner.Options{}, false, "", fmt.Errorf("resolve workspace: %w", err)
+		return runner.Options{}, false, "", nil, fmt.Errorf("resolve workspace: %w", err)
 	}
 	options.Workspace = workspace
 	options.SessionDir = filepath.Join(pkHome(), "sessions")
@@ -333,7 +357,7 @@ func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runn
 		}
 		codexAuth = filepath.Join(codexHome, "auth.json")
 	}
-	return options, useCodex, codexAuth, nil
+	return options, useCodex, codexAuth, files, nil
 }
 
 type stringList []string
@@ -397,6 +421,7 @@ Run options:
   --effort EFFORT            reasoning effort (default medium)
   --workspace DIR            working directory for tools
   --session ID               resume a saved session
+  --file PATH                attach a text, PDF, or image (repeatable; relative to workspace)
   --use-codex                reuse existing Codex credentials read-only
   --jsonl                    write assistant and tool events as JSONL
 
