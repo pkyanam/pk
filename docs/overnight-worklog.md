@@ -651,3 +651,8 @@ gates or imply that every backlog item is complete.
 - Empty pre-created sessions now receive their initial context without a misleading resume warning. Existing history with a missing snapshot still warns and refuses captured-output compaction. Full runner and CLI race suites pass.
 - Replaced the first large-transcript diagnostic with fresh renderers, prewarmed parsers and alternating format order; retained full content. Initial Markdown work remains more expensive, while unrelated updates were similar. No clipping or freeze reproduced; timing details and scope are in docs/performance.md.
 - Official SDK smoke now passes restart/load of the actual CLI, replaying both user and assistant history and continuing with a third provider turn. This verifies the SDK path, not a particular editor.
+
+### 08:58 EDT — ACP continuity checkpoint installed
+
+- Managed updater activated clean 8075acd as 20260923T125814.937959000Z-33a2ccfc6892-73392029 after all validation gates. Fresh ACP sessions no longer report a misleading resume warning. Existing running sessions were not interrupted.
+- Saved the ACP image-input boundary and required artifact lifecycle work in docs/research/acp-image-inputs.md. It is a proposal, not implemented image-block support.
