@@ -446,3 +446,19 @@ gates or imply that every backlog item is complete.
 ### 2026-09-23 09:00 UTC — native reload and settings review
 - Computer Use reloaded the existing demo session `7c1a2e81` in Cmux workspace 2 onto the installed release; its messages and composer returned. User workspace 1 was untouched. `/image` opened correctly and Escape closed it without changing settings.
 - Native review found two polish gaps: selector label/status text visually runs together, and resumed history omits tool rows while exposing the attachment's model-input wrapper. UI agent is correcting selector spacing; reviewer is tracing history fidelity. These remain open until verified.
+
+### 2026-09-23 09:08 UTC — interaction fixes and effort pilot result
+- Committed/pushed selector label separation (`097212c`) and mouse session reopening (`af07f05`). Root reran six ImageGen and eleven session-manager interaction tests successfully. These UI polish changes await the next coherent install with history restoration.
+- Effort pilot process completed once, exit 0, all 16 phases and eight verification holdouts passed. Low effort showed 4.3% fewer total input+output tokens but 9.0% more uncached input; task-level direction differed. This does not meet the preset 10% token reduction threshold, so defaults remain unchanged. Benchmark owner is fixing stale formatter prose and preserving exact run-source metadata without rerunning.
+
+### 2026-09-23 09:20 UTC — installed history and mouse checkpoint
+- GitHub-source installation activated clean `347a609`, release `20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`, after 110 UI tests / 485 assertions. The first staging attempt failed a repaint-sensitive MCP Cancel assertion and left the previous release intact; waiting for the actual rendered state fixed the test, with ten focused repetitions passing.
+- Computer Use reloaded only the owned Cmux demo session. Grouped Bash history and ViewImage history returned; Ctrl+O expanded saved ViewImage arguments. User workspace 1 was not touched.
+- Committed `30400c7` bounded assistant preview assembly. Synthetic helper-only benchmark reduced allocated bytes from ~2.76 MB to 16 KB; upstream full-log decoding remains and this is not an end-to-end or token savings claim.
+- Latest user MCP screenshot has obsolete contradictory Enter hints. Installed code already uses focus-specific hints; a follow-up keyboard/mouse audit is underway. Attachment provenance remains in progress; legacy history is intentionally unchanged without verifiable metadata.
+- Native MCP follow-up: on installed `347a609`, opened Add, changed to remote HTTP with Right, tabbed to Save, and verified the Save-only Enter hint plus green focus. Canceled without saving. The user's contradictory screenshot predates this installed hint fix. A bounded follow-up improves Enter navigation and field mouse focus.
+
+### 2026-09-23 — coherent MCP focus and saved attachments
+- `c680a0b` gives MCP Enter one focused action: selectors change, text fields advance, Save submits. Mouse clicks synchronize field focus, including masked credentials; contextual hints and modal visibility match behavior. Full UI suite: 113 tests, 508 assertions; TypeScript passes.
+- `1a5a614` adds bounded attachment presentation records keyed to durable input IDs, verified against typed-prefix and effective-payload hashes. New foreground attachment prompts restore typed text and filename/type/PDF chips; legacy or mismatched records keep full original input. Archive/restore/purge include these records. Model inputs and cache prefixes are unchanged. Steering attachments are not supported by this pass.
+- Affected Go race suites pass after correcting the new large-prompt test to account for the existing ellipsis marker. History metadata is included in entry/page display budgets.

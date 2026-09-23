@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2-039f1af3`); root reports 97 UI tests and 441 assertions. This includes the bounded session-preview allocation improvement.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `347a609` (`20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`), including interactive ImageGen, mouse session opening, and restored compact tool history. All 110 UI tests / 485 assertions passed before activation; native Cmux reload and restored tool expansion passed.
 
 ## Product and implementation
 
@@ -19,8 +19,7 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 - [~] Route genuine follow-up questions and confirmation decisions through the familiar AskUser UI without forcing needless clarifications. One fresh Luna session produced two sequential question events for a two-question planning request; a separate direct file task completed without asking a question. These are bounded observations, not a behavior guarantee; new sessions are needed to use updated prompt/tool context.
 - [x] Fix terminal viewport/composer clipping, top separator, stale new-session behavior, and scrolling as covered by the current UI smoke.
 - [x] Add a concise marketing README, badges, and an explicitly conceptual mockup placeholder (`fd9633c`).
-- [~] Preserve the requested visual direction in the final product mockup: premium dark terminal UI, mint accent, and ASCII `pk` wordmark. The committed preview is conceptual; confirm it matches the requested treatment in the actual TUI instead of presenting the concept image as a screenshot.
-- [~] Produce a few low-effort image-generation mockups, select the dark/mint direction as the first concept, and keep its ASCII `pk` wordmark. Current committed preview is conceptual; any missing mockup variants remain to be made and reviewed.
+- [x] Produce three low-effort image-generation mockups and three launch assets, including the dark/mint direction and ASCII `pk` wordmark. Concept images are labeled as concepts; the README now uses a reviewed frame from the real product.
 - [x] Make the TUI command surface easy to discover from the Codex-style slash-command menu, including session, task, status, login, cancellation, model, and effort controls.
 - [x] Support installing/running `pk` from the current project folder with that folder as the working directory, and document PATH setup for the installed binary.
 - [~] Push implementation in frequent reviewable increments and relaunch/notify the user at meaningful shipped checkpoints. Commits `fd9633c`, `4f0a57e`, and `1636be2` are recorded; continue this through remaining work rather than waiting for one large final batch.
@@ -50,7 +49,7 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 ## Marketing and delivery
 
 - [x] Prepare a friendly, concise README with centered product framing and badges. The header now shows a real pk coding session from the reviewed Cmux demo; earlier concept images remain separately labeled.
-- [~] Create image-generated marketing assets after technical validation. The first conceptual brand card is in the public repository at `output/launch/pk-keep-work-moving.png`; see `docs/launch-assets.md`. It is not a screenshot and has not been posted on social media or used in an external campaign. Avoid public open-source/licensing claims until a license is selected.
+- [x] Create and review three image-generated launch assets. They are in `output/launch/` and documented in `docs/launch-assets.md`; they are draft brand concepts, not screenshots. Nothing has been posted on social media or used in an external campaign. Avoid public open-source/licensing claims until a license is selected.
 - [~] Draft the requested X launch posts for review after technical validation. Local variants, a four-post thread, and demo captions are ready in `docs/launch-copy.md`; awaiting review. Do not publish or post them without explicit authorization.
 - [x] Record, edit, and review a focused local coding demo in Cmux using Cap. The final [44-second MP4](/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4) is 1080p30 and 552,306 bytes. The Cap project, source export, and reproduction README are retained beside it; source/edit contact sheets and title/outro frames were reviewed. No upload or publication was made.
 - [~] Consider a broader feature montage as a separate optional follow-up; the focused coding demo is complete. Keep any later cut local unless publication is explicitly requested.
@@ -72,7 +71,7 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 - [ ] Verify native drag/drop. Parser tests pass, but native GUI behavior is unverified.
 - [x] Verify raw image-pixel clipboard intake in Cmux: Preview Select All → Cmd+C → Cmux Cmd+V created a clipboard PNG, then Luna ViewImage described it correctly (session `7c1a2e81`). This is a terminal-specific observation; native drag/drop is tracked separately.
 - [ ] Recheck wait/run elapsed status through provider-load and longer model/tool gaps; the connected dot is removed and “Waiting for model” → “Ready” was verified in Cmux.
-- [ ] Finish and inspect the final video and optional launch assets; leave them local for review unless the user separately requests publication.
+- [x] Finish and inspect the focused coding demo and launch assets; keep them local/reviewable and do not publish externally without authorization. The broader feature montage remains optional.
 
 ## Protocol and integration additions
 
@@ -84,13 +83,13 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 
 ## Current handoff
 
-Installed `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2-039f1af3`) includes the bounded session-preview allocation improvement; root reports 97 passing UI tests/441 assertions. The separate `7436784` synthetic session-list benchmark is documented in `docs/performance.md`; it measures allocation/time, not tokens. Finder path-based image inspection passed in one demo session, while raw-pixel clipboard input and native drag/drop remain unverified. The focused coding demo is reviewed and delivered locally at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional.
+Installed `347a609` (`20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`) includes restored compact tool history; 110 UI tests/485 assertions passed before activation. Native Cmux reload restored the session and expanded tool details. Finder path-based and Preview raw-pixel image inspection both succeeded; native drag/drop remains unverified. The reviewed focused coding demo is at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional. The `7436784` synthetic session-list benchmark measures allocation/time, not tokens.
 
 Privacy claims remain under review for network destinations, workspace access, rollback behavior, and deletion semantics. Keep them scoped to verified pk/Bun behavior and distinguish provider, remote MCP, skills catalog, and extension traffic. A general promise that pk or external integrations collect no telemetry is not supported.
 
 The user's north-star goal is an exceptionally capable and efficient harness. Current evidence does not show a general performance advantage: the one-repetition matched pilot passed six correctness checks but pk generally used more tokens; a later matched replay pilot showed lower input tokens in that sample alongside more output/response calls and mixed latency. The output-cap probe was a no-op because no calls omitted caps. Continue matched quality, token, latency, and reliability trials; never turn these small results into superiority claims.
 
-The 08:00 EDT, 23 September target was the requested handoff deadline, not evidence that every item could be finished. Finder Cmd+C file then Cmd+V image-path paste with spaces was verified and used by Luna through `ViewImage`; raw clipboard pixels and native drag/drop remain unverified. Ctrl+Y selection copy was verified. The focused local coding demo is complete; a broader feature montage is optional. See `docs/overnight-worklog.md` for the latest chronological checkpoint.
+The 08:00 EDT, 23 September target was the requested handoff deadline, not evidence that every item could be finished. Finder Cmd+C file then Cmd+V image-path paste and Preview raw-pixel paste were both verified through `ViewImage`; native drag/drop remains unverified. Ctrl+Y selection copy was verified. The focused local coding demo is complete; a broader feature montage is optional. See `docs/overnight-worklog.md` for the latest chronological checkpoint.
 
 ## Additional requirements — search, subagents, and providers
 
@@ -98,10 +97,10 @@ The 08:00 EDT, 23 September target was the requested handoff deadline, not evide
 - [~] Grow main-agent-managed subagents beyond the installed implementation. Task-only/no-file mode, a FIFO queue of up to eight, advisory path claims, and ordered event drain are installed; child tools retain the same workspace permissions, so this is not a sandbox. One live smoke completed three child-only enumeration tasks with no file writes. Continue stress-testing cancellation, event ordering, structured results, and compact lifecycle cards over longer runs.
 - [~] Configure multiple providers. Installed providers support explicit OpenAI-compatible Responses and Chat Completions endpoints, safe credential storage, `/v1/models` discovery, streaming, and session-bound selection. Local HTTP fixture tests passed. Chat Completions image mapping is fixture-tested; no real remote provider smoke is recorded. Validate provider-specific capabilities and limits, reasoning-effort support, timeout/rate-limit errors, and endpoint-specific output limits.
 - [~] Surface provider/model selection, subagent activity, search behavior, and actual model-tool availability cleanly in the TUI and bundled pk self-knowledge skill. The installed `/tools` preview passed an RPC-only fresh-session smoke; verify it in the interactive UI and confirm listed tools match the active session.
-- [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy and Finder Cmd+C/Cmd+V of a spaced image path are verified; Luna inspected the path with `ViewImage` and completed the demo. Raw clipboard pixels and native GUI drag/drop remain unverified. Keep those limits distinct from the tested file-path route.
-- [ ] Finish the local 30–60 second product demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization.
+- [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy, Finder Cmd+C/Cmd+V of a spaced image path, and Preview raw-pixel paste are verified; Luna inspected both image routes with `ViewImage`. Native GUI drag/drop remains unverified. Keep those limits distinct from the tested paste routes.
+- [x] Finish the local focused coding demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization; a broader montage remains optional.
 
-Latest installed checkpoint: `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2-039f1af3`); root reports 97 passing UI tests/441 assertions. The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. The Finder path-to-`ViewImage` demo passed, but raw image pixels and native drag/drop remain unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
+Latest installed checkpoint: `347a609` (`20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
@@ -116,12 +115,12 @@ Latest installed checkpoint: `f6d5783` (`20260923T083731.814932000Z-7fb8926ae1f2
 
 Subagent checkpoint update: task-only mode and bounded FIFO queue are installed in `e5aba4a`; the natural-prompt three-child counting smoke passed without file writes. Do not confuse that bounded functional smoke with performance evidence.
 
-### Latest installed checkpoint: interactive ImageGen
+### Earlier installed checkpoint: interactive ImageGen
 
 - Installed clean revision `616102f` adds `/image` opt-in settings with keyboard and mouse, default Astra image worker separate from Luna chat, and saved-driver consistency on resume. Installed RPC enable/new/disable/new registry smoke passed in an isolated home. Existing one-shot live image proof remains the generation evidence; no additional paid image was requested for this configuration check.
 
 ### Open session usability fixes from native review
 
-- [ ] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Existing Enter resume and archive lease checks already pass.
-- [ ] Restore compact tool activity on attach/reload/history paging rather than only user/assistant text. Preserve event order, paging bounds, and exclusion of analysis.
+- [x] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Committed `af07f05`; 11 focused tests pass including 80×24 visibility and active/busy protections. Installed in `347a609`.
+- [x] Restore compact tool activity on attach/reload/history paging, preserving event order, paging bounds, and excluding analysis. Installed in `347a609`; native reload retained grouped Bash and ViewImage activity, with Ctrl+O details.
 - [ ] Present saved attachment metadata as user-facing files instead of showing generated model-input wrappers; do not silently strip arbitrary user-authored text.
