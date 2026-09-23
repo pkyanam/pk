@@ -2111,7 +2111,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setProviderID(String(data.provider_id ?? "native") || "native")
         if (data.model) setModel(String(data.model))
         if (data.effort) setEffort(String(data.effort))
-        addEntry("system", `Provider selected · ${String(data.provider_id || "Native Codex")}${data.model ? ` · ${String(data.model)}` : ""} · applies to the next conversation.`)
+        addEntry("system", `Provider selected · ${String(data.provider_id || "Native Codex")}${data.model ? ` · ${String(data.model)}` : ""} · ${data.persisted === true ? "saved for new sessions and relaunch" : "applies to this new session"}.`)
         break
       }
       case "image_status":

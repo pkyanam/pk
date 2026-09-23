@@ -34,6 +34,10 @@ func resolveRPCProvider(id string) (providers.Provider, error) {
 	return provider, nil
 }
 
+func applyRPCProviderPreference(provider *providers.Provider) error {
+	return rpcProviderStore().ApplyModelPreference(provider)
+}
+
 func resolveRPCProviderID(id string) (string, error) {
 	if id != "" {
 		if _, err := resolveRPCProvider(id); err != nil {

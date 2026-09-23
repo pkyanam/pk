@@ -636,6 +636,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "load model provider: " + err.Error(), "recoverable": true})
 			return
 		}
+		if err := applyRPCProviderPreference(&provider); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load provider model preference: " + err.Error(), "recoverable": true})
+			return
+		}
 		model := get("model")
 		if model == "" {
 			model = provider.DefaultModel
@@ -746,6 +750,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		workspace, sessionID, providerID := s.opts.Workspace, s.session, s.providerID
+		model := s.opts.Model
+		if providerID == "" && isCloudflareWorkersAIModel(model) {
+			s.mu.Unlock()
+			_ = s.emit(msg.ID, "error", map[string]any{"message": nativeCloudflareModelError().Error(), "recoverable": true})
+			return
+		}
 		contextConfig, historyConfig := s.contextBudgetConfig, s.historyCompactionConfig
 		pluginPaths := append([]string(nil), s.pluginPaths...)
 		ctx, cancel := context.WithCancel(s.ctx)
@@ -1744,6 +1754,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
+		if err := applyRPCProviderPreference(&selected); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "load provider model preference: " + err.Error(), "recoverable": true})
+			return
+		}
 		cfg, err := config.Load(s.cfgPath)
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
@@ -1763,6 +1777,13 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 			model = modelOverride
 		}
+		if providerID == "" && isCloudflareWorkersAIModel(model) {
+			if strings.TrimSpace(get("model")) != "" {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "a Workers AI model cannot be selected with Native Codex; choose a native model or select Cloudflare Workers AI", "recoverable": true})
+				return
+			}
+			model = config.DefaultModel
+		}
 		selectedOptions := runner.Options{ProviderID: providerID, Model: model, Effort: effort}
 		if err := applyConfiguredContextManagement(&selectedOptions, cfg, selected.BaseURL); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve context budget: " + err.Error(), "recoverable": true})
@@ -1774,12 +1795,36 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "provider selection is available only before the first prompt in a new session", "recoverable": true})
 			return
 		}
+		store := rpcProviderStore()
+		if providerID == "" {
+			cfg.Model, cfg.Effort = model, effort
+			if err := config.Save(s.cfgPath, cfg); err != nil {
+				s.mu.Unlock()
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save native model defaults: " + err.Error(), "recoverable": true})
+				return
+			}
+			if err := store.SetDefault(""); err != nil {
+				s.mu.Unlock()
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not select Native Codex as the default provider: " + err.Error(), "recoverable": true})
+				return
+			}
+		} else {
+			var selectedEffort *string
+			if selected.SupportsReasoningEffort {
+				selectedEffort = &effort
+			}
+			if err := store.SetDefaultModelAndProvider(providerID, model, selectedEffort); err != nil {
+				s.mu.Unlock()
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save provider defaults: " + err.Error(), "recoverable": true})
+				return
+			}
+		}
 		s.providerID, s.opts.ProviderID, s.opts.Model, s.opts.Effort = providerID, providerID, model, effort
 		s.opts.ContextBudget = selectedOptions.ContextBudget
 		s.opts.HistoryCompaction = selectedOptions.HistoryCompaction
 		s.contextBudgetConfig, s.historyCompactionConfig = cfg.ContextBudget, cfg.HistoryCompaction
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort})
+		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort, "persisted": true})
 	case "plugins_enable":
 		var payload map[string]any
 		var err error
@@ -2357,22 +2402,42 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 			effort = strings.ToLower(requestedEffort)
 		}
+		if providerID == "" && isCloudflareWorkersAIModel(model) {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "a Workers AI model cannot be configured for Native Codex; select Cloudflare Workers AI first", "recoverable": true})
+			return
+		}
 		if model != "" && effort != "" {
 			cfg, err := config.Load(s.cfgPath)
 			if err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not load pk defaults: " + err.Error(), "recoverable": true})
 				return
 			}
-			cfg.Model, cfg.Effort = model, effort
 			providerBaseURL := rpcContextBudgetBaseURL(providerID)
 			selectedOptions := runner.Options{ProviderID: providerID, Model: model, Effort: effort}
 			if err := applyConfiguredContextManagement(&selectedOptions, cfg, providerBaseURL); err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve context budget: " + err.Error(), "recoverable": true})
 				return
 			}
-			if err := config.Save(s.cfgPath, cfg); err != nil {
-				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save model defaults: " + err.Error(), "recoverable": true})
-				return
+			if providerID == "" {
+				cfg.Model, cfg.Effort = model, effort
+				if err := config.Save(s.cfgPath, cfg); err != nil {
+					_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save model defaults: " + err.Error(), "recoverable": true})
+					return
+				}
+			} else {
+				provider, err := resolveRPCProvider(providerID)
+				if err != nil {
+					_ = s.emit(msg.ID, "error", map[string]any{"message": "load selected provider: " + err.Error(), "recoverable": true})
+					return
+				}
+				var effortPreference *string
+				if requestedEffort != "" && provider.SupportsReasoningEffort {
+					effortPreference = &effort
+				}
+				if err := rpcProviderStore().SetDefaultModelAndProvider(providerID, model, effortPreference); err != nil {
+					_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save provider model preference: " + err.Error(), "recoverable": true})
+					return
+				}
 			}
 			s.mu.Lock()
 			s.opts.Model, s.opts.Effort = model, effort

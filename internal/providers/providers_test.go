@@ -94,6 +94,49 @@ func TestStoreDefaultSelectionAndRemoval(t *testing.T) {
 	}
 }
 
+func TestPerProviderModelPreferenceDoesNotChangeConnectionFingerprint(t *testing.T) {
+	store := Store{Home: filepath.Join(t.TempDir(), "providers")}
+	provider := Provider{ID: "cloudflare", Protocol: ProtocolCloudflareWorkersAI, BaseURL: "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1", APIKey: "fixture-token"}
+	if err := store.Put(provider); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetDefaultModelAndProvider(provider.ID, "@cf/zai-org/glm-5.3-flash", nil); err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig, err := os.ReadFile(store.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(legacyConfig, []byte("model_preferences")) {
+		t.Fatal("per-model preferences were written into the legacy providers.json schema")
+	}
+	preferenceInfo, err := os.Stat(store.modelPreferencesPath())
+	if err != nil || preferenceInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("model preference file permissions = %v, err=%v", preferenceInfo, err)
+	}
+	reloaded, err := store.Get(provider.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Fingerprint() != provider.Fingerprint() {
+		t.Fatal("changing the model preference changed the provider connection fingerprint")
+	}
+	preference, found, err := Store{Home: store.Home}.ModelPreference(provider.ID)
+	if err != nil || !found || preference.Model != "@cf/zai-org/glm-5.3-flash" {
+		t.Fatalf("preference after fresh Store reload = %+v found=%v err=%v", preference, found, err)
+	}
+	defaultID, err := Store{Home: store.Home}.DefaultID()
+	if err != nil || defaultID != provider.ID {
+		t.Fatalf("persisted default provider = %q err=%v", defaultID, err)
+	}
+	if err := store.Remove(provider.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.ModelPreference(provider.ID); err != nil || found {
+		t.Fatalf("removed provider retained its preference: found=%v err=%v", found, err)
+	}
+}
+
 func TestAPIKeyEnvironmentLookupAndFingerprintDoNotExposeSecret(t *testing.T) {
 	provider := Provider{ID: "remote", Protocol: ProtocolChatCompletions, BaseURL: "https://api.example.test/v1", APIKeyEnv: "MODEL_API_KEY"}
 	key, err := provider.APIKeyWithLookup(func(name string) (string, bool) { return "super-secret", name == "MODEL_API_KEY" })

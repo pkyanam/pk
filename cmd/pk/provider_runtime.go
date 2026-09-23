@@ -41,12 +41,18 @@ func resolveCLIProvider(choice string, useCodex bool) (*providers.Provider, erro
 	if _, err := provider.APIKeyValue(); err != nil {
 		return nil, err
 	}
+	if err := store.ApplyModelPreference(&provider); err != nil {
+		return nil, fmt.Errorf("load provider model preference: %w", err)
+	}
 	return &provider, nil
 }
 
 func prepareCLIAdapter(ctx context.Context, options *runner.Options, useCodex bool, codexPath string) (llm.Adapter, *providers.Provider, error) {
 	if options == nil {
 		return nil, nil, errors.New("runner options are required")
+	}
+	if options.ProviderID == "" && isCloudflareWorkersAIModel(options.Model) {
+		return nil, nil, nativeCloudflareModelError()
 	}
 	if options.ProviderID != "" {
 		provider, err := loadCLIProvider(options.ProviderID)
@@ -63,6 +69,14 @@ func prepareCLIAdapter(ctx context.Context, options *runner.Options, useCodex bo
 	options.ProviderFingerprint = ""
 	client, err := prepareAdapter(ctx, useCodex, codexPath)
 	return client, nil, err
+}
+
+func isCloudflareWorkersAIModel(model string) bool {
+	return strings.HasPrefix(strings.TrimSpace(model), "@cf/")
+}
+
+func nativeCloudflareModelError() error {
+	return errors.New("model ID @cf/... requires the Cloudflare Workers AI provider; select that provider or set a native Codex model before sending")
 }
 
 // loadCLIProvider returns an in-memory credential snapshot for one run. The

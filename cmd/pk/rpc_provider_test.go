@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
@@ -154,13 +155,99 @@ func TestRPCProviderSelectOnlyBeforeSessionPrompt(t *testing.T) {
 	server := &rpcServer{ctx: context.Background(), output: sink, started: true, opts: runner.Options{Model: "gpt-6-luna", Effort: "medium"}, requestTypes: map[string]string{}}
 	server.handle(rpcMessage{Version: 1, ID: "select", Type: "provider_select", Payload: json.RawMessage(`{"provider_id":"fixture","model":"discovered-model"}`)}, make(chan turnDone, 1))
 	event := readRPCEvent(t, sink)
-	if event.Type != "provider_selected" || event.Payload.(map[string]any)["provider_id"] != "fixture" || event.Payload.(map[string]any)["model"] != "discovered-model" || server.opts.Model != "discovered-model" {
+	if event.Type != "provider_selected" || event.Payload.(map[string]any)["provider_id"] != "fixture" || event.Payload.(map[string]any)["model"] != "discovered-model" || event.Payload.(map[string]any)["persisted"] != true || server.opts.Model != "discovered-model" {
 		t.Fatalf("provider selection event=%+v", event)
 	}
-	server.session = "saved-session"
-	server.handle(rpcMessage{Version: 1, ID: "select-again", Type: "provider_select", Payload: json.RawMessage(`{"provider_id":""}`)}, make(chan turnDone, 1))
-	if event := readRPCEvent(t, sink); event.Type != "error" {
+	stored, err := store.Get("fixture")
+	if err != nil || stored.DefaultModel != "fixture-model" {
+		t.Fatalf("connection config was unexpectedly overwritten: provider=%+v err=%v", stored, err)
+	}
+	preference, found, err := store.ModelPreference("fixture")
+	if err != nil || !found || preference.Model != "discovered-model" {
+		t.Fatalf("selection preference did not persist: %+v found=%v err=%v", preference, found, err)
+	}
+	if defaultID, err := store.DefaultID(); err != nil || defaultID != "fixture" {
+		t.Fatalf("selected provider default did not persist: %q err=%v", defaultID, err)
+	}
+	workspace := t.TempDir()
+	secondSink := &rpcEventSink{events: make(chan []byte, 8)}
+	second := &rpcServer{ctx: context.Background(), output: secondSink, diagnostics: io.Discard, cfgPath: filepath.Join(home, "config.json"), sessionDir: filepath.Join(home, "sessions"), requestTypes: map[string]string{}}
+	second.handle(rpcMessage{Version: 1, ID: "restart", Type: "start", Payload: json.RawMessage(`{"workspace":"` + workspace + `"}`)}, make(chan turnDone, 1))
+	ready := readRPCEvent(t, secondSink)
+	if ready.Type != "ready" || ready.Payload.(map[string]any)["provider_id"] != "fixture" || ready.Payload.(map[string]any)["model"] != "discovered-model" {
+		t.Fatalf("fresh RPC process did not restore selected provider/model: %+v", ready)
+	}
+	second.session = "saved-session"
+	second.handle(rpcMessage{Version: 1, ID: "select-again", Type: "provider_select", Payload: json.RawMessage(`{"provider_id":""}`)}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, secondSink); event.Type != "error" {
 		t.Fatalf("post-prompt provider selection event=%+v", event)
+	}
+}
+
+func TestRPCSetModelPersistsProviderScopedPreference(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PK_HOME", home)
+	cfgPath := filepath.Join(home, "config.json")
+	cfg := config.Defaults()
+	cfg.Model = "native-model"
+	cfg.Effort = "medium"
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store := providers.Store{Home: home}
+	provider := providers.Provider{ID: "fixture", Protocol: providers.ProtocolChatCompletions, BaseURL: "https://api.example.test/v1", APIKey: "secret", SupportsReasoningEffort: true, DefaultModel: "connection-default", DefaultEffort: "low"}
+	if err := store.Put(provider); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 4)}
+	server := &rpcServer{ctx: context.Background(), output: sink, started: true, providerID: provider.ID, opts: runner.Options{ProviderID: provider.ID, Model: "session-model", Effort: "low"}, cfgPath: cfgPath, requestTypes: map[string]string{}}
+	server.handle(rpcMessage{Version: 1, ID: "set", Type: "set_model", Payload: json.RawMessage(`{"model":"new-model","effort":"high"}`)}, make(chan turnDone, 1))
+	if event := readRPCEvent(t, sink); event.Type != "status" {
+		t.Fatalf("set_model response = %+v", event)
+	}
+	preference, found, err := (providers.Store{Home: home}).ModelPreference(provider.ID)
+	if err != nil || !found || preference.Model != "new-model" || preference.Effort != "high" {
+		t.Fatalf("provider preference = %+v found=%v err=%v", preference, found, err)
+	}
+	global, err := config.Load(cfgPath)
+	if err != nil || global.Model != "native-model" || global.Effort != "medium" {
+		t.Fatalf("provider set_model polluted native defaults: model=%q effort=%q err=%v", global.Model, global.Effort, err)
+	}
+	reloaded, err := (providers.Store{Home: home}).Get(provider.ID)
+	if err != nil || reloaded.Fingerprint() != provider.Fingerprint() {
+		t.Fatalf("model change altered provider identity: provider=%+v err=%v", reloaded, err)
+	}
+}
+
+func TestRPCRejectsLegacyCloudflareModelOnNativeRouteButAllowsReselect(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	t.Setenv("PK_HOME", home)
+	cfgPath := filepath.Join(home, "config.json")
+	cfg := config.Defaults()
+	cfg.Model = "@cf/zai-org/glm-5.3-flash"
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store := providers.Store{Home: home}
+	if err := store.Put(providers.Provider{ID: "cloudflare", Protocol: providers.ProtocolCloudflareWorkersAI, BaseURL: "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1", APIKey: "fixture-token"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 8)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard, cfgPath: cfgPath, sessionDir: filepath.Join(home, "sessions"), requestTypes: map[string]string{}}
+	server.handle(rpcMessage{Version: 1, ID: "start", Type: "start", Payload: json.RawMessage(`{"workspace":"` + workspace + `","provider_id":"native"}`)}, make(chan turnDone, 1))
+	ready := readRPCEvent(t, sink)
+	if ready.Type != "ready" || ready.Payload.(map[string]any)["provider_id"] != "" {
+		t.Fatalf("startup should remain usable for provider repair: %+v", ready)
+	}
+	server.handle(rpcMessage{Version: 1, ID: "prompt", Type: "prompt", Payload: json.RawMessage(`{"text":"hello"}`)}, make(chan turnDone, 1))
+	promptError := readRPCEvent(t, sink)
+	if promptError.Type != "error" || !strings.Contains(promptError.Payload.(map[string]any)["message"].(string), "requires the Cloudflare Workers AI provider") || server.active {
+		t.Fatalf("native request was not blocked safely: event=%+v active=%v", promptError, server.active)
+	}
+	server.handle(rpcMessage{Version: 1, ID: "select-cloudflare", Type: "provider_select", Payload: json.RawMessage(`{"provider_id":"cloudflare","model":"@cf/zai-org/glm-5.3-flash"}`)}, make(chan turnDone, 1))
+	selected := readRPCEvent(t, sink)
+	if selected.Type != "provider_selected" || selected.Payload.(map[string]any)["persisted"] != true || server.providerID != "cloudflare" {
+		t.Fatalf("legacy model recovery selection = %+v provider=%q", selected, server.providerID)
 	}
 }
 

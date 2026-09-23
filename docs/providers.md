@@ -13,6 +13,10 @@ Available starting with v0.1.3. Use `/provider setup` (or choose **Connect a pro
    a prompt, pk starts a fresh session automatically and labels that transition in the UI; otherwise
    the choice applies to the new session already being created.
 
+Selecting a provider/model in the TUI saves that pair for future sessions and relaunches.
+Model and effort changes belong to the selected provider; external model IDs do not replace
+the native ChatGPT defaults. Existing sessions retain their original provider binding.
+
 The catalog currently contains ten presets:
 
 | Preset | API | Protocol |

@@ -2880,6 +2880,14 @@ describe("OpenTUI application", () => {
     await setup.waitForFrame((frame) => frame.includes("@cf/meta/llama-3.1-8b-instruct"))
     expect(setup.captureCharFrame()).toContain("tool calling")
     expect(setup.captureCharFrame()).not.toContain(token)
+    await act(async () => setup.mockInput.pressEnter())
+    await setup.flush()
+    const selected = fake.sent.filter((item) => item.type === "provider_select").at(-1)!
+    expect(selected.payload).toEqual({ provider_id: "cloudflare-workers-ai", model: "@cf/meta/llama-3.1-8b-instruct" })
+    act(() => fake.emit({ version: 1, id: selected.id, type: "provider_selected", payload: {
+      provider_id: "cloudflare-workers-ai", model: "@cf/meta/llama-3.1-8b-instruct", persisted: true,
+    } }))
+    await setup.waitForFrame((frame) => frame.replace(/\s+/g, " ").includes("saved for new sessions and relaunch"))
   })
 
   test("a failed new-session request preserves the old transcript and clears a staged provider model", async () => {
