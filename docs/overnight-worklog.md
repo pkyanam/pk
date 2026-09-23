@@ -577,3 +577,10 @@ gates or imply that every backlog item is complete.
 - Clean GitHub `264b3c7` activated as `20260923T113445.615501000Z-35dab041a348-3590899b` after full Go/UI suites, typecheck and build. Affected provider/subagent/helperregistry race tests passed.
 - Native Cmux reload restored the saved demo transcript. In `/mcp` → Add → Executable path, pasting `/usr/local/bin/server` appeared in the focused field, with no queued attachment. The Computer Use paste call reported a clipboard-read timeout, but the subsequent screenshot verified the complete value. The form was canceled without saving configuration or calling a model.
 - Renderer regressions also verify AskUser path answers remain literal text and normal chat file paste still queues attachments. Both new tests failed without the guard and passed with it.
+
+### 07:47 EDT — native clipboard routing and catalog cleanup installed
+
+- Clean GitHub `35d448a` activated as `20260923T114652.417884000Z-0faf9fd0486c-250f55df` after full Go/UI suites, typecheck and build. Focused runner race tests and eight paste/copy regressions also passed.
+- Native clipboard replies are bound to their requested input, question and session. Stale replies do not queue attachments or insert text into a different question/session. AskUser path answers remain literal text. The earlier bracketed-paste form fix remains intact.
+- New empty-catalog sessions omit an unavailable SkillUse declaration (244 serialized UTF-8 bytes in the capture). Existing saved tool lists are preserved. Normal installed sessions have the bundled pk skill and therefore retain SkillUse; no general token saving is claimed.
+- A local startup check of `264b3c7` measured a 500 ms first TUI ready frame and 498–502 ms on two subsequent launches, without provider requests. The new trace attribution script reproduces observed pk/Unreal usage and request growth but cannot reconstruct omitted full request components. Evidence links were repaired and checked.

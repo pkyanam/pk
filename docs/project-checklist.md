@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `264b3c7` (`20260923T113445.615501000Z-35dab041a348-3590899b`); the source audit checkpoint is `264b3c7`. The installed release passed the Go/UI gates and native reload/history/copy checks; see the current handoff below. Earlier release references in dated checkpoints are historical.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `35d448a` (`20260923T114652.417884000Z-0faf9fd0486c-250f55df`); the source audit checkpoint is `35d448a`. The installed release passed the Go/UI gates and native reload/history/copy checks; see the current handoff below. Earlier release references in dated checkpoints are historical.
 
 ## Product and implementation
 
@@ -83,7 +83,7 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 
 ## Current handoff
 
-Installed `264b3c7` (`20260923T113445.615501000Z-35dab041a348-3590899b`) is the current public release; source audit checkpoint is `264b3c7`. Complete Go/UI tests, typecheck, and build passed before activation. A native Cmux reload restored the saved demo history; drag-selection copied text and a physical `x` appeared in the composer, then the draft was cleared without submitting. This verifies that input path only; it does not establish that every reported freeze is resolved. Finder file-path paste and Preview raw-pixel image inspection have prior successful `ViewImage` smokes, while native drag/drop remains unverified. The focused coding demo is at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional. The `7436784` synthetic session-list benchmark measures allocation/time, not tokens.
+Installed `35d448a` (`20260923T114652.417884000Z-0faf9fd0486c-250f55df`) is the current public release; source audit checkpoint is `35d448a`. Complete Go/UI tests, typecheck, and build passed before activation. A native Cmux reload restored the saved demo history; drag-selection copied text and a physical `x` appeared in the composer, then the draft was cleared without submitting. This verifies that input path only; it does not establish that every reported freeze is resolved. Finder file-path paste and Preview raw-pixel image inspection have prior successful `ViewImage` smokes, while native drag/drop remains unverified. The focused coding demo is at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional. The `7436784` synthetic session-list benchmark measures allocation/time, not tokens.
 
 Privacy claims remain under review for network destinations, workspace access, rollback behavior, and deletion semantics. Keep them scoped to verified pk/Bun behavior and distinguish provider, remote MCP, skills catalog, and extension traffic. A general promise that pk or external integrations collect no telemetry is not supported.
 
@@ -100,7 +100,7 @@ The 08:00 EDT, 23 September target was the requested handoff deadline, not evide
 - [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy, Finder Cmd+C/Cmd+V of a spaced image path, and Preview raw-pixel paste are verified; Luna inspected both image routes with `ViewImage`. Native GUI drag/drop remains unverified. Keep those limits distinct from the tested paste routes.
 - [x] Finish the local focused coding demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization; a broader montage remains optional.
 
-Current installed checkpoint: `264b3c7` (`20260923T113445.615501000Z-35dab041a348-3590899b`); source audit checkpoint is `264b3c7`. Fresh-session reload, `/usage`, and the Vercel React skill search/review/install flow have prior native verification recorded in the dated worklog. The session-list microbenchmark at `7436784` is synthetic and model-independent; it measures allocations/time, not tokens. Finder path-file paste and Preview-to-Cmux raw-pixel paste both reached `ViewImage` in prior smokes; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally, with no publication. Do not reopen or interrupt the user's Cmux workspace.
+Current installed checkpoint: `35d448a` (`20260923T114652.417884000Z-0faf9fd0486c-250f55df`); source audit checkpoint is `35d448a`. Fresh-session reload, `/usage`, and the Vercel React skill search/review/install flow have prior native verification recorded in the dated worklog. The session-list microbenchmark at `7436784` is synthetic and model-independent; it measures allocations/time, not tokens. Finder path-file paste and Preview-to-Cmux raw-pixel paste both reached `ViewImage` in prior smokes; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally, with no publication. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
