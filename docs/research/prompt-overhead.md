@@ -8,7 +8,7 @@ all four holdout checks passing. This is a 2.19x difference in that small
 cohort, not a measurement of prompt overhead alone: the engines have different
 system prompts, tool sets, execution traces, and cached-input accounting. The
 pilot is stochastic and does not establish a general cost or quality result.
-See the [benchmark record](../results/pk-unreal-clamp-intervals-low-2rep-20260923/summary.md).
+See the [benchmark record](../../benchmarks/results/pk-unreal-clamp-intervals-low-2rep-20260923/summary.md).
 
 ## Deterministic request-size inspection
 
@@ -74,7 +74,7 @@ from five descriptions per request without changing tool schemas or behavior.
 In two repetitions it did not reduce total provider-reported input; aggregate
 input was higher in the compact arm, with substantial cached/uncached
 variation. This is a useful warning that byte savings do not directly predict
-token savings or quality. See the [ablation report](../experiments/tool-schema.md).
+token savings or quality. See the [ablation report](../../benchmarks/results/tool-schema-rep2-20260923/summary.md).
 
 ## Recommended next experiment
 
