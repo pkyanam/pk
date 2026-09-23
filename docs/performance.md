@@ -125,3 +125,7 @@ go test ./internal/sessionmanager -run '^$' -bench 'BenchmarkList.*LargeSessionL
 ```sh
 go test ./internal/sessionmanager -run '^$' -bench '^BenchmarkGetLargeSessionLogCold$' -benchmem -benchtime=5x
 ```
+
+## Installed startup checkpoint (`264b3c7`)
+
+Release `264b3c7` rendered its first 80×24 TUI ready frame in 500 ms; two later launches measured 498–502 ms. RPC ready and tool-catalog preview warm medians were 12.1 and 10.7 ms (three samples each). These are small shared-machine measurements in a temporary workspace, without provider calls, not a comparative speedup. Raw results: [`startup-264b3c7-20260923/result.json`](../benchmarks/results/startup-264b3c7-20260923/result.json).
