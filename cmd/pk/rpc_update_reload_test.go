@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
 )
 
@@ -98,7 +99,7 @@ func TestRPCReloadRequiresIdleAndUsesValidatedHandoff(t *testing.T) {
 	t.Setenv("PK_RELOAD_TOKEN", strings.Repeat("a", 64))
 	t.Setenv("PK_RELOAD_SUPERVISOR_PID", "12345")
 	sink := &rpcEventSink{events: make(chan []byte, 16)}
-	server := &rpcServer{ctx: context.Background(), output: sink, started: true, session: "resume-session",
+	server := &rpcServer{ctx: context.Background(), output: sink, started: true, session: "resume-session", providerID: "fixture-provider",
 		opts: runner.Options{Workspace: workspace, Model: "gpt-6-luna", Effort: "medium"}, requestTypes: make(map[string]string)}
 	server.attachedTask = "task-1"
 	server.handle(rpcMessage{Version: 1, ID: "reload-busy", Type: "reload"}, make(chan turnDone, 1))
@@ -115,12 +116,94 @@ func TestRPCReloadRequiresIdleAndUsesValidatedHandoff(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("reload handoff file info=%v err=%v", info, err)
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handoff reloadHandoff
+	if err := json.Unmarshal(data, &handoff); err != nil {
+		t.Fatal(err)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.SessionID != "resume-session" || handoff.ProviderID != "fixture-provider" || handoff.Workspace != resolvedWorkspace || handoff.Model != "gpt-6-luna" || handoff.Effort != "medium" {
+		t.Fatalf("existing-session handoff=%+v err=%v", handoff, err)
+	}
 	server.handle(rpcMessage{Version: 1, ID: "reload-exit-1", Type: "reload_exit"}, make(chan turnDone, 1))
 	if event := readRPCEvent(t, sink); event.Type != "reload_exit" {
 		t.Fatalf("reload exit event=%s", event.Type)
 	}
 	if !server.quit {
 		t.Fatal("reload_exit did not shut down RPC child")
+	}
+}
+
+func TestRPCReloadSupportsFreshSessionAndNativeProviderSentinel(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_HOME", home)
+	t.Setenv("PK_RELOAD_TOKEN", strings.Repeat("b", 64))
+	t.Setenv("PK_RELOAD_SUPERVISOR_PID", "23456")
+	sink := &rpcEventSink{events: make(chan []byte, 8)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard,
+		cfgPath: filepath.Join(home, "config.json"), sessionDir: filepath.Join(home, "sessions"),
+		started: true, opts: runner.Options{Workspace: workspace, Model: "custom-model", Effort: "low"}, requestTypes: make(map[string]string)}
+	server.handle(rpcMessage{Version: 1, ID: "reload-fresh", Type: "reload"}, make(chan turnDone, 1))
+	event := readRPCEvent(t, sink)
+	if event.Type != "reload_ready" || event.Payload.(map[string]any)["session_id"] != "" {
+		t.Fatalf("fresh reload response=%+v", event)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "reload", strings.Repeat("b", 64)+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handoff reloadHandoff
+	if err := json.Unmarshal(data, &handoff); err != nil {
+		t.Fatal(err)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.SessionID != "" || handoff.ProviderID != "native" || handoff.Workspace != resolvedWorkspace || handoff.Model != "custom-model" || handoff.Effort != "low" {
+		t.Fatalf("fresh handoff=%+v", handoff)
+	}
+	server.handle(rpcMessage{Version: 1, ID: "reload-exit-fresh", Type: "reload_exit"}, make(chan turnDone, 1))
+	if exit := readRPCEvent(t, sink); exit.Type != "reload_exit" || !server.quit {
+		t.Fatalf("fresh reload exit=%+v quit=%v", exit, server.quit)
+	}
+}
+
+func TestRPCStartNativeSentinelBypassesConfiguredProviderDefault(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_HOME", home)
+	store := providers.Store{Home: home}
+	if err := store.Put(providers.Provider{ID: "configured-default", Protocol: providers.ProtocolChatCompletions, BaseURL: "https://provider.example/v1", APIKeyEnv: "PK_MISSING_TEST_KEY", DefaultModel: "provider-model", DefaultEffort: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetDefault("configured-default"); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 8)}
+	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard,
+		cfgPath: filepath.Join(home, "config.json"), sessionDir: filepath.Join(home, "sessions"), requestTypes: make(map[string]string)}
+	server.handle(rpcMessage{Version: 1, ID: "start-native", Type: "start", Payload: json.RawMessage(`{"workspace":"` + workspace + `","provider_id":"native","model":"gpt-6-luna","effort":"medium"}`)}, make(chan turnDone, 1))
+	var ready rpcEvent
+	for i := 0; i < 4; i++ {
+		ready = readRPCEvent(t, sink)
+		if ready.Type == "ready" || ready.Type == "error" {
+			break
+		}
+	}
+	if ready.Type != "ready" || ready.Payload.(map[string]any)["provider_id"] != "" {
+		t.Fatalf("explicit native start did not bypass configured default: %+v", ready)
 	}
 }
 

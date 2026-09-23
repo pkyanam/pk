@@ -213,6 +213,42 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "reload" || item.type === "reload_exit")).toBe(false)
   })
 
+  test("allows reloading an empty fresh session to pick up an installed release", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: {
+      model: "gpt-6-luna", effort: "medium", provider_id: "native",
+      release_status: { running_id: "old", installed_id: "new", reload_available: true },
+    } }))
+    await setup.waitForFrame((frame) => frame.includes("Update ready · /reload"))
+    expect(setup.captureCharFrame()).not.toContain("Start a conversation before reloading")
+    await act(async () => { await setup.mockInput.typeText("/reload") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const reload = fake.sent.find((item) => item.type === "reload")
+    expect(reload).toBeDefined()
+    expect(reload?.payload).toBeUndefined()
+    expect(setup.captureCharFrame()).toContain("Saving this session before reload")
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+  })
+
+  test("passes the selected provider into the initial RPC start for fresh-session reloads", async () => {
+    const previous = process.env.PK_PROVIDER
+    process.env.PK_PROVIDER = "native"
+    try {
+      const fake = fakeTransport()
+      const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+      openRenderers.push(setup)
+      await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+      expect(fake.starts[0]?.providerId).toBe("native")
+    } finally {
+      if (previous === undefined) delete process.env.PK_PROVIDER
+      else process.env.PK_PROVIDER = previous
+    }
+  })
+
   test.each([{ width: 80, height: 24, count: 28 }, { width: 140, height: 55, count: 60 }])("keeps a busy transcript viewport inside the composer at $width × $height", async ({ width, height, count }) => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })

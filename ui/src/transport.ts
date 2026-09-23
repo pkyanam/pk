@@ -12,7 +12,7 @@ export class PkTransport {
 
   setEventHandler(handler: EventHandler) { this.onEvent = handler }
 
-  async start(config: { workspace: string; model: string; effort: string; sessionId?: string; steering?: boolean }) {
+  async start(config: { workspace: string; model: string; effort: string; sessionId?: string; providerId?: string; steering?: boolean }) {
     const executable = process.env.PK_EXECUTABLE || "pk"
     this.child = Bun.spawn([executable, "rpc"], {
       stdin: "pipe",
@@ -26,6 +26,7 @@ export class PkTransport {
       workspace: config.workspace,
       model: config.model,
       effort: config.effort,
+      ...(config.providerId ? { provider_id: config.providerId } : {}),
       ...(config.steering ? { steering: true } : {}),
       ...(config.sessionId ? { session_id: config.sessionId } : {}),
     })

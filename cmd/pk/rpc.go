@@ -478,6 +478,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		requestedProviderID := get("provider_id")
+		forceNativeProvider := strings.EqualFold(requestedProviderID, "native")
+		if forceNativeProvider {
+			requestedProviderID = ""
+		}
 		providerID := ""
 		if sessionID != "" {
 			savedID, savedFingerprint, saved, snapshotErr := runner.LoadSavedProvider(s.ctx, s.sessionDir, sessionID, workspace)
@@ -504,15 +508,23 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 						return
 					}
 				}
-				if requestedProviderID != "" && requestedProviderID != providerID {
+				if (requestedProviderID != "" && requestedProviderID != providerID) || (forceNativeProvider && providerID != "") {
 					_ = s.emit(msg.ID, "error", map[string]any{"message": "the requested provider does not match this saved session; select the original provider or start a new session", "recoverable": true})
 					return
 				}
 			} else {
-				providerID, err = resolveRPCProviderID(requestedProviderID)
+				if forceNativeProvider {
+					providerID = ""
+				} else {
+					providerID, err = resolveRPCProviderID(requestedProviderID)
+				}
 			}
 		} else {
-			providerID, err = resolveRPCProviderID(requestedProviderID)
+			if forceNativeProvider {
+				providerID = ""
+			} else {
+				providerID, err = resolveRPCProviderID(requestedProviderID)
+			}
 		}
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "select model provider: " + err.Error(), "recoverable": true})
@@ -971,7 +983,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "reload":
 		s.mu.Lock()
 		busy := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive || s.attachedTask != "" || s.taskFollowCancel != nil || s.reloadPrepared
-		handoff := reloadHandoff{Workspace: s.opts.Workspace, SessionID: s.session, Model: s.opts.Model, Effort: s.opts.Effort}
+		providerID := s.providerID
+		if providerID == "" {
+			providerID = "native"
+		}
+		handoff := reloadHandoff{Workspace: s.opts.Workspace, SessionID: s.session, Model: s.opts.Model, Effort: s.opts.Effort, ProviderID: providerID}
 		started := s.started
 		if started && !busy {
 			s.reloadPrepared = true // reserve the idle lifecycle while the handoff is written

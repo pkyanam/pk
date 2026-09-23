@@ -781,7 +781,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   useEffect(() => { busyRef.current = busy }, [busy])
 
   useEffect(() => {
-    void transport.start({ workspace, model: "", effort: "", sessionId: initialSession, steering: true })
+    void transport.start({ workspace, model: "", effort: "", sessionId: initialSession, providerId: process.env.PK_PROVIDER || undefined, steering: true })
   }, [transport, workspace, initialSession])
 
   const handleEvent = useRef<(event: ServerEvent) => void>(() => {})
@@ -2079,10 +2079,6 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "reload": {
         if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || reloadCommandId.current) {
           addEntry("system", "Reload is available only when the foreground turn, question, task follow, and update are idle.")
-          break
-        }
-        if (!sessionId) {
-          addEntry("system", "Start a conversation before reloading so pk can resume its session.")
           break
         }
         reloadCommandId.current = transport.send("reload") ?? ""

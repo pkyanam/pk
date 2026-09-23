@@ -21,7 +21,7 @@ func TestReloadHandoffRoundTripAndOneTimeConsume(t *testing.T) {
 	}
 	t.Setenv("PK_RELOAD_TOKEN", token)
 	t.Setenv("PK_RELOAD_SUPERVISOR_PID", "1234")
-	want := reloadHandoff{Workspace: workspace, SessionID: "session-123", Model: "custom/model-id-v2", Effort: "medium"}
+	want := reloadHandoff{Workspace: workspace, SessionID: "session-123", Model: "custom/model-id-v2", Effort: "medium", ProviderID: "fixture-provider"}
 	if err := writeReloadHandoff(want); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestReloadHandoffRoundTripAndOneTimeConsume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Token != token || got.SupervisorPID != 1234 || got.Workspace != resolvedWorkspace || got.SessionID != want.SessionID || got.Model != want.Model || got.Effort != want.Effort {
+	if got.Token != token || got.SupervisorPID != 1234 || got.Workspace != resolvedWorkspace || got.SessionID != want.SessionID || got.Model != want.Model || got.Effort != want.Effort || got.ProviderID != want.ProviderID {
 		t.Fatalf("handoff mismatch: %#v", got)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -96,8 +96,8 @@ func TestReloadHandoffRejectsUnpinnedOrUnsafeState(t *testing.T) {
 }
 
 func TestReloadArgumentsAreBoundedStateOnly(t *testing.T) {
-	h := reloadHandoff{Workspace: "/tmp/work space", SessionID: "session", Model: "model id", Effort: "high"}
-	want := []string{"--workspace", h.Workspace, "--session", h.SessionID, "--model", h.Model, "--effort", h.Effort}
+	h := reloadHandoff{Workspace: "/tmp/work space", SessionID: "session", Model: "model id", Effort: "high", ProviderID: "fixture-provider"}
+	want := []string{"--workspace", h.Workspace, "--session", h.SessionID, "--model", h.Model, "--effort", h.Effort, "--provider", h.ProviderID}
 	got := reloadLaunchArgs(h)
 	if len(got) != len(want) {
 		t.Fatalf("args=%#v", got)
@@ -110,5 +110,16 @@ func TestReloadArgumentsAreBoundedStateOnly(t *testing.T) {
 	data, err := json.Marshal(h)
 	if err != nil || len(data) > maxReloadHandoff {
 		t.Fatalf("bounded handoff marshal error=%v len=%d", err, len(data))
+	}
+
+	fresh := reloadHandoff{Workspace: h.Workspace, Model: h.Model, Effort: h.Effort, ProviderID: "native"}
+	freshArgs := reloadLaunchArgs(fresh)
+	for _, arg := range freshArgs {
+		if arg == "--session" {
+			t.Fatalf("fresh-session reload unexpectedly includes --session: %q", freshArgs)
+		}
+	}
+	if len(freshArgs) != 8 || freshArgs[6] != "--provider" || freshArgs[7] != "native" {
+		t.Fatalf("fresh-session reload args=%q", freshArgs)
 	}
 }

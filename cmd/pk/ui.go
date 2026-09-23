@@ -47,7 +47,7 @@ func launchOpenTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 		// runtime opt-out explicit regardless of the caller's environment.
 		"DO_NOT_TRACK": "1",
 	}
-	for name, flagName := range map[string]string{"PK_MODEL": "--model", "PK_EFFORT": "--effort", "PK_WORKSPACE": "--workspace", "PK_SESSION": "--session"} {
+	for name, flagName := range map[string]string{"PK_MODEL": "--model", "PK_EFFORT": "--effort", "PK_WORKSPACE": "--workspace", "PK_SESSION": "--session", "PK_PROVIDER": "--provider"} {
 		for i, arg := range args {
 			if arg == flagName && i+1 < len(args) {
 				values[name] = args[i+1]
