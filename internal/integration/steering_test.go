@@ -96,7 +96,7 @@ func requestContainsUserText(request llm.Request, text string) bool {
 	return false
 }
 
-func TestQueuedSteeringWaitsForToolBoundaryAndKeepsRunOpenAtIdle(t *testing.T) {
+func TestQueuedSteeringWaitsForToolBoundaryThenStopsAtAssistantIdle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	workspace := t.TempDir()
@@ -136,17 +136,11 @@ func TestQueuedSteeringWaitsForToolBoundaryAndKeepsRunOpenAtIdle(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		t.Fatalf("QueueInputs run returned before input stream closed: %v", err)
-	default:
-	}
-	close(inputs)
-	select {
-	case err := <-done:
 		if err != nil {
-			t.Fatalf("Run() error after input stream close = %v", err)
+			t.Fatalf("Run() error after final assistant response = %v", err)
 		}
 	case <-ctx.Done():
-		t.Fatal("queued steering run did not settle after input stream close")
+		t.Fatal("queued steering run did not stop after final assistant response")
 	}
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
@@ -155,6 +149,27 @@ func TestQueuedSteeringWaitsForToolBoundaryAndKeepsRunOpenAtIdle(t *testing.T) {
 	}
 	if len(adapter.requests) != 2 {
 		t.Fatalf("model requests = %d, want initial and post-tool boundary", len(adapter.requests))
+	}
+}
+
+func TestQueueInputsDoesNotKeepNoToolTurnAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	adapter := &textBoundaryAdapter{started: make(chan struct{}), second: make(chan struct{}), release: make(chan struct{})}
+	close(adapter.release)
+	inputs := make(chan runner.Input) // Deliberately left open, as RPC keeps it open during a turn.
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(ctx, runner.Options{Prompt: "begin", SessionDir: t.TempDir(), Workspace: t.TempDir(), Adapter: adapter, Inputs: inputs, QueueInputs: true})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("QueueInputs run waited for its open input channel after assistant final")
 	}
 }
 

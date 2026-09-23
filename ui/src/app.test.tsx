@@ -327,6 +327,8 @@ describe("OpenTUI application", () => {
     await setup.flush()
     const prompt = fake.sent.find((item) => item.type === "prompt")!
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    // An older backend may omit capabilities on the subsequent ready emitted by /new or /attach.
+    act(() => fake.emit({ version: 1, id: "attach-ready", type: "ready", payload: { attached: true, session_id: "session-1" } }))
     act(() => fake.emit({ version: 1, id: prompt.id, type: "model_progress", payload: { request_id: "streaming", attempt: 1, phase: "assistant_delta", item_id: "text-1", text_delta: "Working through the first step." } }))
     await setup.waitForFrame((frame) => frame.includes("Working through the first step."))
     await act(async () => { await setup.mockInput.typeText("Also check the edge cases") })

@@ -383,7 +383,10 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		recordOutputErr(writeJSONLine(options.Output, map[string]any{"type": "model", "session_id": id, "model": options.Model, "effort": options.Effort}))
 	}
 	interactiveInputs := options.KeepAlive || options.QueueInputs
-	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !interactiveInputs, inputAcks, inputAcked, &inputAckMu, inputGate, recordOutputErr)
+	// QueueInputs only governs how steering is admitted at model/tool
+	// boundaries. It must not turn a foreground prompt into an indefinitely
+	// live run: only KeepAlive suppresses the assistant-idle stop.
+	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, recordOutputErr)
 	observerID := store.AddObserver(observer)
 	defer store.RemoveObserver(observerID)
 	current := coordinator.New(coordinator.Dependencies{

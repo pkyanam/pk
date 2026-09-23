@@ -258,6 +258,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingClipboardRequests = useRef(new Set<string>())
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const pendingSteers = useRef(new Map<string, number>())
+  const steeringNegotiated = useRef(false)
   const reloadCommandId = useRef("")
   const reloadReady = useRef(false)
   const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -527,7 +528,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "ready":
         setConnected(true)
         setEverConnected(true)
-        setSteeringEnabled(Array.isArray(data.capabilities) && data.capabilities.includes("steer"))
+        if (Array.isArray(data.capabilities)) steeringNegotiated.current = data.capabilities.includes("steer")
+        setSteeringEnabled(steeringNegotiated.current)
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (data.workspace) setMessage(String(data.workspace))
@@ -958,6 +960,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         toolProgress.current.clear()
         setConnected(false)
         setSteeringEnabled(false)
+        steeringNegotiated.current = false
         setBusy(false)
         setActivityStartedAt(null)
         enterPhase("idle")

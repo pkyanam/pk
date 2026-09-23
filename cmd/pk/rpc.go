@@ -342,6 +342,14 @@ type turnDone struct {
 	err      error
 }
 
+func rpcCapabilities(steeringEnabled bool) []string {
+	capabilities := []string{"attach", "cancel", "detach", "set_model"}
+	if steeringEnabled {
+		capabilities = append(capabilities, "steer")
+	}
+	return capabilities
+}
+
 func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	s.mu.Lock()
 	s.requestTypes[msg.ID] = msg.Type
@@ -420,10 +428,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		s.started = true
-		capabilities := []string{"attach", "cancel", "detach", "set_model"}
-		if steeringEnabled {
-			capabilities = append(capabilities, "steer")
-		}
+		capabilities := rpcCapabilities(steeringEnabled)
 		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "capabilities": capabilities})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
@@ -881,13 +886,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
+		steeringEnabled := s.steeringEnabled
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
 		_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "attached": true})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "attached": true, "capabilities": rpcCapabilities(steeringEnabled)})
 	case "new":
 		s.mu.Lock()
 		active, sessionID := s.active, s.session
@@ -910,8 +916,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
+		steeringEnabled := s.steeringEnabled
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "capabilities": rpcCapabilities(steeringEnabled)})
 	case "plugins_list":
 		payload, err := listRPCPlugins(userPluginService())
 		if err != nil {
