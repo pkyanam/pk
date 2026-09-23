@@ -145,7 +145,15 @@ func runInstallArtifacts(ctx context.Context, args []string, stdout, stderr io.W
 }
 
 func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runUpdateWithProgress(ctx, args, stdout, stderr, nil)
+	lastStage := ""
+	code := runUpdateWithProgress(ctx, args, stdout, stderr, func(stage string) {
+		lastStage = stage
+		fmt.Fprintln(stderr, updateStageMessage(stage))
+	})
+	if code != 0 && lastStage != "" {
+		fmt.Fprintf(stderr, "pk update stopped after: %s\n", updateStageMessage(lastStage))
+	}
+	return code
 }
 
 func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io.Writer, progress func(string)) int {

@@ -231,7 +231,7 @@ func (s *rpcServer) startReleaseOperation(requestID, operation, sourcePath strin
 		}
 		var code int
 		if operation == "update" && s.runReleaseCommand == nil {
-			code = runUpdateWithProgress(ctx, args, writer, writer, func(stage string) {
+			code = runUpdateWithProgress(ctx, args[1:], writer, writer, func(stage string) {
 				_ = s.emit(requestID, "update_progress", map[string]any{"stage": stage, "text": updateStageMessage(stage)})
 			})
 		} else {
@@ -263,7 +263,7 @@ func updateStageMessage(stage string) string {
 		"resolve_revision": "Resolving the requested pk revision.",
 		"copy":             "Copying source into an isolated build directory.",
 		"test":             "Running Go tests.",
-		"dependencies":     "Installing production UI dependencies.",
+		"dependencies":     "Preparing UI dependencies from the lockfile.",
 		"ui_validate":      "Checking and testing the UI.",
 		"build":            "Building the release artifacts.",
 		"stage":            "Publishing the staged release.",

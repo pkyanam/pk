@@ -117,7 +117,7 @@ func TestStageBuildsPairedReleaseFromReadOnlySourceCopy(t *testing.T) {
 	if !containsCommand(runner.commands, "go test ./...") || !containsCommand(runner.commands, "sh scripts/build") || !containsCommand(runner.commands, "bun install --production --frozen-lockfile") {
 		t.Fatalf("build pipeline did not run all steps: %v", runner.commands)
 	}
-	wantProgress := []string{"source_validate", "copy", "test", "dependencies", "ui_validate", "build", "dependencies", "stage"}
+	wantProgress := []string{"source_validate", "copy", "test", "dependencies", "ui_validate", "build", "ui_validate", "dependencies", "stage"}
 	if !reflect.DeepEqual(progress, wantProgress) {
 		t.Fatalf("progress=%v want %v", progress, wantProgress)
 	}

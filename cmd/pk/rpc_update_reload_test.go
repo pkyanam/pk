@@ -54,6 +54,34 @@ func TestRPCUpdateRequiresIdleAndStreamsOperationLifecycle(t *testing.T) {
 	}
 }
 
+func TestRPCUpdateDefaultDispatchReachesSourceValidation(t *testing.T) {
+	t.Setenv("PK_LIB_DIR", filepath.Join(t.TempDir(), "install"))
+	source := t.TempDir() // exists, but lacks the required pk source files
+	payload, err := json.Marshal(map[string]string{"source_path": source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 16)}
+	server := &rpcServer{ctx: context.Background(), output: sink, started: true,
+		opts: runner.Options{Workspace: t.TempDir()}, requestTypes: make(map[string]string)}
+	server.handle(rpcMessage{Version: 1, ID: "real-update", Type: "update", Payload: payload}, make(chan turnDone, 1))
+	validated := false
+	for {
+		event := readRPCEvent(t, sink)
+		data, _ := event.Payload.(map[string]any)
+		if event.Type == "update_progress" && data["stage"] == "source_validate" {
+			validated = true
+		}
+		if event.Type == "update_finished" {
+			message, _ := data["message"].(string)
+			if !validated || data["success"] != false || !strings.Contains(message, "stage failed") || strings.Contains(message, "unexpected arguments") {
+				t.Fatalf("default dispatch did not reach source validation: validated=%v payload=%v", validated, data)
+			}
+			break
+		}
+	}
+}
+
 func TestRPCUpdateCancelAndBusyGuard(t *testing.T) {
 	workspace := t.TempDir()
 	sink := &rpcEventSink{events: make(chan []byte, 16)}

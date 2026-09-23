@@ -244,6 +244,7 @@ func (manager Manager) stage(ctx context.Context, source, gitRepository, gitRef,
 	if err := manager.runCommand(ctx, buildSource, "sh", "scripts/build"); err != nil {
 		return Release{}, fmt.Errorf("scripts/build failed: %w", err)
 	}
+	manager.report("ui_validate")
 	for _, args := range [][]string{{"run", "check"}, {"test"}} {
 		if err := manager.runCommand(ctx, filepath.Join(buildSource, "ui"), "bun", args...); err != nil {
 			return Release{}, fmt.Errorf("UI validation failed: %w", err)

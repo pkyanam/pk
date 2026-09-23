@@ -138,7 +138,8 @@ func (runner *githubUpdateRunner) Run(ctx context.Context, dir, name string, std
 func TestDefaultUpdateSourceStagesOfficialGitHubMainAndRecordsCommit(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "lib", "pk")
 	runner := &githubUpdateRunner{}
-	manager := pkupdate.Manager{Root: root, Runner: runner}
+	var stages []string
+	manager := pkupdate.Manager{Root: root, Runner: runner, Progress: func(stage string) { stages = append(stages, stage) }}
 	t.Cleanup(func() { makeUpdateTreeWritable(root) })
 	release, err := stageUpdateSource(context.Background(), manager, "")
 	if err != nil {
@@ -150,8 +151,35 @@ func TestDefaultUpdateSourceStagesOfficialGitHubMainAndRecordsCommit(t *testing.
 	if runner.checkout == "" {
 		t.Fatal("default update did not clone a checkout")
 	}
+	if len(stages) < 3 || stages[0] != "clone" || stages[1] != "resolve_revision" || stages[len(stages)-1] != "stage" {
+		t.Fatalf("fake update stage notifications=%v", stages)
+	}
 	if _, err := os.Stat(runner.checkout); !os.IsNotExist(err) {
 		t.Fatalf("temporary checkout still exists after stage: %v", err)
+	}
+}
+
+func TestCLIUpdateProgressUsesReadableLabelsOnStderr(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "invalid-source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PK_LIB_DIR", filepath.Join(root, "lib"))
+	t.Setenv("PK_BIN_DIR", filepath.Join(root, "bin"))
+	var stdout, stderr strings.Builder
+	code := runUpdate(context.Background(), []string{"--source", source}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("runUpdate code=%d, want 1; stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("failure wrote to stdout: %s", stdout.String())
+	}
+	got := stderr.String()
+	for _, want := range []string{"Validating the selected pk source", "pk update: stage failed:"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress output missing %q: %s", want, got)
+		}
 	}
 }
 
