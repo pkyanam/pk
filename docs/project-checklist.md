@@ -1,6 +1,6 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `8d2217d` (`20260923T104825.645608000Z-f78554af8afa-93f7a64a`), including negotiated plugin progress, local usage reporting, and fresh-session reload. Native Cmux reload and `/usage` inspection passed; see the handoff evidence below.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed public release is `b06e1ab` (`20260923T112302.648900000Z-ed0d042e12b6-5fe9c087`); the source audit checkpoint is `012b2d6` (documentation changes after the installed revision). The installed release passed the Go/UI gates and native reload/history/copy checks; see the current handoff below. Earlier release references in dated checkpoints are historical.
 
 ## Product and implementation
 
@@ -83,7 +83,7 @@ Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly deliv
 
 ## Current handoff
 
-Installed `347a609` (`20260923T091845.240980000Z-72ecea148b19-6e5f9c7d`) includes restored compact tool history; 110 UI tests/485 assertions passed before activation. Native Cmux reload restored the session and expanded tool details. Finder path-based and Preview raw-pixel image inspection both succeeded; native drag/drop remains unverified. The reviewed focused coding demo is at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional. The `7436784` synthetic session-list benchmark measures allocation/time, not tokens.
+Installed `b06e1ab` (`20260923T112302.648900000Z-ed0d042e12b6-5fe9c087`) is the current public release; source audit checkpoint is `012b2d6`. Complete Go/UI tests, typecheck, and build passed before activation. A native Cmux reload restored the saved demo history; drag-selection copied text and a physical `x` appeared in the composer, then the draft was cleared without submitting. This verifies that input path only; it does not establish that every reported freeze is resolved. Finder file-path paste and Preview raw-pixel image inspection have prior successful `ViewImage` smokes, while native drag/drop remains unverified. The focused coding demo is at `/Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4`; a broader montage remains optional. The `7436784` synthetic session-list benchmark measures allocation/time, not tokens.
 
 Privacy claims remain under review for network destinations, workspace access, rollback behavior, and deletion semantics. Keep them scoped to verified pk/Bun behavior and distinguish provider, remote MCP, skills catalog, and extension traffic. A general promise that pk or external integrations collect no telemetry is not supported.
 
@@ -100,7 +100,7 @@ The 08:00 EDT, 23 September target was the requested handoff deadline, not evide
 - [~] Preserve copy/paste and file intake behavior: Ctrl+Y selection copy, Finder Cmd+C/Cmd+V of a spaced image path, and Preview raw-pixel paste are verified; Luna inspected both image routes with `ViewImage`. Native GUI drag/drop remains unverified. Keep those limits distinct from the tested paste routes.
 - [x] Finish the local focused coding demonstration in Cmux/Cap, edit and inspect the MP4, and leave it for review. Do not upload/post without explicit authorization; a broader montage remains optional.
 
-Latest installed checkpoint: `8d2217d` (`20260923T104825.645608000Z-f78554af8afa-93f7a64a`). Fresh-session reload is native-verified without a model request. `/usage` reports durable session token totals with per-metric coverage, without a provider request. Native Cmux `/skills search react` → review → install → `/new` → `/skills available` succeeded for Vercel React; `pk skills list` confirmed the managed installation (06:20 EDT worklog entry). The session-list microbenchmark at `7436784` is synthetic and model-independent; it measured allocations/time, not tokens. Finder file-path paste and Preview→Cmux raw-pixel paste both reached `ViewImage` successfully; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally; no publication was made. Do not reopen or interrupt the user's Cmux workspace.
+Current installed checkpoint: `b06e1ab` (`20260923T112302.648900000Z-ed0d042e12b6-5fe9c087`); source audit checkpoint is `012b2d6`. Fresh-session reload, `/usage`, and the Vercel React skill search/review/install flow have prior native verification recorded in the dated worklog. The session-list microbenchmark at `7436784` is synthetic and model-independent; it measures allocations/time, not tokens. Finder path-file paste and Preview-to-Cmux raw-pixel paste both reached `ViewImage` in prior smokes; native drag/drop remains unverified. The focused coding video was reviewed and delivered locally, with no publication. Do not reopen or interrupt the user's Cmux workspace.
 
 ## Guided integration setup and local session management
 
@@ -121,6 +121,6 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 ### Open session usability fixes from native review
 
-- [x] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Committed `af07f05`; 11 focused tests pass including 80×24 visibility and active/busy protections. Installed in `347a609`.
-- [x] Restore compact tool activity on attach/reload/history paging, preserving event order, paging bounds, and excluding analysis. Installed in `347a609`; native reload retained grouped Bash and ViewImage activity, with Ctrl+O details.
+- [x] Add a mouse-accessible Open action without changing bulk selection behavior; reject non-left mouse actions. Committed `af07f05`; 11 focused tests pass including 80×24 visibility and active/busy protections. First installed in `347a609`.
+- [x] Restore compact tool activity on attach/reload/history paging, preserving event order, paging bounds, and excluding analysis. First installed in `347a609`; native reload retained grouped Bash and ViewImage activity, with Ctrl+O details.
 - [x] Present saved attachment metadata for new foreground file prompts as user-facing chips, verified against durable input hashes. Installed in `2e365e8`; legacy/mismatched records keep original text. Steering attachments remain unsupported.
