@@ -1,5 +1,7 @@
 # Unreal Agent as a foundation for `pk`
 
+> Superseded recommendation: this was the initial documentation-level assessment. The subsequent [source inspection and validation](unreal-deep-dive.md) recommend building on Unreal through a pinned dependency first. The initial clean-implementation preference below is retained as research history, not the current direction.
+
 **Research date:** 2026-09-22 (America/New_York). Retrieved 2026-09-22 21:35 EDT / 2026-09-23 01:35 UTC; live repository metadata showed an update at 01:34 UTC, so timestamps below reflect that retrieval. Sources reviewed: project announcement, public GitHub repository/API and release metadata, and linked public Harbor benchmark job pages. No downloaded code was executed.
 
 ## Finding

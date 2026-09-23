@@ -8,7 +8,7 @@ Four GPT-6 Luna research agents investigated Unreal Agent, Pi and adjacent proje
 
 Build toward a **small Go harness with inspectable execution and deliberate context management**. Start with a library and headless CLI; keep the interactive UI separate. The first product hypothesis is: retain Pi's composability while improving bounded resource use, background execution, recovery, and visibility into what the model actually sees.
 
-Use Unreal Agent as the first reference implementation and benchmark comparator. Before committing to a fork or a rewrite, run a narrow integration spike against a pinned upstream revision. The research leans toward an independent core, but upstream being young is not sufficient reason to rewrite working machinery. Reuse wins if its session, operation, and provider contracts fit the desired behavior with little adaptation.
+**Updated after source inspection:** build on Unreal Agent first, using its pinned public Go packages behind a pk-owned host. The [deeper investigation](unreal-deep-dive.md) and [passing external-module spike](../../experiments/unreal-composition/README.md) supersede the initial preference for an independent core. Preserve its asynchronous runtime and session machinery; fork only when a concrete interface limitation blocks a pk feature.
 
 Go is a reasonable first choice for this process- and network-heavy workload. It gives us direct access to subprocesses, streaming HTTP, cancellation, and profiling in one toolchain. Rust becomes worth revisiting if measured memory or CPU constraints make the Go runtime a material limitation. Neither language choice alone improves model reasoning or accelerates remote inference. See [runtime tradeoffs](go-runtime.md).
 
@@ -48,7 +48,7 @@ Keep integrations outside the coordinator. A subprocess protocol or MCP adapter 
 
 | Stage | Deliverable | Decision gate |
 | --- | --- | --- |
-| Foundation spike | Pin Unreal; exercise streaming, background operations, steering, cancellation, recovery, and one custom tool | Reuse if contracts fit; otherwise document specific mismatches before building an independent core |
+| Foundation spike | Public-package import and context-prefix checks now pass; next exercise a complete hosted run, cancellation, and resume | Use pinned Unreal; document specific interface gaps before forking |
 | Minimal vertical slice | Go library + CLI; one provider; core tools; bounded output; durable sessions; fake provider fixtures | Complete a repository task and survive cancellation/crash fixtures without silent state loss |
 | Controlled baseline | Same-model runs against pinned Pi and Unreal, plus local runtime measurements | Establish quality, cost, latency, and resource baselines before choosing numerical targets |
 | Context experiments | Tool discovery, output retrieval, checkpoints, cache layout; one change at a time | Keep changes only when measured quality/cost tradeoffs improve |

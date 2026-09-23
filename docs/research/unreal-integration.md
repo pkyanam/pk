@@ -1,0 +1,44 @@
+# Integrating Unreal Agent into pk
+
+Pinned checkout: [`b7c9bf1c5c2fa4127255c07727a7c8413e23944a`](https://github.com/unreallabsai/unreal-agent/tree/b7c9bf1c5c2fa4127255c07727a7c8413e23944a). This is already a substantial Go harness, not merely a provider client. It has the hard-to-recreate loop: accepted inputs and deduplication, session journaling/recovery/forking, context reconstruction, tool-call validation and translation, durable operation execution, cancellation, and provider adapters. For pk, building on it is faster and more honest than duplicating those semantics and calling the result a port.
+
+## Fast route
+
+First build pk as a host around the public `harness/...` packages, pinned to this exact upstream revision. An independent pk module cannot import `cmd/internal/agentrunner` under Go’s `internal` import rule. It is a CLI/request host, not the reusable library boundary. If pk forks Unreal and places its own host under that fork's `cmd` tree, it can import the fork's `cmd/internal/agentrunner`, though that couples pk to the CLI runner. Recreate only the thin host layer pk needs: configuration, session lifecycle, external event/input API, observation, and presentation. The core packages are public Go APIs, while the module is `github.com/unreallabsai/unreal-agent` and declares Go 1.27.0 ([go.mod](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/go.mod#L1-L9)). Pinning as a dependency avoids initially owning a fork; a fork is the right next step when pk needs changes to coordinator semantics, streaming, or built-in extension points.
+
+### Minimal host composition
+
+The public constructor graph is:
+
+```text
+localfile.New(sessionDir) -> session store
+store.Create / store.Resume -> initial or restored session state
+inbox.New(runContext, restored.ExternalInputIDs) -> input mailbox
+openai.NewClient(config) -> llm.Adapter
+bash.New / viewimage.New -> translators
+ tool.NewRegistry(translators, enabled names...) -> tool.Registry
+contextbuilder.NewBuilder(registry.Skills()...) -> contextbuilder.Builder
+operation.NewLocalOperationManager(runContext) -> operation.Manager
+coordinator.New(coordinator.Dependencies{...}) -> Coordinator
+```
+
+This is a wiring sketch, not runnable application code. A host sets the builder's model, prompt, and tool definitions; JSON-encodes messages; submits inputs; and observes persisted events. `Run` remains active until a stop control completes or its context is canceled. For a one-shot run, submit the prompt and `StopWhenIdle`, then await `Run` before closing the provider. On errors, cancel context-bound components, propagate the error, and finish cleanup. Never immediately cancel a successful run after submitting its input, and never discard the coordinator's return value.
+
+On resume, call `Resume` instead of `Create`; ensure one owner runs a session because `sessionstore.Store` does not serialize same-session writes. See the [store constructor](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/sessionstore/localfile/store.go#L37-L55), [store API](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/sessionstore/sessionstore.go#L78-L109), [inbox](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/inbox/local.go#L16-L46), and [coordinator dependencies](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/coordinator/coordinator.go#L17-L40).
+
+The [external-module spike](../../experiments/unreal-composition/README.md) verifies client construction and context-prefix behavior. Full host lifecycle composition is the next milestone, not something this sketch proves.
+
+## What is reusable, and where it stops
+
+- **Providers:** `llm.Adapter` is a small provider boundary, `Respond(context.Context, Request, RequestOptions) (Response, error)` ([adapter](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/llm/adapter.go#L1-L11)). OpenAI, OpenAI Codex, Ollama, OpenRouter, and Fireworks clients are public package constructors. OpenAI's `NewClient(Config)` returns a client implementing `llm.Adapter`, plus `Close()` ([client](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/llm/clients/openai/client.go#L12-L55)). A pk provider can implement the interface itself. Important limitation: the interface returns a completed normalized response; it does not expose incremental tokens/events. To make streaming a first-class pk feature, add a compatible streaming interface in pk first or fork and evolve the LLM/coordinator contract. Do not claim token streaming from the current `Respond` seam.
+- **Tools:** `tool.Translator` separates synchronous, side-effect-free `Translate` from `TranslateResult`; `tool.Registry` supplies definitions and name resolution ([tool API](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/tool/tool.go#L13-L49)). However `tool.NewRegistry` only wires Bash, ViewImage, and SkillUse; the registry accepts only Bash and ViewImage translators in `StaticTranslators` ([registry](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/tool/registry.go#L15-L59)). pk can implement its own `tool.Registry` and `tool.Translator`, but this is a seam, not a plugin loader. Translators must not do I/O on the event loop; they submit serializable operation specs instead ([project contract](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/README.md#L17-L27)).
+- **Operations:** `operation.Manager` abstracts Add/Cancel/Updates; the local manager provides durable actor-like execution for built-in operation types ([manager interface](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/operation/operation.go#L48-L66), [constructor](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/harness/operation/local_manager.go#L62-L75)). Custom durable operation types are not plug-and-play in `LocalOperationManager`; its built-in dispatch covers shell/image plus the core value/skill/remote-job flows. Use the existing remote-job handler seam for delegated execution if it fits, or supply a pk-owned Manager. Do not fork merely to add tools that can translate into existing operations.
+- **Context and history:** `contextbuilder.Builder` is injectable and pure in-memory; `sessionstore.Store` is replaceable and paginated. `localfile` persists versioned JSONL history and supports resume/fork. This is a strong reusable base for inspectable sessions, but changes to its on-disk schema should remain upstream-compatible or be wrapped/migrated.
+
+## Import/fork decision
+
+**Dependency first** is the quickest evidence-building path: add `github.com/unreallabsai/unreal-agent` at the pinned commit, use the public harness packages, and keep pk-specific APIs/adapters in pk. Its main cost is the upstream module path in source imports and needing Go 1.27; these are ordinary Go module constraints, not blockers. The module's only direct external requirements are `oapi-codegen/runtime`, `x/image`, and `x/sys` ([go.mod](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/go.mod#L5-L13)).
+
+**Fork now** if pk's core identity requires incremental provider events, arbitrary first-class operations, or substantial changes to session semantics. A fork under pk's module path makes edits and internal packages maintainable, but requires updating upstream-qualified imports across the fork and establishing an upstream merge policy. Do not copy only selected packages into pk: coordinator, operation, sessionstore, serialization, and tests are coupled, so partial vendoring creates an accidental fork with hidden compatibility debt. `cmd/internal/agentrunner` cannot be imported by an independent pk module under Go's `internal` rule. If pk forks Unreal into its own module and places its host under the fork's `cmd` tree, it can import that fork's `cmd/internal/agentrunner`, at the cost of coupling to the CLI runner. The runner itself composes the same public packages ([runner composition](https://github.com/unreallabsai/unreal-agent/blob/b7c9bf1c5c2fa4127255c07727a7c8413e23944a/cmd/internal/agentrunner/run.go#L350-L435)).
+
+The practical recommendation is a pinned dependency-backed pk prototype now, using these public seams. Make the fork decision after proving the seams against pk's required streaming and custom-tool behavior. This keeps the substantial coordinator and recovery work, avoids hiding contract gaps, and limits pk-owned code to product surfaces the upstream CLI does not provide.

@@ -1,0 +1,7 @@
+diff --git a/harness/llm/responsesapi/retry_timing_test.go b/harness/llm/responsesapi/retry_timing_test.go
+index 5b6c7c8..a54b4d1 100644
+--- a/harness/llm/responsesapi/retry_timing_test.go
++++ b/harness/llm/responsesapi/retry_timing_test.go
+@@ -105 +105 @@ func TestExchangeRetryHints(t *testing.T) {
+-					header = time.Now().Add(time.Minute).Format(http.TimeFormat)
++					header = time.Now().Add(time.Minute).UTC().Format(http.TimeFormat)
