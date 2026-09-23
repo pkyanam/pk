@@ -1,8 +1,10 @@
 package attachments_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
 	"image/png"
 	"os"
 	"os/exec"
@@ -48,7 +50,8 @@ func TestRealPopplerRendersMixedPDFScannedPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := png.Decode(file); err != nil {
+	decoded, err := png.Decode(file)
+	if err != nil {
 		_ = file.Close()
 		t.Fatalf("Poppler page output is not a decodable PNG: %v", err)
 	}
@@ -59,25 +62,33 @@ func TestRealPopplerRendersMixedPDFScannedPage(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("rendered page permissions info=%v err=%v", info, err)
 	}
+	if countRedPixels(decoded) < 100 {
+		t.Fatal("rendered page contains no visible red image region; check PDF stream lengths and image data")
+	}
 }
 
 func mixedSmokePDF() []byte {
-	objects := []string{
-		"<</Type/Catalog/Pages 2 0 R>>",
-		"<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>",
-		"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>",
-		"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
-		"<</Length 47>>\nstream\nBT /F1 12 Tf 72 720 Td (Cover text) Tj ET\nendstream",
-		"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</XObject<</Im1 8 0 R>>>>/Contents 7 0 R>>",
-		"<</Length 25>>\nstream\nq 200 0 0 200 80 300 cm /Im1 Do Q\nendstream",
-		"<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceRGB/BitsPerComponent 8/Length 3>>\nstream\n\xff\x00\x00\nendstream",
+	textContent := []byte("BT /F1 12 Tf 72 720 Td (Cover text) Tj ET")
+	imageContent := []byte("q 200 0 0 200 80 300 cm /Im1 Do Q")
+	rgb := bytes.Repeat([]byte{0xff, 0x00, 0x00}, 10*10)
+	objects := [][]byte{
+		[]byte("<</Type/Catalog/Pages 2 0 R>>"),
+		[]byte("<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>"),
+		[]byte("<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>"),
+		[]byte("<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>"),
+		pdfStream(textContent),
+		[]byte("<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</XObject<</Im1 8 0 R>>>>/Contents 7 0 R>>"),
+		pdfStream(imageContent),
+		append([]byte(fmt.Sprintf("<</Type/XObject/Subtype/Image/Width 10/Height 10/ColorSpace/DeviceRGB/BitsPerComponent 8/Length %d>>\nstream\n", len(rgb))), append(rgb, []byte("\nendstream")...)...),
 	}
 	var out strings.Builder
 	out.WriteString("%PDF-1.4\n")
 	offsets := make([]int, len(objects)+1)
 	for i, object := range objects {
 		offsets[i+1] = out.Len()
-		fmt.Fprintf(&out, "%d 0 obj\n%s\nendobj\n", i+1, object)
+		fmt.Fprintf(&out, "%d 0 obj\n", i+1)
+		out.Write(object)
+		out.WriteString("\nendobj\n")
 	}
 	xref := out.Len()
 	fmt.Fprintf(&out, "xref\n0 %d\n0000000000 65535 f \n", len(offsets))
@@ -86,4 +97,22 @@ func mixedSmokePDF() []byte {
 	}
 	fmt.Fprintf(&out, "trailer\n<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF\n", len(offsets), xref)
 	return []byte(out.String())
+}
+
+func pdfStream(data []byte) []byte {
+	return append([]byte(fmt.Sprintf("<</Length %d>>\nstream\n", len(data))), append(append([]byte(nil), data...), []byte("\nendstream")...)...)
+}
+
+func countRedPixels(img image.Image) int {
+	count := 0
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			if r > 0 && r > g*2 && r > b*2 {
+				count++
+			}
+		}
+	}
+	return count
 }

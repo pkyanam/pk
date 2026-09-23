@@ -41,8 +41,9 @@ Tasks have durable output and can be attached to, steered, canceled, or resumed.
 - **See what is happening.** Follow assistant progress and live tool activity, inspect completed tool output, and answer clarification questions during foreground work.
 - **Keep work moving.** Delegate bounded subtasks to child agents (using Luna by default), or detach a task and return to its saved progress later.
 - **Bring your setup.** Use discovered skills, explicitly enabled plugins, and configured MCP servers. pk can also run as an ACP agent for compatible editors and clients.
+- **Bring files into the task.** Attach images, text, and PDFs. Optional local Poppler previews let the model inspect scanned pages through `ViewImage`. See [file support and limits](docs/attachments-design.md).
 - **Choose a model connection.** ChatGPT/Codex is the built-in provider. Add OpenAI-compatible Responses or Chat Completions endpoints, inspect their model lists, and select a provider for new sessions.
-- **Stay in control of your session.** Context snapshots preserve the instructions, skills, and tool schemas a session started with. Provider usage and cache counters are shown when the provider reports them.
+- **Know what a session uses.** `/usage` shows saved token and cache totals when the provider reports them, without another model request. Context snapshots preserve the instructions, skills, and tools a session started with.
 - **Update from the terminal.** Run `pk update` or use `/update`, then roll back if needed. Selecting transcript text copies it when your terminal supports clipboard writes; Ctrl-Y is the fallback.
 - **No first-party telemetry.** pk operates no usage-analytics or crash-reporting service; provider and enabled-tool requests happen when you use them. See [privacy and data handling](docs/privacy.md).
 
