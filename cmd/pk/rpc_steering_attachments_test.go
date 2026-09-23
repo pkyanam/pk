@@ -75,14 +75,7 @@ func TestRPCSteeringAttachmentsStayOrderedAndResumeFromDurableInput(t *testing.T
 		t.Fatalf("duplicate steer altered accepted page artifact: data=%q err=%v", data, err)
 	}
 
-	select {
-	case <-model.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("ordered steers did not reach a follow-up model request")
-	}
-	model.mu.Lock()
-	requestTexts := modelRequestText(model.requests[1])
-	model.mu.Unlock()
+	requestTexts := waitForSteeringRequestText(t, model, "attachment marker: cobalt fern", "after the file, check the edge case")
 	fileAt, textAt := strings.Index(requestTexts, "attachment marker: cobalt fern"), strings.Index(requestTexts, "after the file, check the edge case")
 	if fileAt < 0 || textAt < 0 || fileAt >= textAt {
 		t.Fatalf("steering order/content missing from model request: %q", requestTexts)
@@ -117,6 +110,33 @@ func TestRPCSteeringAttachmentsStayOrderedAndResumeFromDurableInput(t *testing.T
 		server.completeTurn(result)
 	case <-time.After(5 * time.Second):
 		t.Fatal("resumed prompt did not finish")
+	}
+}
+
+// Queued inputs are delivered at model boundaries, so separate inputs may be
+// included in different subsequent requests. Wait until both have actually
+// reached the adapter and compare their order across the request sequence.
+func waitForSteeringRequestText(t *testing.T, model *mockModelAdapter, first, second string) string {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		model.mu.Lock()
+		var all strings.Builder
+		for _, request := range model.requests {
+			all.WriteString(modelRequestText(request))
+			all.WriteByte('\n')
+		}
+		requestTexts := all.String()
+		model.mu.Unlock()
+		if strings.Contains(requestTexts, first) && strings.Contains(requestTexts, second) {
+			return requestTexts
+		}
+		select {
+		case <-model.started:
+		case <-deadline.C:
+			t.Fatalf("ordered steers did not reach model requests: %q", requestTexts)
+		}
 	}
 }
 
