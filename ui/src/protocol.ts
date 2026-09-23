@@ -1,6 +1,6 @@
 export const PROTOCOL_VERSION = 1
 
-export type CommandType = "start" | "prompt" | "cancel" | "attach" | "detach" | "set_model" | "shutdown" | "tasks" | "new" | "login" | "status" | "task_create" | "task_list" | "task_attach" | "task_cancel" | "task_resume" | "send_input"
+export type CommandType = "start" | "prompt" | "cancel" | "attach" | "detach" | "set_model" | "shutdown" | "tasks" | "new" | "login" | "status" | "task_create" | "task_list" | "task_attach" | "task_cancel" | "task_resume" | "send_input" | "clipboard_paste"
 export type Command = {
   version: typeof PROTOCOL_VERSION
   id: string

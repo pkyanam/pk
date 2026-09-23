@@ -72,11 +72,11 @@ export class PkTransport {
         }
       }
       if (buffer.trim()) this.onEvent(decode(buffer))
-      this.onEvent({ version: 1, type: "rpc_closed" })
     } catch (error) {
       this.onEvent({ version: 1, type: "error", payload: { message: `RPC connection failed: ${String(error)}` } })
     } finally {
       reader.releaseLock()
+      this.onEvent({ version: 1, type: "rpc_closed" })
     }
   }
 

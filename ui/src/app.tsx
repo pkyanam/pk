@@ -1,4 +1,4 @@
-import { useKeyboard, useRenderer } from "@opentui/react"
+import { useKeyboard, usePaste, useRenderer } from "@opentui/react"
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useRef, useState } from "react"
 import type { PkTransport } from "./transport"
@@ -9,7 +9,7 @@ type Entry = { id: number; role: Role; text: string; callId?: string; toolName?:
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -24,6 +24,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/task", description: "Create, attach, or control a durable task", action: "task" },
   { name: "/file", description: "Queue an explicit file for your next prompt", action: "file" },
   { name: "/files", description: "Review, remove, or clear queued files", action: "files" },
+  { name: "/paste", description: "Import files or images from the system clipboard", action: "paste" },
   { name: "/new", description: "Start a fresh session", action: "new" },
   { name: "/attach", description: "Resume a saved session", action: "attach" },
   { name: "/detach", description: "Leave this session running", action: "detach" },
@@ -97,11 +98,98 @@ function groupTranscript(entries: Entry[]): Array<{ kind: "entry"; entry: Entry 
 
 function parseSlashWords(input: string): string[] {
   const words: string[] = []
-  const pattern = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\S+)/g
+  const pattern = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|((?:\\.|[^\s])+)/g
   for (const match of input.matchAll(pattern)) {
-    words.push((match[1] ?? match[2] ?? match[3] ?? "").replace(/\\([\\"'])/g, "$1"))
+    words.push((match[1] ?? match[2] ?? match[3] ?? "").replace(/\\([\\"' ])/g, "$1"))
   }
   return words
+}
+
+type LeadingPath = { path: string; prompt: string } | { ambiguous: true }
+
+function decodePastedPath(value: string): string {
+  const unquoted = value.replace(/\\([ \\"'])/g, "$1")
+  if (!unquoted.startsWith("file://")) return unquoted
+  try {
+    const parsed = new URL(unquoted)
+    if (parsed.protocol === "file:") return decodeURIComponent(parsed.pathname)
+  } catch { /* leave invalid URI as entered for an actionable backend error */ }
+  return unquoted
+}
+
+function isPathShape(value: string): boolean {
+  return /^(?:\/(?:[^/]+\/)+[^/]+|\.{1,2}\/[^/]+(?:\/[^/]+)*|~\/[^/]+(?:\/[^/]+)*)$/.test(value)
+}
+
+const fileExtension = /\.(?:pdf|png|jpe?g|webp|bmp|tiff?|gif|txt|md|markdown|rst|csv|tsv|json|ya?ml|toml|xml|html?|css|js|jsx|ts|tsx|go|py|rb|rs|sh|sql|log|diff|patch|svg)$/i
+
+export function leadingPathFromPrompt(input: string): LeadingPath | undefined {
+  const trimmed = input.trim()
+  if (!trimmed) return
+  const leadingCommand = trimmed.split(/\s/, 1)[0]
+  if (slashCommands.some((command) => command.name === leadingCommand)) return
+
+  const quoted = /^(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')(?:[ \t]*([\s\S]*))?$/.exec(trimmed)
+  if (quoted) {
+    const path = decodePastedPath(quoted[1] ?? quoted[2] ?? "")
+    if (isPathShape(path)) return { path, prompt: (quoted[3] ?? "").trim() }
+  }
+
+  const start = /^(?:file:\/\/|\/|\.{1,2}\/|~\/)/.test(trimmed)
+  if (!start) return
+
+  // Prefer a known file extension boundary over splitting at the first whitespace:
+  // `/path/meeting notes.pdf summarize it` has a clear end even when unquoted.
+  const extensionBoundary = /^(.*?\.(?:pdf|png|jpe?g|webp|bmp|tiff?|gif|txt|md|markdown|rst|csv|tsv|json|ya?ml|toml|xml|html?|css|js|jsx|ts|tsx|go|py|rb|rs|sh|sql|log|diff|patch|svg))(?=$|[ \t\r\n])([\s\S]*)$/i.exec(trimmed)
+  if (extensionBoundary) {
+    const candidate = decodePastedPath(extensionBoundary[1]!)
+    if (isPathShape(candidate)) return { path: candidate, prompt: extensionBoundary[2]!.trim() }
+  }
+
+  // A quoted or shell-escaped first token is unambiguous even if its filename has spaces.
+  const token = /^(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|((?:\\.|[^\s])+))(?:[ \t]+([\s\S]*))?$/.exec(trimmed)
+  if (!token) return { ambiguous: true }
+  const rawPath = token[1] ?? token[2] ?? token[3] ?? ""
+  const path = decodePastedPath(rawPath)
+  const rest = (token[4] ?? "").trim()
+  if (isPathShape(path)) {
+    if (rest && !token[1] && !token[2]) return { ambiguous: true }
+    return { path, prompt: rest }
+  }
+
+  // An unquoted path with spaces is ambiguous. Don't consume prose as part of a filename.
+  if (fileExtension.test(path)) return { path, prompt: rest }
+  if (trimmed.startsWith("/") && !trimmed.slice(1).includes("/")) return
+  return { ambiguous: true }
+}
+
+function hasMarkdownSyntax(content: string): boolean {
+  const blockSyntax = /(?:^|\n)(?:[ \t]{0,3}#{1,6}[ \t]+|[ \t]{0,3}(?:[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]?|`{3,}|~{3,})|[ \t]{0,3}(?:\*{3,}|-{3,}|_{3,}|={2,})[ \t]*$|[ \t]{4,}\S|[ \t]*\|[^\n]+\|[ \t]*(?:\n|$)|[^\n]+\n[ \t]*(?:={3,}|-{3,})[ \t]*(?:\n|$))/m
+  const inlineSyntax = /\[[^\]]+\](?:\([^)]*\)|\[[^\]]*\])|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\s][^*\n]*\*|_[^_\s][^_\n]*_|(?:^|\n)[ \t]{0,3}\[[^\]]+\]:[ \t]*\S/m
+  return blockSyntax.test(content) || inlineSyntax.test(content)
+}
+
+export function parsePastedPaths(input: string, mimeType = ""): { paths: string[]; prompt: string } | undefined {
+  const raw = input.replace(/\r/g, "").trim()
+  if (!raw) return
+  const uriList = mimeType.toLowerCase() === "text/uri-list"
+  const lines = raw.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"))
+  if (uriList) {
+    const paths = lines.map(decodePastedPath).filter((path) => /^(?:\/|\.\.?\/|~\/)/.test(path))
+    return paths.length ? { paths, prompt: "" } : undefined
+  }
+  if (lines.length === 1) {
+    const tokens = parseSlashWords(lines[0]!)
+    if (tokens.length > 1 && tokens.every((path) => isPathShape(decodePastedPath(path)) && (fileExtension.test(path) || path.startsWith("file://")))) {
+      return { paths: tokens.map(decodePastedPath), prompt: "" }
+    }
+  }
+  const parsedLines = lines.map((line) => leadingPathFromPrompt(line))
+  if (parsedLines.length && parsedLines.every((item) => item && "path" in item && !item.prompt)) {
+    return { paths: parsedLines.map((item) => (item as { path: string }).path), prompt: "" }
+  }
+  const leading = leadingPathFromPrompt(raw)
+  if (leading && "path" in leading) return { paths: [leading.path], prompt: leading.prompt }
 }
 
 export function PkApp({ transport, workspace, initialSession }: { transport: PkTransport; workspace: string; initialSession?: string }) {
@@ -114,10 +202,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [sessionId, setSessionId] = useState(initialSession || "")
   const [usage, setUsage] = useState<{ cachedInput?: number; available: boolean } | null>(null)
   const [connected, setConnected] = useState(false)
+  const [everConnected, setEverConnected] = useState(false)
   const [busy, setBusy] = useState(false)
   const [selector, setSelector] = useState<"model" | "effort" | "tasks" | null>(null)
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
+  const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
   const [message, setMessage] = useState("")
   const [draft, setDraft] = useState("")
   const [slashIndex, setSlashIndex] = useState(0)
@@ -126,6 +216,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
   const [queuedFiles, setQueuedFiles] = useState<string[]>([])
+  const queuedFilesRef = useRef<string[]>([])
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(() => new Set())
   const entryId = useRef(1)
   const waiting = useRef(false)
@@ -134,6 +225,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const promptCommandId = useRef("")
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
+  const pendingClipboardRequests = useRef(new Set<string>())
+
+  const updateFileQueue = (update: string[] | ((current: string[]) => string[])) => {
+    const next = typeof update === "function" ? update(queuedFilesRef.current) : update
+    queuedFilesRef.current = next
+    setQueuedFiles(next)
+  }
 
   const clearComposer = (focus = false) => {
     textarea.current?.clear()
@@ -146,9 +244,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setEntries((previous) => [...previous, { id: entryId.current++, role, text }].slice(-300))
   }
 
+  const requestClipboardPaste = () => {
+    const id = transport.send("clipboard_paste" as any)
+    if (id) pendingClipboardRequests.current.add(id)
+    else addEntry("system", "Clipboard paste is unavailable until pk connects.")
+  }
+
   const trackTool = (data: Record<string, any>) => {
     const callId = String(data.call_id ?? data.id ?? `tool-${Date.now()}`)
     const name = String(data.name ?? data.tool ?? "tool")
+    if (name.toLowerCase() === "askuser") return
     const rawStatus = data.state ?? data.status?.status ?? data.status
     const status = typeof rawStatus === "string" ? rawStatus : "running"
     const startedAt = Date.now() - (Number.isFinite(data.elapsed_ms) ? Math.max(0, Number(data.elapsed_ms)) : 0)
@@ -196,6 +301,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     switch (event.type) {
       case "ready":
         setConnected(true)
+        setEverConnected(true)
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (data.workspace) setMessage(String(data.workspace))
@@ -221,7 +327,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const kind = data.kind === "confirmation" ? "confirmation" : "question"
         const supplied = Array.isArray(data.choices) ? data.choices.filter((item: unknown) => typeof item === "string" && item.trim()).map(String) : []
         const choices = supplied.length ? supplied : kind === "confirmation" ? ["Yes", "No"] : []
-        setQuestion({ id: String(data.id ?? ""), text: String(data.text ?? "The agent needs an answer."), choices, kind })
+        const text = String(data.text ?? "The agent needs an answer.")
+        addEntry("system", `AskUser · ${text}`)
+        setActivityStartedAt((current) => current ?? Date.now())
+        setQuestion({ id: String(data.id ?? ""), text, choices, kind })
         setQuestionIndex(0)
         break
       }
@@ -236,6 +345,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "turn_started":
         setBusy(true)
+        setActivityStartedAt((current) => current ?? Date.now())
         setTools([])
         turnActive.current = true
         break
@@ -243,7 +353,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const submitted = event.id ? pendingPromptFiles.current.get(event.id) : undefined
         if (event.id) pendingPromptFiles.current.delete(event.id)
         if (submitted?.length) {
-          setQueuedFiles((current) => current.filter((path) => !submitted.includes(path)))
+          updateFileQueue((current) => current.filter((path) => !submitted.includes(path)))
           const files = Array.isArray(data.files) ? data.files : []
           const descriptions = files.map((file: any) => {
             const name = String(file?.path ?? "file").split(/[\\/]/).pop() || "file"
@@ -253,6 +363,23 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           })
           addEntry("system", `Loaded ${descriptions.join(" · ") || `${submitted.length} attachment${submitted.length === 1 ? "" : "s"}`}`)
         }
+        break
+      }
+      case "clipboard_files": {
+        if (event.id && !pendingClipboardRequests.current.has(event.id)) break
+        if (event.id) pendingClipboardRequests.current.delete(event.id)
+        for (const file of Array.isArray(data.files) ? data.files : []) {
+          const path = typeof file?.path === "string" ? file.path : ""
+          if (path) queueFile(path)
+        }
+        if (typeof data.text === "string" && data.text) {
+          const pasted = parsePastedPaths(data.text)
+          if (pasted) {
+            for (const path of pasted.paths) queueFile(path)
+            if (pasted.prompt) textarea.current?.insertText(pasted.prompt)
+          } else textarea.current?.insertText(data.text)
+        }
+        if (data.message) addEntry("system", String(data.message))
         break
       }
       case "assistant":
@@ -268,6 +395,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       case "turn_finished":
         setBusy(false)
+        setActivityStartedAt(null)
         setTools([])
         waiting.current = false
         turnActive.current = false
@@ -301,16 +429,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "task_created":
         addEntry("system", `Task started in the background · ${String(data.task_id ?? data.id ?? "task")}`)
         break
-      case "task_attached":
+      case "task_attached": {
+        const taskBusy = ["running", "queued", "awaiting", "canceling"].includes(String(data.status))
         setActiveTaskId(String(data.task_id ?? data.id ?? ""))
         if (data.session_id) setSessionId(String(data.session_id))
         if (data.workspace) setMessage(String(data.workspace))
-        setBusy(["running", "queued", "awaiting", "canceling"].includes(String(data.status)))
+        setBusy(taskBusy)
+        setActivityStartedAt((current) => taskBusy ? current ?? Date.now() : null)
         addEntry("system", `Following task ${String(data.task_id ?? data.id ?? "")}`)
         break
+      }
       case "task_resumed":
         setActiveTaskId(String(data.task_id ?? data.id ?? ""))
         setBusy(true)
+        setActivityStartedAt(Date.now())
         addEntry("system", `Resumed task ${String(data.task_id ?? data.id ?? "")}`)
         break
       case "task_input_sent":
@@ -326,6 +458,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.text) addEntry("assistant", String(data.text))
         addEntry("system", `Task ${String(data.status ?? "finished")}`)
         setActiveTaskId("")
+        setActivityStartedAt(null)
         if (data.session_id) setSessionId(String(data.session_id))
         setBusy(false)
         waiting.current = false
@@ -356,9 +489,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           turnActive.current = false
           promptCommandId.current = ""
           setBusy(false)
+          setActivityStartedAt(null)
           setTools([])
         } else if (!turnActive.current && !activeTaskId && !waiting.current) {
           setBusy(false)
+          setActivityStartedAt(null)
           setTools([])
         }
         break
@@ -370,6 +505,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "rpc_closed": {
         setConnected(false)
         setBusy(false)
+        setActivityStartedAt(null)
         setEntries((entries) => entries.map((entry) => entry.role === "tool" && !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase())
           ? { ...entry, toolState: "interrupted", text: entry.text || "Agent connection closed before this tool finished." }
           : entry))
@@ -391,6 +527,44 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     transport.setEventHandler((event: ServerEvent) => handleEvent.current(event))
   }, [transport])
 
+  const queueFile = (path: string): boolean => {
+    if (!path) {
+      addEntry("system", 'Usage: /file PATH · quote paths containing spaces, for example /file "docs/meeting notes.pdf"')
+      return false
+    }
+    if (path.length > 4096) {
+      addEntry("system", "File path is too long (maximum 4096 characters).")
+      return false
+    }
+    const current = queuedFilesRef.current
+    if (current.includes(path)) {
+      addEntry("system", `Already queued · ${path}`)
+      return true
+    }
+    if (current.length >= 8) {
+      addEntry("system", "The attachment queue is full (8 files). Send a prompt or remove a file first.")
+      return false
+    }
+    updateFileQueue([...current, path])
+    addEntry("system", `Queued file ${current.length + 1}/8 · ${path}`)
+    return true
+  }
+
+  usePaste((event) => {
+    const pasted = new TextDecoder().decode(event.bytes)
+    const parsed = parsePastedPaths(pasted, event.metadata?.mimeType ?? "")
+    if (!parsed) return
+    event.preventDefault()
+    let accepted = true
+    for (const path of parsed.paths) accepted = queueFile(path) && accepted
+    if (parsed.prompt) {
+      textarea.current?.insertText(parsed.prompt)
+      setDraft(textarea.current?.plainText ?? `${draft}${parsed.prompt}`)
+    } else if (accepted) {
+      addEntry("system", `Added ${parsed.paths.length} pasted file${parsed.paths.length === 1 ? "" : "s"} to the next prompt.`)
+    }
+  })
+
   const sendPrompt = () => {
     const value = textarea.current?.plainText ?? draft
     const text = value.trim()
@@ -404,30 +578,44 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (!text || !connected || (waiting.current && !activeTaskId)) return
-    if (text.startsWith("/")) {
-      const [commandName, subcommand] = parseSlashWords(text)
-      if (commandName === "/task" && subcommand === "new" && queuedFiles.length) {
+    const leadingPath = leadingPathFromPrompt(text)
+    if (leadingPath && "ambiguous" in leadingPath) {
+      addEntry("system", 'That looks like a file path with spaces. Quote the path, for example: "/path/to/meeting notes.pdf" describe this file.')
+      return
+    }
+    let promptText = text
+    let includedLeadingPath = false
+    if (leadingPath && "path" in leadingPath) {
+      if (!queueFile(leadingPath.path)) return
+      includedLeadingPath = true
+      promptText = leadingPath.prompt
+      if (!promptText) promptText = "Inspect the attached file."
+    }
+    if (!includedLeadingPath && promptText.startsWith("/")) {
+      const [commandName, subcommand] = parseSlashWords(promptText)
+      if (commandName === "/task" && subcommand === "new" && queuedFilesRef.current.length) {
         addEntry("system", "Queued files are not sent to background tasks. Clear the queue with /files clear before creating one; files remain queued for a foreground prompt.")
         return
       }
-      runSlashCommand(text)
+      runSlashCommand(promptText)
       clearComposer(true)
       return
     }
-    if (activeTaskId && queuedFiles.length) {
+    if (activeTaskId && queuedFilesRef.current.length) {
       addEntry("system", "File attachments are not supported for this background task. The draft and file queue are kept; attachments work with foreground prompts.")
       return
     }
-    addEntry("user", text)
+    addEntry("user", promptText)
     clearComposer(true)
     if (activeTaskId) {
-      transport.send("send_input" as any, { task_id: activeTaskId, text })
+      transport.send("send_input" as any, { task_id: activeTaskId, text: promptText })
       return
     }
     waiting.current = true
     setBusy(true)
-    const files = [...queuedFiles]
-    const commandId = transport.send("prompt", { text, ...(files.length ? { files } : {}) }) ?? ""
+    setActivityStartedAt(Date.now())
+    const files = [...queuedFilesRef.current]
+    const commandId = transport.send("prompt", { text: promptText, ...(files.length ? { files } : {}) }) ?? ""
     promptCommandId.current = commandId
     if (commandId && files.length) pendingPromptFiles.current.set(commandId, files)
   }
@@ -501,31 +689,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "file": {
-        const path = args.join(" ")
-        if (!path) {
-          addEntry("system", 'Usage: /file PATH · quote paths containing spaces, for example /file "docs/meeting notes.pdf"')
-          break
-        }
-        if (path.length > 4096) {
-          addEntry("system", "File path is too long (maximum 4096 characters).")
-          break
-        }
-        if (queuedFiles.includes(path)) {
-          addEntry("system", `Already queued · ${path}`)
-          break
-        }
-        if (queuedFiles.length >= 8) {
-          addEntry("system", "The attachment queue is full (8 files). Send a prompt or remove a file first.")
-          break
-        }
-        setQueuedFiles((current) => current.includes(path) ? current : [...current, path])
-        addEntry("system", `Queued file ${queuedFiles.length + 1}/8 · ${path}`)
+        queueFile(args.join(" "))
         break
       }
       case "files": {
         const [operation, ...rest] = args
         if (operation === "clear") {
-          setQueuedFiles([])
+          updateFileQueue([])
           addEntry("system", queuedFiles.length ? `Cleared ${queuedFiles.length} queued file${queuedFiles.length === 1 ? "" : "s"}.` : "The file queue is already empty.")
         } else if (operation === "remove") {
           const target = rest.join(" ")
@@ -533,7 +703,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           if (index < 0 || index >= queuedFiles.length) addEntry("system", "Usage: /files remove N · N is the 1-based file number shown below.")
           else {
             const removed = queuedFiles[index]!
-            setQueuedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))
+            updateFileQueue((current) => current.filter((_, currentIndex) => currentIndex !== index))
             addEntry("system", `Removed file · ${removed}`)
           }
         } else if (operation) {
@@ -543,7 +713,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         } else addEntry("system", "No files queued. Use /file PATH to attach an explicit file to your next prompt.")
         break
       }
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops · Ctrl-P opens commands · /file PATH · /files · /files remove N · /files clear · /task new [--workspace PATH] PROMPT · /tasks · /task attach ID · /task resume ID · /task cancel ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "paste": requestClipboardPaste(); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /task attach ID · /task resume ID · /task cancel ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -605,6 +776,24 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   useKeyboard((key) => {
     const isEscape = key.name === "escape" || key.name === "esc"
+    const commandModifier = key.super === true || key.meta === true
+    if ((commandModifier || key.ctrl) && key.name.toLowerCase() === "v") {
+      key.preventDefault()
+      requestClipboardPaste()
+      return
+    }
+    if ((commandModifier && key.name.toLowerCase() === "c") || (key.ctrl && key.name.toLowerCase() === "y")) {
+      const selection = renderer.getSelection()?.getSelectedText() ?? ""
+      if (selection && renderer.isOsc52Supported()) {
+        key.preventDefault()
+        const copied = renderer.copyToClipboardOSC52(selection)
+        if (copied) addEntry("system", `Copied ${selection.length} characters.`)
+      } else if (key.ctrl && key.name.toLowerCase() === "y") {
+        key.preventDefault()
+        addEntry("system", selection ? "This terminal does not allow OSC 52 clipboard copy." : "Select transcript text first, then press Ctrl+Y to copy it.")
+      }
+      return
+    }
     if (!question && !selector && key.ctrl && key.name === "o") {
       toggleLastToolGroup()
       return
@@ -707,12 +896,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
   const cwd = message || workspace
   const visibleFileCount = Math.max(1, Math.floor((renderer.width - 26) / 20))
+  const activityLabel = question
+    ? "Waiting for your answer"
+    : busy
+      ? tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model"
+      : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
+  const activityTime = activityStartedAt === null ? "" : ` · ${shortTime(clock - activityStartedAt)}`
+  const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
       <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
         <text fg={palette.text} content="pk  /  terminal agent" />
-        <text fg={connected ? palette.green : palette.amber} content={connected ? "● connected" : "○ connecting…"} />
+        <text fg={busy ? palette.accent : palette.dim} content={`${busy ? spinner : ""} ${activityLabel}${activityTime}`} />
       </box>
       {!sessionId && entries.length <= 1 && <box style={{ flexDirection: "column", marginTop: 1, marginBottom: 1, flexShrink: 0 }}>
         <ascii-font text="PK" font="block" color={palette.accent} />
@@ -725,7 +921,6 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {groupTranscript(entries).map((item) => item.kind === "entry"
           ? <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
           : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
-        {busy && tools.length === 0 && <box style={{ flexDirection: "row", gap: 1, paddingLeft: 2, height: 1 }}><text fg={palette.accent} content="◌" /><text fg={palette.muted} content="Thinking…" /></box>}
       </scrollbox>
       <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
         {queuedFiles.length > 0 && <box style={{ flexDirection: "row", gap: 1, height: 1, flexShrink: 0, paddingLeft: 1 }}>
@@ -734,7 +929,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             const name = path.split(/[\\/]/).pop() || path
             const label = name.length > 14 ? `${name.slice(0, 13)}…` : name
             return <box key={`${path}-${index}`} id={`file-chip-${index}`} onMouseDown={(event) => leftMouseDown(event, () => {
-              setQueuedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))
+              updateFileQueue((current) => current.filter((_, currentIndex) => currentIndex !== index))
             })} style={{ flexDirection: "row", gap: 1, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, height: 1 }}>
               <text fg={palette.text} content={label} />
               <text fg={palette.accent} content="×" />
@@ -766,7 +961,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-          <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
+      <text fg={palette.dim} content={`${question ? "Enter answer" : activeTaskId ? "Enter steer" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
@@ -843,8 +1038,11 @@ function TranscriptEntry({ entry, clock }: { entry: Entry; clock: number }) {
     {entry.detail ? <text fg={palette.muted} content={entry.detail} /> : entry.text ? <text fg={palette.red} content={entry.text} /> : null}
   </box>
   const isUser = entry.role === "user"
+  const markdown = hasMarkdownSyntax(entry.text)
   return <box style={{ flexDirection: "column", width: "100%", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
     <text fg={isUser ? palette.blue : palette.accent} content={isUser ? "you" : "pk"} />
-    {isUser ? <text fg={palette.text} content={entry.text} /> : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
+    {isUser || !markdown
+      ? <text fg={palette.text} content={entry.text} />
+      : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />}
   </box>
 }

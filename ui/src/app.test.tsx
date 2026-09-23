@@ -4,6 +4,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { act } from "react"
 import type { ServerEvent } from "./protocol"
 import { PkApp } from "./app"
+import { leadingPathFromPrompt, parsePastedPaths } from "./app"
 import type { PkTransport } from "./transport"
 
 const openRenderers: Array<Awaited<ReturnType<typeof testRender>>> = []
@@ -151,7 +152,7 @@ describe("OpenTUI application", () => {
 
     act(() => fake.emit({ version: 1, id: "unrelated-setting", type: "error", payload: { message: "could not save model preference" } }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Thinking…")
+    expect(setup.captureCharFrame()).toContain("Waiting for model")
 
     let escapeName = ""
     const keyObserver = (key: { name: string }) => { escapeName = key.name }
@@ -262,6 +263,122 @@ describe("OpenTUI application", () => {
     act(() => fake.emit({ version: 1, id: prompt.id, type: "attachments_loaded", payload: { files: [{ path: "/tmp/pk/docs/meeting notes.pdf", kind: "pdf", pages_extracted: 2, truncated: false }] } }))
     const loaded = await setup.waitForFrame((frame) => frame.includes("Loaded meeting notes.pdf (pdf, 2 pages)"))
     expect(loaded).not.toContain("Files 1/8")
+  })
+
+  test("recognizes explicit absolute and relative file paths without treating unknown slash commands as files", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+
+    await act(async () => { await setup.mockInput.typeText("/Users/preetham/Pictures/portrait photo.jpeg describe this") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    let prompt = fake.sent.find((item) => item.type === "prompt")
+    expect(prompt?.payload?.text).toBe("describe this")
+    expect(prompt?.payload?.files).toEqual(["/Users/preetham/Pictures/portrait photo.jpeg"])
+    act(() => fake.emit({ version: 1, id: prompt?.id, type: "attachments_loaded", payload: { files: [{ path: "/Users/preetham/Pictures/portrait photo.jpeg", kind: "image" }] } }))
+    act(() => fake.emit({ version: 1, type: "turn_finished", payload: {} }))
+    await setup.flush()
+
+    await act(async () => { await setup.mockInput.typeText("../docs/design/brief.pdf") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    prompt = fake.sent.filter((item) => item.type === "prompt").at(-1)
+    expect(prompt?.payload?.text).toBe("Inspect the attached file.")
+    expect(prompt?.payload?.files).toEqual(["../docs/design/brief.pdf"])
+    act(() => fake.emit({ version: 1, type: "turn_finished", payload: {} }))
+
+    await act(async () => { await setup.mockInput.typeText("/notacommand") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    expect(await setup.waitForFrame((frame) => frame.includes("Unknown command: /notacommand"))).toContain("Ready")
+  })
+
+  test("routes a leading file path and keeps following prose as the prompt", async () => {
+    expect(leadingPathFromPrompt("/tmp/portrait.jpeg please describe this image")).toEqual({ path: "/tmp/portrait.jpeg", prompt: "please describe this image" })
+    expect(leadingPathFromPrompt('"/tmp/portrait photo.jpeg" describe this')).toEqual({ path: "/tmp/portrait photo.jpeg", prompt: "describe this" })
+    expect(leadingPathFromPrompt("/tmp/portrait photo.jpeg")).toEqual({ path: "/tmp/portrait photo.jpeg", prompt: "" })
+    expect(leadingPathFromPrompt("/tmp/portrait photo describe this")).toEqual({ ambiguous: true })
+    expect(leadingPathFromPrompt("/notacommand")).toBeUndefined()
+
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("/tmp/portrait.jpeg please describe this image") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")
+    expect(prompt?.payload?.text).toBe("please describe this image")
+    expect(prompt?.payload?.files).toEqual(["/tmp/portrait.jpeg"])
+  })
+
+  test("queues bracketed pasted paths and preserves ordinary pasted prose", async () => {
+    expect(parsePastedPaths("/tmp/one.png\n/tmp/two.pdf")).toEqual({ paths: ["/tmp/one.png", "/tmp/two.pdf"], prompt: "" })
+    expect(parsePastedPaths("file:///tmp/meeting%20notes.pdf", "text/uri-list")).toEqual({ paths: ["/tmp/meeting notes.pdf"], prompt: "" })
+    expect(parsePastedPaths('"/tmp/one file.png" "/tmp/two file.pdf"')).toEqual({ paths: ["/tmp/one file.png", "/tmp/two file.pdf"], prompt: "" })
+    expect(parsePastedPaths("/tmp/one.png /tmp/two\\ file.pdf")).toEqual({ paths: ["/tmp/one.png", "/tmp/two file.pdf"], prompt: "" })
+    expect(parsePastedPaths("a regular paragraph about files")).toBeUndefined()
+
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    await act(async () => { setup.renderer.keyInput.processPaste(new TextEncoder().encode("/tmp/one.png\n/tmp/two.pdf")) })
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Files 2/8")
+    await act(async () => { setup.renderer.keyInput.processPaste(new TextEncoder().encode("describe these files")) })
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("describe these files")
+  })
+
+  test("requests clipboard files only on explicit paste shortcut and queues returned paths", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    expect(fake.sent.some((item) => item.type === "clipboard_paste")).toBe(false)
+    await act(async () => setup.mockInput.pressKey("v", { ctrl: true }))
+    const request = fake.sent.find((item) => item.type === "clipboard_paste")
+    expect(request).toBeDefined()
+    act(() => fake.emit({ version: 1, id: request?.id, type: "clipboard_files", payload: { files: [{ path: "/tmp/pasted.png", kind: "image" }], text: "describe this" } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("pasted.png")
+    expect(setup.captureCharFrame()).toContain("describe this")
+    await act(async () => setup.mockInput.pressKey("v", { super: true }))
+    expect(fake.sent.filter((item) => item.type === "clipboard_paste")).toHaveLength(2)
+  })
+
+  test("Shift-Enter inserts a newline without submitting", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    await act(async () => { await setup.mockInput.typeText("first line") })
+    await act(async () => setup.mockInput.pressEnter({ shift: true }))
+    await act(async () => { await setup.mockInput.typeText("second line") })
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+    expect(setup.captureCharFrame()).toContain("first line")
+    expect(setup.captureCharFrame()).toContain("second line")
+  })
+
+  test("Ctrl-Y copy shortcut is explicit and leaves Ctrl-C behavior untouched", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30, kittyKeyboard: true })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    await act(async () => setup.mockInput.pressKey("y", { ctrl: true }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Select transcript text first")
+    expect(fake.sent.some((item) => item.type === "shutdown")).toBe(false)
   })
 
   test("rejects a ninth queued file to match the attachment service limit", async () => {
@@ -442,17 +559,71 @@ describe("OpenTUI application", () => {
     expect(expanded.indexOf("Between the test groups.")).toBeLessThan(expanded.indexOf("go test ./c"))
   })
 
-  test("renders headings, lists, code fences, and links in markdown replies", async () => {
+  test("renders block and inline markdown after Tree-sitter highlighting completes", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Message"))
-    act(() => fake.emit({ version: 1, id: "markdown", type: "assistant", payload: { text: "# Heading\n\n- List item\n\n```sh\nprintf hello\n```\n\n[Docs](https://example.com)" } }))
-    const frame = await setup.waitForFrame((value) => value.includes("Heading"))
+    const markdown = "# Heading\n\n- List item\n\n*italic word* and _underscored emphasis_.\n\nSetext heading\n===============\n\n---\n\n```sh\nprintf hello\n```\n\n    printf indented\n\n[Docs][reference]\n\n[reference]: https://example.com"
+    const parser = getTreeSitterClient()
+    const highlightResult = await parser.highlightOnce(markdown, "markdown")
+    expect(highlightResult.error).toBeUndefined()
+    act(() => fake.emit({ version: 1, id: "markdown", type: "assistant", payload: { text: markdown } }))
+    const renderedText = ["Heading", "List item", "italic word", "underscored emphasis", "Setext heading", "printf hello", "printf indented", "Docs"]
+    const frame = await setup.waitForFrame((value) => renderedText.every((text) => value.includes(text)))
     expect(frame).toContain("List item")
+    expect(frame).toContain("italic word")
+    expect(frame).toContain("underscored emphasis")
+    expect(frame).toContain("Setext heading")
     expect(frame).toContain("printf hello")
+    expect(frame).toContain("printf indented")
     expect(frame).toContain("Docs")
     expect(frame).not.toContain("# Heading")
+    expect(frame).not.toContain("*italic word*")
+    expect(frame).not.toContain("[Docs][reference]")
+  })
+
+  test("keeps live activity visible through tool and model gaps until turn_finished", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, id: "turn", type: "turn_started", payload: {} }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Waiting for model")
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)) })
+    await setup.flush()
+    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [1-9]s/)
+    act(() => fake.emit({ version: 1, id: "tool", type: "tool_call", payload: { call_id: "tool", name: "Bash", state: "running", command_preview: "go test ./..." } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Running 1 tool")
+    act(() => fake.emit({ version: 1, id: "tool-done", type: "tool_call", payload: { call_id: "tool", name: "Bash", state: "completed", command_preview: "go test ./..." } }))
+    act(() => fake.emit({ version: 1, id: "final", type: "assistant", payload: { text: "All tests pass." } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Waiting for model")
+    expect(setup.captureCharFrame()).toContain("All tests pass.")
+    act(() => fake.emit({ version: 1, id: "turn-done", type: "turn_finished", payload: {} }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Ready")
+  })
+
+  test.each([
+    { name: "single-star and underscore emphasis", markdown: "*only italic* and _underscored italic_", expected: "only italic" },
+    { name: "a setext heading", markdown: "Setext headline\n==============", expected: "Setext headline" },
+    { name: "a horizontal rule", markdown: "Before\n\n---\n\nAfter", expected: "After" },
+    { name: "indented code", markdown: "    printf indented", expected: "printf indented" },
+    { name: "a reference link", markdown: "[Docs][reference]\n\n[reference]: https://example.com", expected: "Docs" },
+  ])("renders $name through OpenTUI Markdown", async ({ markdown, expected }) => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    const result = await getTreeSitterClient().highlightOnce(markdown, "markdown")
+    expect(result.error).toBeUndefined()
+    act(() => fake.emit({ version: 1, id: "markdown-variant", type: "assistant", payload: { text: markdown } }))
+    const frame = await setup.waitForFrame((value) => value.includes(expected))
+    expect(frame).toContain(expected)
   })
 
   test("answers a foreground model question through its stable RPC id", async () => {
@@ -460,6 +631,7 @@ describe("OpenTUI application", () => {
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, id: "ask-call", type: "tool_call", payload: { call_id: "ask-call", name: "AskUser", state: "awaiting", arguments_preview: { question: "Which package manager should I use?", choices: ["Bun", "npm"] } } }))
     act(() => fake.emit({ version: 1, id: "turn-request", type: "question", payload: { id: "ask-17", kind: "question", text: "Which package manager should I use?", choices: ["Bun", "npm"] } }))
     const questionFrame = await setup.waitForFrame((frame) => frame.includes("Which package manager"))
     expect(questionFrame).toContain("Bun")
@@ -475,6 +647,10 @@ describe("OpenTUI application", () => {
     const accepted = await setup.waitForFrame((frame) => frame.includes("Answer · npm"))
     expect(accepted).not.toContain("Sending answer…")
     expect(accepted).toContain("Ask pk to inspect")
+    expect(accepted).toContain("AskUser · Which package manager should I use?")
+    expect(accepted.indexOf("AskUser · Which package manager")).toBeLessThan(accepted.indexOf("Answer · npm"))
+    expect(accepted).not.toContain("arguments_preview")
+    expect(accepted).not.toContain("[object Object]")
     act(() => fake.emit({ version: 1, id: "turn-request-2", type: "question", payload: { id: "confirm-18", kind: "confirmation", text: "Apply the change?" } }))
     await setup.waitForFrame((frame) => frame.includes("Confirmation needed"))
     act(() => setup.mockInput.pressKey("ARROW_DOWN"))

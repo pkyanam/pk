@@ -13,6 +13,7 @@ const renderer = await createCliRenderer({
   exitOnCtrlC: false,
   targetFps: 30,
   useMouse: true,
+  useKittyKeyboard: { disambiguate: true },
   autoFocus: false,
 })
 const transport = new PkTransport()
