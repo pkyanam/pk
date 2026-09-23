@@ -414,5 +414,11 @@ func decodeChatStream(ctx context.Context, source io.Reader) (llm.Response, erro
 			response.Failure = &llm.Failure{Code: "content_filter", Message: "provider filtered the response"}
 		}
 	}
+	// Some OpenAI-compatible providers omit finish_reason on their final
+	// chunk, so [DONE] remains the stream boundary. A metadata-only stream,
+	// however, must not look like a successful empty assistant turn.
+	if len(response.Output) == 0 && refusal.Len() == 0 && response.Stop == llm.StopComplete {
+		return llm.Response{}, errors.New("chat completion stream ended without assistant content or tool calls")
+	}
 	return response, nil
 }

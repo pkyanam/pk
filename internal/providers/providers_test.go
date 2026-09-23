@@ -190,7 +190,8 @@ func TestChatCompletionsPreserveExplicitZeroAndMissingUsageFields(t *testing.T) 
 		{"missing", `{}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			data := "data: {\"id\":\"" + test.name + "\",\"choices\":[],\"usage\":" + test.usage + "}\n\n" + "data: [DONE]\n\n"
+			data := "data: {\"id\":\"" + test.name + "\",\"choices\":[],\"usage\":" + test.usage + "}\n\n" +
+				"data: {\"id\":\"" + test.name + "\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n" + "data: [DONE]\n\n"
 			response, err := decodeChatStream(context.Background(), strings.NewReader(data))
 			if err != nil {
 				t.Fatal(err)
@@ -199,6 +200,31 @@ func TestChatCompletionsPreserveExplicitZeroAndMissingUsageFields(t *testing.T) 
 				t.Fatalf("Raw=%s want %s", response.Usage.Raw, test.usage)
 			}
 		})
+	}
+}
+
+func TestChatCompletionsRejectMetadataOnlyTerminalButKeepTextWithoutFinishReason(t *testing.T) {
+	for _, data := range []string{
+		"data: {\"id\":\"empty\",\"choices\":[],\"usage\":{\"prompt_tokens\":12}}\n\n" + "data: [DONE]\n\n",
+		"data: {\"id\":\"empty-choice\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" + "data: [DONE]\n\n",
+	} {
+		if response, err := decodeChatStream(context.Background(), strings.NewReader(data)); err == nil || !strings.Contains(err.Error(), "without assistant content") || len(response.Output) != 0 {
+			t.Fatalf("metadata-only response=%+v err=%v", response, err)
+		}
+	}
+
+	compatible := "data: {\"id\":\"text-no-reason\",\"choices\":[{\"delta\":{\"content\":\"finished\"},\"finish_reason\":null}]}\n\n" + "data: [DONE]\n\n"
+	response, err := decodeChatStream(context.Background(), strings.NewReader(compatible))
+	if err != nil || len(response.Output) != 1 || response.Output[0].Data.(llm.Message).Text != "finished" {
+		t.Fatalf("compatible text response=%+v err=%v", response, err)
+	}
+}
+
+func TestChatCompletionsPreserveEmptyLengthTerminalAndUsage(t *testing.T) {
+	data := "data: {\"id\":\"length\",\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":0}}\n\n" + "data: [DONE]\n\n"
+	response, err := decodeChatStream(context.Background(), strings.NewReader(data))
+	if err != nil || response.Stop != llm.StopMaxOutputTokens || response.Usage.InputTokens != 8 || response.Usage.OutputTokens != 0 {
+		t.Fatalf("length terminal response=%+v err=%v", response, err)
 	}
 }
 
