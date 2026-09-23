@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pkyanam/pk/internal/runner"
@@ -77,5 +78,33 @@ func TestHistoryPageValidatesCursorBounds(t *testing.T) {
 	}
 	if _, _, _, _, err := sessionHistoryPage(context.Background(), store, "cursor-bounds", ^uint64(0)); err == nil {
 		t.Fatal("accepted out-of-range history cursor")
+	}
+}
+
+func TestFreshSessionCanRequestLatestHistoryWithoutCursor(t *testing.T) {
+	ctx := context.Background()
+	sessionDir := t.TempDir()
+	const sessionID = "fresh-session-history"
+	store, err := localfile.New(sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(ctx, session.ID(sessionID)); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal("first prompt after starting a new session")
+	if err := store.AppendInput(ctx, session.ID(sessionID), inbox.Input{ID: inbox.ID("first-prompt"), Kind: inbox.InputExternal, Payload: jsontext.Value(payload)}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &rpcEventSink{events: make(chan []byte, 1)}
+	server := &rpcServer{ctx: ctx, output: sink, diagnostics: io.Discard, sessionDir: sessionDir, session: sessionID, started: true, requestTypes: map[string]string{}}
+	server.handle(rpcMessage{Version: 1, ID: "latest", Type: "history_before", Payload: json.RawMessage(`{"session_id":"fresh-session-history","before_sequence":0}`)}, make(chan turnDone, 1))
+	event := readRPCEvent(t, sink)
+	if event.Type != "history_page" || event.ID != "latest" {
+		t.Fatalf("latest history event=%+v", event)
+	}
+	encoded, _ := json.Marshal(event.Payload)
+	if !strings.Contains(string(encoded), "first prompt after starting a new session") || !strings.Contains(string(encoded), `"has_earlier":false`) {
+		t.Fatalf("latest history payload=%s", encoded)
 	}
 }

@@ -1072,9 +1072,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			SessionID      string `json:"session_id"`
 			BeforeSequence uint64 `json:"before_sequence"`
 		}
-		if err := json.Unmarshal(msg.Payload, &request); err != nil || request.SessionID == "" || request.BeforeSequence == 0 {
+		if err := json.Unmarshal(msg.Payload, &request); err != nil || request.SessionID == "" {
 			if err == nil {
-				err = errors.New("session_id and positive before_sequence are required")
+				err = errors.New("session_id is required")
 			}
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid history cursor: " + err.Error(), "recoverable": true})
 			return

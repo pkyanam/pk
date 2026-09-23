@@ -27,6 +27,7 @@ type PluginCommandRun = { id: string; name: string; startedAt: number; cancelReq
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean; source?: string; url?: string; installs?: number; id?: string }
 type SkillSearchOption = { name: string; id: string; source: string; installs: number; url: string }
 type SkillCandidate = { name: string; description: string; source: string; path: string; url: string }
+type SkillInstalled = { name: string; description?: string; source?: string; path?: string }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
 type ExtensionCommand = { name: string; extension_id: string; command_name: string; description: string; enabled?: boolean; error?: string }
 type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string }
@@ -46,7 +47,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/model", description: "Choose the model for the next turn", action: "model" },
   { name: "/effort", description: "Set reasoning effort", action: "effort" },
   { name: "/tasks", description: "Browse durable agent tasks", action: "tasks" },
-  { name: "/skills", description: "Browse available skills and insert one into your prompt", action: "skills" },
+  { name: "/skills", description: "Search skills.sh, review/install skills, and manage installed skills", action: "skills" },
   { name: "/plugins", description: "Inspect installed plugins and their state", action: "plugins" },
   { name: "/commands", description: "Browse namespaced plugin commands", action: "plugin_commands" },
   { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
@@ -269,6 +270,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [slashIndex, setSlashIndex] = useState(0)
   const [tasks, setTasks] = useState<Array<{ session_id: string; updated_at?: string; title?: string }>>([])
   const [skills, setSkills] = useState<SkillOption[]>([])
+  const [skillInstallations, setSkillInstallations] = useState<SkillInstalled[]>([])
+  const [skillSearchResults, setSkillSearchResults] = useState<SkillSearchOption[]>([])
+  const [skillCandidates, setSkillCandidates] = useState<SkillCandidate[]>([])
+  const [skillReview, setSkillReview] = useState<SkillCandidate | null>(null)
+  const [skillsView, setSkillsView] = useState<"available" | "installed" | "results" | "candidates" | "review">("available")
+  const [skillOperation, setSkillOperation] = useState("")
+  const [skillNotice, setSkillNotice] = useState("")
+  const skillOperationRequest = useRef("")
+  const pendingSkillCatalog = useRef("")
+  const skillsPanelRequested = useRef(false)
   const [plugins, setPlugins] = useState<PluginOption[]>([])
   const [extensionCommands, setExtensionCommands] = useState<ExtensionCommand[]>([])
   const [mcpServers, setMcpServers] = useState<MCPServerOption[]>([])
@@ -293,6 +304,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [historyBeforeSequence, setHistoryBeforeSequence] = useState(0)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyDetailIndex, setHistoryDetailIndex] = useState<number | null>(null)
+  const [historyRequestMode, setHistoryRequestMode] = useState<"latest" | "older">("latest")
   const [maintenance, setMaintenance] = useState<Maintenance | null>(null)
   const [pluginCommandRun, setPluginCommandRun] = useState<PluginCommandRun | null>(null)
   const [reloadPending, setReloadPending] = useState(false)
@@ -387,16 +399,27 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setEntries((previous) => appendTranscriptEntries(previous, { id: entryId.current++, role, text }))
   }
 
-  const requestEarlierHistory = (sessionID = historySessionID.current, beforeSequence = historyBeforeSequence) => {
-    if (!sessionID) { addEntry("system", "Saved history is available after attaching to a session."); return }
-    if (!historyHasEarlier || beforeSequence <= 0) { addEntry("system", "There are no earlier saved conversation entries."); return }
+  const requestHistoryPage = (sessionID: string, beforeSequence: number, mode: "latest" | "older") => {
+    if (!sessionID) { addEntry("system", "No saved conversation is available yet. Send a prompt first, then use /history."); return }
     if (pendingHistoryRequest.current) return
     const requestID = transport.send("history_before" as any, { session_id: sessionID, before_sequence: beforeSequence })
-    if (!requestID) { addEntry("system", "Could not load earlier history because pk is disconnected."); return }
+    if (!requestID) { addEntry("system", "Could not load saved history because pk is disconnected."); return }
     pendingHistoryRequest.current = requestID
+    setHistoryRequestMode(mode)
     setHistoryLoading(true)
     setHistoryDetailIndex(null)
     setSelector("history")
+  }
+
+  const requestEarlierHistory = (sessionID = historySessionID.current || sessionId, beforeSequence = historyBeforeSequence) => {
+    if (!historyHasEarlier || beforeSequence <= 0) { addEntry("system", "There are no earlier saved conversation entries."); return }
+    requestHistoryPage(sessionID, beforeSequence, "older")
+  }
+
+  const openLatestHistory = () => {
+    const currentSession = historySessionID.current || sessionId
+    if (!currentSession) { addEntry("system", "No saved conversation is available yet. Send a prompt first, then use /history."); return }
+    requestHistoryPage(currentSession, 0, "latest")
   }
 
   const updateEntry = (id: number, update: (entry: Entry) => Entry) => {
@@ -609,11 +632,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.effort) setEffort(data.effort)
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
         if (data.release_status && typeof data.release_status.reload_available === "boolean") setReleaseUpdateAvailable(data.release_status.reload_available)
+        if (typeof data.session_id === "string" && data.session_id) {
+          setSessionId(data.session_id)
+          historySessionID.current = data.session_id
+        }
         if (data.workspace) setMessage(String(data.workspace))
         setEntries((current) => current.filter((entry) => entry.text !== "Starting a new session…"))
         break
       case "session":
-        if (data.session_id) setSessionId(String(data.session_id))
+        if (data.session_id) {
+          setSessionId(String(data.session_id))
+          historySessionID.current = String(data.session_id)
+        }
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
         break
       case "history": {
@@ -647,6 +677,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (!event.id || event.id !== pendingHistoryRequest.current) break
         pendingHistoryRequest.current = ""
         setHistoryLoading(false)
+        if (data.session_id) {
+          historySessionID.current = String(data.session_id)
+          setSessionId(String(data.session_id))
+        }
         const page = Array.isArray(data.entries)
           ? data.entries.flatMap((item: any) => {
               const role = item?.role === "user" || item?.role === "assistant" ? item.role : null
@@ -661,7 +695,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setHistoryDetailIndex(null)
         setSelectionIndex(0)
         setSelector("history")
-        if (!page.length) addEntry("system", "No earlier saved conversation entries were returned.")
+        if (!page.length) addEntry("system", historyRequestMode === "latest" ? "This session has no saved conversation entries yet." : "No earlier saved conversation entries were returned.")
         break
       }
       case "question": {
@@ -836,16 +870,79 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         }
         break
       case "skill_catalog": {
+        if (!skillsPanelRequested.current || event.id !== pendingSkillCatalog.current) break
+        skillsPanelRequested.current = false
+        pendingSkillCatalog.current = ""
         const available = Array.isArray(data.skills) ? data.skills.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({
           name: String(item.name), description: String(item.description ?? ""), path: String(item.path ?? ""), bundled: item.bundled === true, saved: item.saved === true,
         })) : []
         setSkills(available)
+        setSkillsView("available")
         setSelectionIndex(0)
         setSelector("skills")
         for (const warning of Array.isArray(data.warnings) ? data.warnings : []) addEntry("system", `Skills · ${String(warning)}`)
         if (!available.length) addEntry("system", "No skills are available in this workspace or your configured skill directories.")
         break
       }
+      case "skill_installations":
+        if (!skillsPanelRequested.current || event.id !== pendingSkillCatalog.current) break
+        skillsPanelRequested.current = false
+        setSkillInstallations(Array.isArray(data.skills) ? data.skills.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({ name: String(item.name), description: String(item.description ?? ""), source: String(item.source ?? ""), path: String(item.path ?? "") })) : [])
+        setSkillOperation("")
+        pendingSkillCatalog.current = ""
+        setSkillsView("installed")
+        setSelector("skills")
+        setSelectionIndex(0)
+        break
+      case "skill_search_started":
+      case "skill_source_list_started":
+      case "skill_install_started":
+        if (event.id === skillOperationRequest.current) setSkillOperation(event.type === "skill_search_started" ? "Searching skills.sh…" : event.type === "skill_source_list_started" ? "Loading source skills…" : "Installing selected skill…")
+        break
+      case "skill_search_results":
+        if (event.id !== skillOperationRequest.current) break
+        setSkillOperation("")
+        setSkillSearchResults(Array.isArray(data.results) ? data.results.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({ name: String(item.name), id: String(item.id ?? ""), source: String(item.source ?? ""), installs: Number(item.installs ?? 0), url: String(item.url ?? "") })) : [])
+        setSkillsView("results")
+        setSkillReview(null)
+        setSelectionIndex(0)
+        setSelector("skills")
+        break
+      case "skill_source_candidates":
+        if (event.id !== skillOperationRequest.current) break
+        setSkillOperation("")
+        setSkillCandidates(Array.isArray(data.candidates) ? data.candidates.filter((item: any) => item && typeof item.name === "string").map((item: any) => ({ name: String(item.name), description: String(item.description ?? ""), source: String(item.source ?? data.source ?? ""), path: String(item.path ?? ""), url: String(item.url ?? "") })) : [])
+        setSkillsView("candidates")
+        setSkillReview(null)
+        setSelectionIndex(0)
+        setSelector("skills")
+        break
+      case "skill_installed": {
+        if (event.id !== skillOperationRequest.current) break
+        setSkillOperation("")
+        const name = String(data.skill?.name ?? skillReview?.name ?? "skill")
+        setSkillNotice(`Installed ${name} · available in new sessions. Use /new to load its instructions.`)
+        addEntry("system", `Installed ${name} · available in new sessions. Use /new to load its instructions.`)
+        setSkillsView("installed")
+        setSkillReview(null)
+        setSelector("skills")
+        skillsPanelRequested.current = true
+        pendingSkillCatalog.current = transport.send("skill_installed_list") ?? ""
+        break
+      }
+      case "skill_removed":
+        if (event.id !== skillOperationRequest.current) break
+        setSkillOperation("")
+        setSkillNotice(`Removed ${String(data.name ?? "skill")} · existing sessions keep their saved snapshot.`)
+        addEntry("system", `Removed ${String(data.name ?? "skill")} · existing sessions keep their saved snapshot.`)
+        setSkillsView("installed")
+        setSelector("skills")
+        skillsPanelRequested.current = true
+        pendingSkillCatalog.current = transport.send("skill_installed_list") ?? ""
+        break
+      case "skill_cancel_requested":
+        if (event.id === skillOperationRequest.current) setSkillOperation("Canceling skill operation…")
+        break
       case "plugin_commands": {
         const available = Array.isArray(data.commands) ? data.commands.filter((item: any) => item && typeof item.name === "string").slice(0, 256).map((item: any) => ({
           name: String(item.name), extension_id: String(item.extension_id ?? ""), command_name: String(item.command_name ?? ""),
@@ -1131,6 +1228,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        if (event.id && event.id === skillOperationRequest.current) {
+          skillOperationRequest.current = ""
+          setSkillOperation("")
+          addEntry("system", `Skills · ${String(data.message ?? "The skill operation failed.")}`)
+          break
+        }
+        if (event.id && event.id === pendingSkillCatalog.current) {
+          pendingSkillCatalog.current = ""
+          skillsPanelRequested.current = false
+          addEntry("system", `Skills · ${String(data.message ?? "Could not load skills.")}`)
+          break
+        }
         if (pluginCommandRun && (!event.id || event.id === pluginCommandRun.id || data.request_type === "plugin_command_execute")) setPluginCommandRun(null)
         if (data.command_type === "provider_models" || data.request_type === "provider_models") setProviderModelsLoading(false)
         if (data.command_type === "tools" || data.request_type === "tools") {
@@ -1374,6 +1483,37 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     if (id) preferenceErrors.current.set(id, () => { setModel(previous.model); setEffort(previous.effort) })
   }
 
+  const requestSkillOperation = (type: "skill_search" | "skill_source_list" | "skill_install" | "skill_remove", payload: Record<string, unknown>, label: string) => {
+    if (busy || maintenance || pluginCommandRun || question || activeTaskId) {
+      addEntry("system", "Skill catalog changes and network searches are available while the foreground session is idle.")
+      return
+    }
+    const id = transport.send(type, payload)
+    if (!id) { addEntry("system", "Skills · agent connection is unavailable."); return }
+    skillOperationRequest.current = id
+    setSkillOperation(label)
+    setSkillNotice("")
+    setSelector("skills")
+    setSelectionIndex(0)
+    if (type === "skill_search") { setSkillsView("results"); setSkillSearchResults([]); setSkillReview(null) }
+    if (type === "skill_source_list") { setSkillsView("candidates"); setSkillCandidates([]); setSkillReview(null) }
+  }
+
+  const openSkillsView = (view: "installed" | "available") => {
+    setSkillsView(view)
+    setSelector("skills")
+    setSelectionIndex(0)
+    if (view === "available") {
+      skillsPanelRequested.current = true
+      const id = transport.send("skills") ?? ""
+      pendingSkillCatalog.current = id
+    } else {
+      skillsPanelRequested.current = true
+      const id = transport.send("skill_installed_list") ?? ""
+      pendingSkillCatalog.current = id
+    }
+  }
+
   const runSlashCommand = (raw: string) => {
     const [head, ...args] = parseSlashWords(raw)
     const command = slashCommands.find((item) => item.name === head)
@@ -1409,7 +1549,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else addEntry("system", `Unsupported reasoning effort: ${args[0]}. Choose ${efforts.join(", ")}.`)
         break
       case "tasks": transport.send("task_list"); break
-      case "skills": transport.send("skills" as any); break
+      case "skills": {
+        const [operation, ...rest] = args
+        if (!operation || operation === "installed") openSkillsView("installed")
+        else if (operation === "available") openSkillsView("available")
+        else if (operation === "search" && rest.join(" ").trim()) requestSkillOperation("skill_search", { query: rest.join(" ").trim() }, "Searching skills.sh…")
+        else if (operation === "browse" && rest[0]) requestSkillOperation("skill_source_list", { source: rest[0] }, "Loading source skills…")
+        else if (operation === "remove" && rest[0]) requestSkillOperation("skill_remove", { name: rest.join(" ") }, `Removing ${rest.join(" ")}…`)
+        else addEntry("system", "Usage: /skills [installed|available] · /skills search QUERY · /skills browse SOURCE · /skills remove NAME")
+        break
+      }
       case "plugins": transport.send("plugins_list" as any); break
       case "plugin_commands": transport.send("plugin_commands_list" as any); break
       case "mcp": {
@@ -1450,8 +1599,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       case "history": {
         const [operation] = args
-        if (!operation || operation === "older") requestEarlierHistory()
-        else addEntry("system", "Usage: /history older · browse saved user and assistant entries without changing the live transcript.")
+        if (!operation) openLatestHistory()
+        else if (operation === "older") requestEarlierHistory()
+        else addEntry("system", "Usage: /history · open latest saved entries · /history older · load an earlier page")
         break
       }
       case "provider": {
@@ -1647,6 +1797,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     textarea.current?.focus()
   }
 
+  const installReviewedSkill = () => {
+    if (skillsView !== "review" || !skillReview) return
+    requestSkillOperation("skill_install", { source: skillReview.source, path: skillReview.path }, `Installing ${skillReview.name}…`)
+  }
+
+  const removeInstalledSkill = (index: number) => {
+    const skill = skillInstallations[index]
+    if (!skill) return
+    requestSkillOperation("skill_remove", { name: skill.name }, `Removing ${skill.name}…`)
+  }
+
   const activateSelectorOption = (index: number) => {
     if (selector === "history") {
       if (index >= historyEntries.length) {
@@ -1662,8 +1823,27 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       setSelector(null)
       textarea.current?.focus()
     } else if (selector === "skills") {
-      const skill = skills[index]
-      if (skill) {
+      if (skillsView === "results") {
+        const result = skillSearchResults[index]
+        if (result) requestSkillOperation("skill_source_list", { source: result.source }, `Loading ${result.source}…`)
+      } else if (skillsView === "candidates") {
+        const candidate = skillCandidates[index]
+        if (candidate) { setSkillReview(candidate); setSkillsView("review") }
+      } else if (skillsView === "installed") {
+        const skill = skillInstallations[index]
+        if (skill) {
+          const current = textarea.current?.plainText ?? draft
+          const instruction = `Use the ${skill.name} skill for this task.`
+          const inserted = current ? `${current}${current.endsWith("\n") ? "" : "\n"}${instruction}` : instruction
+          textarea.current?.setText(inserted)
+          textarea.current?.focus()
+          setDraft(inserted)
+          addEntry("system", `Inserted an instruction for ${skill.name}; review it before sending.`)
+          setSelector(null)
+        }
+      } else {
+        const skill = skills[index]
+        if (skill) {
         const current = textarea.current?.plainText ?? draft
         const instruction = `Use the ${skill.name} skill for this task.`
         const inserted = current ? `${current}${current.endsWith("\n") ? "" : "\n"}${instruction}` : instruction
@@ -1671,9 +1851,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         textarea.current?.focus()
         setDraft(inserted)
         addEntry("system", `Inserted an instruction for the ${skill.name} skill. Review it in the composer, then send when ready.`)
+        }
+        setSelector(null)
       }
-      setSelector(null)
-      textarea.current?.focus()
     } else if (selector === "extension_commands") {
       const item = extensionCommands[index]
       if (item) {
@@ -1796,7 +1976,38 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if (selector) {
       const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      if (selector === "skills" && skillOperation && isEscape) {
+        transport.send("skill_cancel")
+        skillOperationRequest.current = ""
+        setSkillOperation("")
+        setSelector(null)
+        textarea.current?.focus()
+        return
+      }
+      if (selector === "skills" && skillsView === "candidates" && isEscape) {
+        setSkillsView("results")
+        return
+      }
+      if (selector === "skills" && skillsView === "review" && isEscape) {
+        setSkillReview(null)
+        setSkillsView("candidates")
+        return
+      }
+      if (selector === "skills" && skillsView === "review" && (key.name.toLowerCase() === "i" || key.name === "return")) {
+        key.preventDefault()
+        installReviewedSkill()
+        return
+      }
+      if (selector === "skills" && skillsView === "installed" && key.name.toLowerCase() === "x") {
+        key.preventDefault()
+        removeInstalledSkill(selectionIndex)
+        return
+      }
       if (isEscape) {
+        if (selector === "skills") {
+          skillsPanelRequested.current = false
+          pendingSkillCatalog.current = ""
+        }
         if (selector === "tools" && pendingToolsRequest.current) {
           pendingToolsRequest.current = ""
           setModelToolsLoading(false)
@@ -1807,8 +2018,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         }
         setSelector(null); textarea.current?.focus(); return
       }
-      if (key.name === "up") { setSelectionIndex((index) => (index - 1 + count) % count); return }
-      if (key.name === "down") { setSelectionIndex((index) => (index + 1) % count); return }
+      const optionCount = selector === "skills" ? skillOptionCount : count
+      if (key.name === "up" && optionCount > 0) { setSelectionIndex((index) => (index - 1 + optionCount) % optionCount); return }
+      if (key.name === "down" && optionCount > 0) { setSelectionIndex((index) => (index + 1) % optionCount); return }
       if (key.name === "return") {
         activateSelectorOption(selectionIndex)
         key.preventDefault()
@@ -1900,7 +2112,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       : selector === "provider_models" ? providerModels.map((item) => ({ label: item.id, value: item.id, description: [item.object, item.owned_by].filter(Boolean).join(" · "), state: "model" }))
       : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
       : selector === "tasks" ? tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}`, state: "" }))
-        : selector === "skills" ? skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
+        : selector === "skills" ? skillsView === "results" ? skillSearchResults.map((skill) => ({ label: skill.name, value: skill.id, description: `${skill.source} · ${skill.installs.toLocaleString()} installs · Enter to inspect source`, state: "search result" }))
+          : skillsView === "candidates" ? skillCandidates.map((skill) => ({ label: skill.name, value: skill.path, description: `${skill.description || "No description"} · ${skill.source}`, state: "review" }))
+            : skillsView === "installed" ? skillInstallations.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "Managed skill"}${skill.source ? ` · ${skill.source}` : ""}`, state: "installed" }))
+              : skillsView === "review" ? []
+                : skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
         : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
           : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: "configured" }))
             : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
@@ -1908,6 +2124,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
     : selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
   const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
+  const skillOptionCount = selector === "skills" ? skillsView === "results" ? skillSearchResults.length : skillsView === "candidates" ? skillCandidates.length : skillsView === "installed" ? skillInstallations.length : skillsView === "review" ? 0 : skills.length : 0
   const availableSlashCommands: SlashCommand[] = [...slashCommands, ...extensionCommands.filter((item) => item.enabled && !item.error).map((item) => ({ name: item.name, description: item.description || `Plugin command · ${item.extension_id}`, action: "plugin_commands" as const }))]
   const filteredCommands = availableSlashCommands.filter((item) => item.name.startsWith(draft.trim().split(/\s/)[0] || "/"))
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
@@ -1928,6 +2145,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending
   const cacheLabel = usage?.available && usage.cachedInput !== undefined ? `cache ${usage.cachedInput.toLocaleString()}` : "cache —"
   const transcriptOmitted = entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id)
+  const skillsEmptyLabel = skillOperation || (skillsView === "installed" ? "No managed skills installed · use /skills search QUERY" : skillsView === "results" ? "No skills matched that search." : skillsView === "candidates" ? "No skill manifests found in this source." : "No skills available")
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
@@ -1985,14 +2203,22 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>
       </box>
       {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? "Saved conversation · earlier page" : "Model-visible tools"} />
-        {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading earlier entries…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+        {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
+        {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
         {selector === "providers" && <text fg={palette.dim} content="Enter selects for this session · /provider use ID persists only through pk provider use ID" />}
         {selector === "provider_models" && <text fg={palette.dim} content={providerModelsLoading ? "Contacting provider model catalog…" : "Model discovery is read-only · use /provider use ID before the first prompt"} />}
         {selector === "tools" && <text fg={palette.dim} content={modelToolsLoading ? "Loading model-visible tools…" : modelToolsPreview ? modelToolsNotice || "Preview of the core tools available before the first prompt" : modelToolsSaved ? "Saved snapshot for this session" : modelToolsInitialized ? "Current available tool registry" : "The session tool catalog is not initialized until its first prompt."} />}
         <box style={{ height: 1 }} />
-        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? modelToolsPreview ? "No preview tools available" : modelToolsInitialized ? "No model tools available" : "Not initialized yet" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : selector === "history" ? "No earlier saved entries" : "Nothing to show"} />}
+        {selector === "skills" && skillsView === "review" && skillReview && <box style={{ flexDirection: "column", border: ["top"], borderColor: palette.line, paddingTop: 1, gap: 1 }}>
+          <text fg={palette.text} content={skillReview.description || "No description provided by the source."} />
+          <text fg={palette.dim} content={`Source · ${skillReview.source}${skillReview.url ? ` · ${skillReview.url}` : ""}`} />
+          <box onMouseDown={(event) => leftMouseDown(event, installReviewedSkill)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}>
+            <text fg={palette.accent} content="Install this skill · new sessions only" />
+          </box>
+        </box>}
+        {selectedOptions.length === 0 && !(selector === "skills" && skillsView === "review") && <text fg={palette.muted} content={selector === "skills" ? skillsEmptyLabel : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? modelToolsPreview ? "No preview tools available" : modelToolsInitialized ? "No model tools available" : "Not initialized yet" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : selector === "history" ? "No earlier saved entries" : "Nothing to show"} />}
         {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
           const index = selectorWindowStart + localIndex
           return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
@@ -2006,7 +2232,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         })}
         {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={historyEntries[historyDetailIndex]!.text.slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
-        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
+        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />

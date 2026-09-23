@@ -180,15 +180,16 @@ describe("OpenTUI application", () => {
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
-    await act(async () => { await setup.mockInput.typeText("/skills") })
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/skills available") })
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "skills")).toBe(true)
-    act(() => fake.emit({ version: 1, type: "skill_catalog", payload: { skills: [
+    act(() => fake.emit({ version: 1, id: fake.sent.find((item) => item.type === "skills")!.id, type: "skill_catalog", payload: { skills: [
       { name: "pk", description: "Guidance for pk source changes", path: "/home/user/.agents/skills/pk/SKILL.md", saved: true },
       { name: "review", description: "Review code changes", path: "/home/user/.codex/skills/review/SKILL.md" },
     ], saved: true } }))
-    let frame = await setup.waitForFrame((value) => value.includes("Available skills"))
+    let frame = await setup.waitForFrame((value) => value.includes("Guidance for pk source changes"))
     expect(frame).toContain("Guidance for pk source changes")
     expect(frame).toContain("SKILL.md")
     act(() => setup.mockInput.pressEnter())
@@ -205,17 +206,81 @@ describe("OpenTUI application", () => {
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
-    await act(async () => { await setup.mockInput.typeText("/skills") })
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/skills available") })
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
-    act(() => fake.emit({ version: 1, type: "skill_catalog", payload: { skills: [
+    act(() => fake.emit({ version: 1, id: fake.sent.find((item) => item.type === "skills")!.id, type: "skill_catalog", payload: { skills: [
       { name: "review", description: "Review changes", path: "/skills/review/SKILL.md" },
     ] } }))
-    const frame = await setup.waitForFrame((value) => value.includes("Available skills"))
+    const frame = await setup.waitForFrame((value) => value.includes("Review changes"))
     const row = frame.split("\n").findIndex((line) => line.includes("review"))
     await act(async () => setup.mockMouse.click(frame.split("\n")[row]!.indexOf("review"), row))
     await setup.flush()
     expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("Use the review skill for this task.")
+  })
+
+  test("skills manager searches, reviews before install, and removes an installed skill", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/skills search image editing") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const search = fake.sent.find((item) => item.type === "skill_search")!
+    await setup.waitForFrame((frame) => frame.includes("Searching skills.sh"))
+    expect(search.payload?.query).toBe("image editing")
+    act(() => fake.emit({ version: 1, id: search.id, type: "skill_search_results", payload: { query: "image editing", results: [
+      { name: "Image editing", id: "acme/image-editing", source: "acme/image-skills", installs: 1200, url: "https://skills.sh/acme/image-skills" },
+    ] } }))
+    await setup.waitForFrame((frame) => frame.includes("skills.sh search results") && frame.includes("Image editing"))
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const source = fake.sent.find((item) => item.type === "skill_source_list")!
+    expect(source.payload?.source).toBe("acme/image-skills")
+    act(() => fake.emit({ version: 1, id: source.id, type: "skill_source_candidates", payload: { source: "acme/image-skills", candidates: [
+      { name: "image-editor", description: "Edit and inspect images safely.", source: "acme/image-skills", path: "image-editor", url: "https://skills.sh/acme/image-skills/image-editor" },
+    ] } }))
+    await setup.waitForFrame((frame) => frame.includes("Review a skill source") && frame.includes("image-editor"))
+    act(() => setup.mockInput.pressEnter())
+    const review = await setup.waitForFrame((frame) => frame.includes("Review image-editor") && frame.includes("Edit and inspect images safely."))
+    expect(review).toContain("Install this skill")
+    expect(fake.sent.some((item) => item.type === "skill_install")).toBe(false)
+    await act(async () => { await setup.mockInput.typeText("i") })
+    await setup.flush()
+    const install = fake.sent.find((item) => item.type === "skill_install")!
+    expect(install.payload).toEqual({ source: "acme/image-skills", path: "image-editor" })
+    act(() => fake.emit({ version: 1, id: install.id, type: "skill_installed", payload: { skill: { name: "image-editor" }, next_session_only: true } }))
+    const listRequest = await setup.waitForFrame((frame) => frame.includes("Installed image-editor"))
+    expect(listRequest).toContain("new sessions")
+    const installedList = fake.sent.filter((item) => item.type === "skill_installed_list").at(-1)!
+    act(() => fake.emit({ version: 1, id: installedList.id, type: "skill_installations", payload: { skills: [{ name: "image-editor", source: "acme/image-skills" }] } }))
+    const installedFrame = await setup.waitForFrame((frame) => frame.includes("Installed skills") && frame.includes("image-editor"))
+    const row = installedFrame.split("\n").findIndex((line) => line.includes("image-editor"))
+    await act(async () => { await setup.mockInput.pressKeys(["x"], 100) })
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "skill_remove" && item.payload?.name === "image-editor")).toBe(true)
+    expect(row).toBeGreaterThanOrEqual(0)
+  })
+
+  test("Escape cancels a skill search and ignores its stale results", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/skills search diagram") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const search = fake.sent.find((item) => item.type === "skill_search")!
+    await setup.waitForFrame((frame) => frame.includes("Searching skills.sh"))
+    await act(async () => setup.mockInput.pressKeys(["ESCAPE"], 100))
+    expect(fake.sent.some((item) => item.type === "skill_cancel")).toBe(true)
+    act(() => fake.emit({ version: 1, id: search.id, type: "skill_search_results", payload: { query: "diagram", results: [{ name: "Diagram", id: "x/y", source: "x/y", installs: 1, url: "" }] } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("skills.sh search results")
   })
 
   test("plugin panel shows manifest state and toggles through explicit backend actions", async () => {
@@ -819,6 +884,32 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(setup.captureCharFrame()).not.toContain("Saved conversation · earlier page")
     expect(setup.captureCharFrame()).not.toContain("Stale older page")
+  })
+
+  test("/history loads the latest persisted page in a fresh session and refreshes after a new turn", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "fresh-session" } }))
+    await act(async () => { await setup.mockInput.typeText("/history") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    let requests = fake.sent.filter((item) => item.type === "history_before")
+    expect(requests[0]?.payload).toEqual({ session_id: "fresh-session", before_sequence: 0 })
+    act(() => fake.emit({ version: 1, id: requests[0]!.id, type: "history_page", payload: { session_id: "fresh-session", has_earlier: false, before_sequence: 11, entries: [{ role: "user", text: "First saved prompt", sequence: 11 }, { role: "assistant", text: "First saved answer", sequence: 12 }] } }))
+    await setup.waitForFrame((frame) => frame.includes("First saved prompt"))
+    await act(async () => { setup.mockInput.pressEscape(); await new Promise((resolve) => setTimeout(resolve, 50)) })
+    await setup.waitForFrame((frame) => !frame.includes("Saved conversation · earlier page"))
+    act(() => fake.emit({ version: 1, type: "assistant", payload: { text: "A newer turn completed." } }))
+    await act(async () => { await setup.mockInput.typeText("/history") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    requests = fake.sent.filter((item) => item.type === "history_before")
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.payload).toEqual({ session_id: "fresh-session", before_sequence: 0 })
+    act(() => fake.emit({ version: 1, id: requests[1]!.id, type: "history_page", payload: { session_id: "fresh-session", has_earlier: false, before_sequence: 13, entries: [{ role: "assistant", text: "A newer turn completed.", sequence: 13 }] } }))
+    expect(await setup.waitForFrame((frame) => frame.includes("A newer turn completed."))).toContain("Saved conversation")
   })
 
   test("keeps tool activity chronological after completion without object coercion", async () => {
