@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"strings"
@@ -225,9 +226,106 @@ func TestPromptBlocksRejectUnsupportedInputAndJoinSupportedText(t *testing.T) {
 	if !strings.Contains(text, "hello") || !strings.Contains(text, "file:///tmp/guide.txt") {
 		t.Fatalf("prompt text=%q", text)
 	}
-	_, err = promptText([]json.RawMessage{json.RawMessage(`{"type":"image"}`)})
+	_, err = promptText([]json.RawMessage{json.RawMessage(`{"type":"audio"}`)})
 	if err == nil {
-		t.Fatal("expected unsupported image block to be rejected")
+		t.Fatal("expected unsupported audio block to be rejected")
+	}
+}
+
+func TestPromptBlocksAcceptBoundedImagesAndPreserveMixedOrdering(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("image-bytes"))
+	blocks, text, err := parsePromptBlocks([]json.RawMessage{
+		json.RawMessage(`{"type":"text","text":"before"}`),
+		json.RawMessage(`{"type":"image","mimeType":"image/png","data":"` + encoded + `"}`),
+		json.RawMessage(`{"type":"resource_link","uri":"https://opaque.invalid/x"}`),
+		json.RawMessage(`{"type":"text","text":"after"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 4 || string(blocks[1].ImageData) != "image-bytes" {
+		t.Fatalf("parsed blocks=%+v", blocks)
+	}
+	if strings.Index(text, "before") > strings.Index(text, "Inline image") || strings.Index(text, "Inline image") > strings.Index(text, "https://opaque.invalid/x") || strings.Index(text, "https://opaque.invalid/x") > strings.Index(text, "after") {
+		t.Fatalf("mixed prompt order changed: %q", text)
+	}
+	if !strings.Contains(text, "ViewImage") {
+		t.Fatalf("image route was not disclosed: %q", text)
+	}
+}
+
+func TestPromptBlocksRejectMalformedAndOversizedImages(t *testing.T) {
+	bad := []json.RawMessage{
+		json.RawMessage(`{"type":"image","mimeType":"image/png","data":"%%%"}`),
+		json.RawMessage(`{"type":"image","mimeType":"image/png","data":"YWJj\n"}`),
+		json.RawMessage(`{"type":"image","mimeType":"image/gif","data":"YWJj"}`),
+		json.RawMessage(`{"type":"image","mimeType":"image/png","data":""}`),
+	}
+	for _, block := range bad {
+		if _, _, err := parsePromptBlocks([]json.RawMessage{block}); err == nil {
+			t.Fatalf("accepted invalid block %s", block)
+		}
+	}
+	tooLarge := base64.StdEncoding.EncodeToString(make([]byte, MaxInlineImageBytes+1))
+	if _, _, err := parsePromptBlocks([]json.RawMessage{json.RawMessage(`{"type":"image","mimeType":"image/png","data":"` + tooLarge + `"}`)}); err == nil {
+		t.Fatal("accepted image above aggregate limit")
+	}
+	textBlocks := make([]json.RawMessage, MaxInlineImages+1)
+	for i := range textBlocks {
+		textBlocks[i] = json.RawMessage(`{"type":"text","text":"x"}`)
+	}
+	textBlocks = append(textBlocks, json.RawMessage(`{"type":"image","mimeType":"image/png","data":"`+base64.StdEncoding.EncodeToString([]byte("x"))+`"}`))
+	if _, _, err := parsePromptBlocks(textBlocks); err != nil {
+		t.Fatalf("text blocks incorrectly count toward image limit: %v", err)
+	}
+}
+
+func TestInitializeAdvertisesOnlySupportedInlineImageInput(t *testing.T) {
+	out := &testWriter{lines: make(chan []byte, 1)}
+	server, err := NewServer(strings.NewReader(""), out, Config{Run: func(context.Context, Turn, func(Update) error) (TurnResult, error) { return TurnResult{}, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "initialize", Params: json.RawMessage(`{"protocolVersion":1}`)}
+	if err := server.handle(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(<-out.lines, &response); err != nil {
+		t.Fatal(err)
+	}
+	caps := response["result"].(map[string]any)["agentCapabilities"].(map[string]any)["promptCapabilities"].(map[string]any)
+	if caps["image"] != true {
+		t.Fatalf("prompt capabilities=%v", caps)
+	}
+}
+
+func TestRunPromptEmitsOrderedACPImageBlocks(t *testing.T) {
+	out := &testWriter{lines: make(chan []byte, 4)}
+	server, err := NewServer(strings.NewReader(""), out, Config{Run: func(context.Context, Turn, func(Update) error) (TurnResult, error) {
+		return TurnResult{SessionID: "s"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := []PromptBlock{{Type: "text", Text: "before"}, {Type: "image", MIMEType: "image/png", ImageData: []byte("png-data")}, {Type: "text", Text: "after"}}
+	server.runPrompt(context.Background(), func() {}, request{JSONRPC: "2.0", ID: json.RawMessage("3")}, &session{id: "s"}, Turn{Prompt: "before\n[Inline image]\nafter", Blocks: blocks})
+	for i, want := range []string{"text", "image", "text"} {
+		var event map[string]any
+		if err := json.Unmarshal(<-out.lines, &event); err != nil {
+			t.Fatal(err)
+		}
+		update := event["params"].(map[string]any)["update"].(map[string]any)
+		if update["sessionUpdate"] != "user_message_chunk" || update["content"].(map[string]any)["type"] != want {
+			t.Fatalf("block %d event=%v", i, event)
+		}
+		if i == 1 && update["content"].(map[string]any)["mimeType"] != "image/png" {
+			t.Fatalf("image content=%v", update["content"])
+		}
+	}
+	var final map[string]any
+	if err := json.Unmarshal(<-out.lines, &final); err != nil || final["id"] != float64(3) {
+		t.Fatalf("final response=%v err=%v", final, err)
 	}
 }
 

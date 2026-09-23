@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,12 +19,45 @@ import (
 
 const ProtocolVersion = 1
 
+// MaxInlineImageBytes keeps base64-expanded image blocks plus JSON framing
+// below the default 4 MiB ACP line limit.
+const MaxInlineImageBytes = 2 << 20
+const MaxInlineImages = 8
+const MaxConcurrentImagePrompts = 8
+
+type PromptBlock struct {
+	Type, Text, URI, Name, MIMEType string
+	ImageData                       []byte
+}
+
+// UserContent projects accepted prompt blocks back to ACP. Inline image data
+// is tool-mediated for the model, not a native provider image message.
+func UserContent(blocks []PromptBlock) []any {
+	content := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			content = append(content, map[string]any{"type": "text", "text": block.Text})
+		case "resource_link":
+			label := block.Name
+			if label == "" {
+				label = block.URI
+			}
+			content = append(content, map[string]any{"type": "text", "text": "[User referenced resource: " + label + " — " + block.URI + "]"})
+		case "image":
+			content = append(content, map[string]any{"type": "image", "mimeType": block.MIMEType, "data": base64.StdEncoding.EncodeToString(block.ImageData)})
+		}
+	}
+	return content
+}
+
 type Turn struct {
 	SessionID string // pk's durable session ID; empty for a session's first turn
 	Prompt    string
 	Workspace string
 	Model     string
 	Effort    string
+	Blocks    []PromptBlock // ordered ACP blocks; ImageData is memory-only
 }
 
 type TurnResult struct{ SessionID string }
@@ -90,6 +124,7 @@ type session struct {
 	id, workspace, runnerID string
 	cancel                  context.CancelFunc
 	active                  bool
+	imagesActive            bool
 }
 
 type Server struct {
@@ -210,7 +245,7 @@ func (s *Server) handle(ctx context.Context, req request) error {
 		s.initialized = true
 		s.mu.Unlock()
 		loadSession := s.cfg.LoadSession != nil
-		return s.reply(req, map[string]any{"protocolVersion": ProtocolVersion, "agentCapabilities": map[string]any{"loadSession": loadSession, "promptCapabilities": map[string]any{}, "sessionCapabilities": map[string]any{}}, "agentInfo": map[string]string{"name": "pk", "title": "pk", "version": "dev"}, "authMethods": []any{}})
+		return s.reply(req, map[string]any{"protocolVersion": ProtocolVersion, "agentCapabilities": map[string]any{"loadSession": loadSession, "promptCapabilities": map[string]any{"image": true}, "sessionCapabilities": map[string]any{}}, "agentInfo": map[string]string{"name": "pk", "title": "pk", "version": "dev"}, "authMethods": []any{}})
 	case "session/new":
 		if len(req.ID) == 0 {
 			return nil
@@ -309,7 +344,7 @@ func (s *Server) handle(ctx context.Context, req request) error {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return rpcErrf(-32602, "invalid session/prompt parameters")
 		}
-		text, err := promptText(p.Prompt)
+		blocks, text, err := parsePromptBlocks(p.Prompt)
 		if err != nil {
 			return &rpcError{Code: -32602, Message: err.Error()}
 		}
@@ -326,10 +361,30 @@ func (s *Server) handle(ctx context.Context, req request) error {
 			s.mu.Unlock()
 			return rpcErrf(-32000, "session already has an active prompt")
 		}
+		hasImages := false
+		for _, block := range blocks {
+			if block.Type == "image" {
+				hasImages = true
+				break
+			}
+		}
+		if hasImages {
+			activeImagePrompts := 0
+			for _, activeSession := range s.sessions {
+				if activeSession.imagesActive {
+					activeImagePrompts++
+				}
+			}
+			if activeImagePrompts >= MaxConcurrentImagePrompts {
+				s.mu.Unlock()
+				return rpcErrf(-32000, "too many concurrent inline-image prompts; limit is %d", MaxConcurrentImagePrompts)
+			}
+		}
 		turnCtx, cancel := context.WithCancel(ctx)
 		ss.active = true
+		ss.imagesActive = hasImages
 		ss.cancel = cancel
-		turn := Turn{SessionID: ss.runnerID, Prompt: text, Workspace: ss.workspace, Model: s.cfg.Model, Effort: s.cfg.Effort}
+		turn := Turn{SessionID: ss.runnerID, Prompt: text, Blocks: blocks, Workspace: ss.workspace, Model: s.cfg.Model, Effort: s.cfg.Effort}
 		s.mu.Unlock()
 		s.turns.Add(1)
 		go func() { defer s.turns.Done(); s.runPrompt(turnCtx, cancel, req, ss, turn) }()
@@ -344,11 +399,18 @@ func (s *Server) handle(ctx context.Context, req request) error {
 
 func (s *Server) runPrompt(ctx context.Context, cancel context.CancelFunc, req request, ss *session, turn Turn) {
 	messageID, _ := newID()
-	_ = s.sendUpdate(ss.id, map[string]any{"sessionUpdate": "user_message_chunk", "messageId": messageID, "content": map[string]any{"type": "text", "text": turn.Prompt}})
+	content := UserContent(turn.Blocks)
+	if len(content) == 0 {
+		content = []any{map[string]any{"type": "text", "text": turn.Prompt}}
+	}
+	for _, block := range content {
+		_ = s.sendUpdate(ss.id, map[string]any{"sessionUpdate": "user_message_chunk", "messageId": messageID, "content": block})
+	}
 	result, err := s.cfg.Run(ctx, turn, func(update Update) error { return s.emitUpdate(ss.id, update) })
 	cancelled := errors.Is(ctx.Err(), context.Canceled)
 	s.mu.Lock()
 	ss.active = false
+	ss.imagesActive = false
 	ss.cancel = nil
 	if result.SessionID != "" {
 		ss.runnerID = result.SessionID
@@ -385,13 +447,22 @@ func (s *Server) emitUpdate(sessionID string, u Update) error {
 	var data map[string]any
 	switch u.Kind {
 	case "user":
-		if u.Text == "" {
+		if u.Text == "" && len(u.Content) == 0 {
 			return nil
 		}
 		if u.MessageID == "" {
 			u.MessageID, _ = newID()
 		}
-		data = map[string]any{"sessionUpdate": "user_message_chunk", "messageId": u.MessageID, "content": map[string]string{"type": "text", "text": u.Text}}
+		content := u.Content
+		if len(content) == 0 {
+			content = []any{map[string]string{"type": "text", "text": u.Text}}
+		}
+		for _, block := range content {
+			if err := s.sendUpdate(sessionID, map[string]any{"sessionUpdate": "user_message_chunk", "messageId": u.MessageID, "content": block}); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "assistant":
 		if u.Text == "" {
 			return nil
@@ -430,34 +501,80 @@ func (s *Server) write(value any) error {
 func (s *Server) isInitialized() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.initialized }
 
 func promptText(blocks []json.RawMessage) (string, error) {
-	var chunks []string
-	for _, raw := range blocks {
-		var block struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-			URI  string `json:"uri"`
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(raw, &block); err != nil {
-			return "", errors.New("invalid prompt content block")
-		}
-		switch block.Type {
-		case "text":
-			chunks = append(chunks, block.Text)
-		case "resource_link":
-			if block.URI == "" {
-				return "", errors.New("resource_link requires uri")
-			}
-			label := block.Name
-			if label == "" {
-				label = block.URI
-			}
-			chunks = append(chunks, "[User referenced resource: "+label+" — "+block.URI+"]")
-		default:
-			return "", fmt.Errorf("unsupported prompt content type %q (pk supports text and resource_link)", block.Type)
-		}
+	_, text, err := parsePromptBlocks(blocks)
+	return text, err
+}
+
+func parsePromptBlocks(rawBlocks []json.RawMessage) ([]PromptBlock, string, error) {
+	if len(rawBlocks) > 256 {
+		return nil, "", errors.New("prompt has too many content blocks")
 	}
-	return strings.Join(chunks, "\n"), nil
+	blocks := make([]PromptBlock, 0, len(rawBlocks))
+	var chunks []string
+	var imageBytes int
+	var imageCount int
+	for _, raw := range rawBlocks {
+		var block PromptBlock
+		var wire struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			URI      string `json:"uri"`
+			Name     string `json:"name"`
+			Data     string `json:"data"`
+			MIMEType string `json:"mimeType"`
+		}
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			return nil, "", errors.New("invalid prompt content block")
+		}
+		block.Type, block.Text, block.URI, block.Name, block.MIMEType = wire.Type, wire.Text, wire.URI, wire.Name, wire.MIMEType
+		switch wire.Type {
+		case "text":
+			chunks = append(chunks, wire.Text)
+		case "resource_link":
+			if wire.URI == "" {
+				return nil, "", errors.New("resource_link requires uri")
+			}
+			label := wire.Name
+			if label == "" {
+				label = wire.URI
+			}
+			chunks = append(chunks, "[User referenced resource: "+label+" — "+wire.URI+"]")
+		case "image":
+			if imageCount >= MaxInlineImages {
+				return nil, "", fmt.Errorf("too many inline images; limit is %d", MaxInlineImages)
+			}
+			if !supportedImageMIME(wire.MIMEType) {
+				return nil, "", fmt.Errorf("unsupported inline image MIME type %q", wire.MIMEType)
+			}
+			if wire.Data == "" || len(wire.Data) > base64.StdEncoding.EncodedLen(MaxInlineImageBytes) || strings.ContainsAny(wire.Data, " \t\r\n") {
+				return nil, "", errors.New("inline image data is empty or exceeds the ACP image limit")
+			}
+			data, err := base64.StdEncoding.Strict().DecodeString(wire.Data)
+			if err != nil || len(data) == 0 {
+				return nil, "", errors.New("inline image data must be valid standard base64")
+			}
+			if len(data) > MaxInlineImageBytes-imageBytes {
+				return nil, "", fmt.Errorf("inline images exceed the %d-byte aggregate limit", MaxInlineImageBytes)
+			}
+			imageBytes += len(data)
+			imageCount++
+			block.ImageData = data
+			chunks = append(chunks, fmt.Sprintf("[Inline image (%s); inspect it with ViewImage if needed.]", wire.MIMEType))
+		default:
+			return nil, "", fmt.Errorf("unsupported prompt content type %q (pk supports text, image, and resource_link)", wire.Type)
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks, strings.Join(chunks, "\n"), nil
+}
+
+func supportedImageMIME(value string) bool {
+	switch value {
+	case "image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff":
+		return true
+	default:
+		return false
+	}
 }
 func defaultToolKind(value string) string {
 	switch value {

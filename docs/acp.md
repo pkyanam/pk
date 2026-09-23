@@ -23,15 +23,19 @@ The implemented v1 surface is deliberately limited:
 - `initialize`, `session/new`, `session/prompt`, and the `session/cancel`
   notification. `session/load` is available for durable sessions and is
   advertised with `agentCapabilities.loadSession: true`.
-- Text and resource-link prompt blocks. Committed assistant messages are
+- Text, resource-link, and inline image prompt blocks. Images are saved as
+  private session artifacts and exposed to the model through `ViewImage`;
+  this is tool-mediated inspection, not native image parts in the initial
+  provider request. Committed assistant messages are
   reported at model-response boundaries, and tool-call state is reported while
   tools run, using `session/update` notifications. pk does not expose
   token-level partial drafts yet.
 - Cancellation interrupts the active runner call and completes the prompt with
   `stopReason: "cancelled"`.
 
-pk does not advertise or implement session resume/listing, authentication RPC,
-MCP server connections, image/audio prompt blocks, client filesystem or
+pk does not advertise or implement the separate `session/resume` or
+`session/list` methods, authentication RPC, client-supplied
+MCP server connections, audio prompt blocks, client filesystem or
 terminal requests, permission requests, or plan/configuration updates.
 Non-empty `mcpServers` declarations and unsupported content blocks are rejected
 rather than silently ignored. ACP session IDs are the durable runner session
@@ -40,6 +44,23 @@ state in order; it requires the original workspace saved with the session to
 match the client's `cwd`. A session must have completed at least one prompt so
 the saved workspace context exists. Sessions created by older ACP builds used
 a separate in-memory ID and cannot be loaded by this version.
+
+Inline images use standard base64 `data` and `mimeType`. PNG, JPEG, WebP, BMP,
+and TIFF are supported; GIF is rejected. A prompt accepts at most eight images,
+2 MiB of decoded image bytes in total, and 32 million source pixels in total.
+The JSON-RPC line remains capped at 4 MiB, including text and base64 framing.
+At most eight image-bearing prompts may run concurrently in one ACP process;
+additional image prompts fail immediately, leaving cancellation responsive.
+MIME/signature mismatches and oversized inputs are rejected. Image inspection
+still requires a vision-capable model/provider.
+
+Images and ordered replay metadata stay in the private session store after
+input persistence, including when a later model request fails. Failed input
+setup removes only that input's artifacts. Session archive, restore, and purge
+include these files. `session/load` replays the original image blocks alongside
+their text. Replay metadata is bound to the durable input's hash; malformed or
+mismatched metadata rejects replay. Resource links remain opaque references and are never fetched
+by the ACP input parser.
 
 The wire behavior follows ACP v1's [overview](https://agentclientprotocol.com/protocol/v1/overview),
 [initialization](https://agentclientprotocol.com/protocol/v1/initialization),
@@ -56,8 +77,10 @@ session creation, prompt updates, and the `end_turn` response. It also builds
 the actual pk CLI and drives three turns through a loopback Chat Completions
 provider. Between turns two and three it restarts pk, loads the durable session,
 and verifies replayed user/assistant messages, model selection, tool declarations,
-and retained history.
+and retained history. An additional inline PNG turn makes the fixture model
+invoke `ViewImage`; the smoke checks the resulting image data in the provider
+request, then restarts again and verifies replay of the original image block.
 All model responses in this smoke are synthetic; no remote model is called. The script uses a
 temporary private home and removes its temporary files on exit. It verifies the
 wire exchange with the SDK; it does not claim compatibility testing with a
-specific ACP editor.
+specific ACP editor, nor does it establish remote provider/model vision support.

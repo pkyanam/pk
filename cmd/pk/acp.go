@@ -98,7 +98,26 @@ func runACPCommandWithRunnerAdapter(ctx context.Context, args []string, input io
 			return replayACPSession(sessionCtx, sessionDir, id, workspace, emit)
 		},
 		Run: func(turnCtx context.Context, turn acp.Turn, emit func(acp.Update) error) (acp.TurnResult, error) {
-			options := runner.Options{Prompt: turn.Prompt, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, ProviderID: selected.ProviderID, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Output: &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}, Diagnostics: diagnostics, JSONL: true}
+			promptID, err := newPresentationPromptID()
+			if err != nil {
+				return acp.TurnResult{}, fmt.Errorf("create ACP input ID: %w", err)
+			}
+			prompt, beforePersist, afterPersist, cleanup, err := prepareACPImageInput(sessionDir, turn, promptID)
+			if err != nil {
+				return acp.TurnResult{}, err
+			}
+			persisted := false
+			defer func() {
+				if !persisted {
+					cleanup()
+				}
+			}()
+			options := runner.Options{Prompt: prompt, PromptID: promptID, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, ProviderID: selected.ProviderID, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Output: &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}, Diagnostics: diagnostics, JSONL: true, BeforeInputPersist: beforePersist, AfterInputPersist: func(sessionID, inputID string) {
+				persisted = true
+				if afterPersist != nil {
+					afterPersist(sessionID, inputID)
+				}
+			}}
 			client, err := prepare(turnCtx, &options)
 			if err != nil {
 				return acp.TurnResult{}, err
@@ -177,7 +196,15 @@ func replayACPSession(ctx context.Context, sessionDir, id, workspace string, emi
 				if err != nil {
 					return err
 				}
-				if err := emit(acp.Update{Kind: "user", MessageID: messageID, Text: text}); err != nil {
+				content, hasImageMetadata, contentErr := acpSavedUserContent(sessionDir, id, string(input.ID), text)
+				if contentErr != nil {
+					return contentErr
+				}
+				update := acp.Update{Kind: "user", MessageID: messageID, Text: text}
+				if hasImageMetadata {
+					update.Content = content
+				}
+				if err := emit(update); err != nil {
 					return err
 				}
 			case sessionstore.ItemModelResponse:
