@@ -48,3 +48,33 @@ python3 scripts/perf-startup.py /path/to/pk --samples 29 --tui-samples 15
 The script prints the selected executable, version, OS/architecture, sample
 counts, and medians/p95s. It accepts either the stable installed launcher or a
 direct binary path.
+
+## Session-list allocation benchmark
+
+This model-independent microbenchmark isolates `sessionmanager.Manager.List`
+over 32 local session logs, each containing a 128 KiB assistant response. The
+fixture is created before the timer; no model or network calls are made. On an
+Apple M3 running macOS arm64 with Go 1.27.0, one five-iteration run produced:
+
+| Revision | Time/op | Allocated/op | Allocs/op |
+| --- | ---: | ---: | ---: |
+| `e9821c4` (before streaming preview normalization) | 36.29 ms | 61,358,078 B | 5,356 |
+| `7436784` (streaming preview normalization) | 32.88 ms | 44,625,003 B | 5,237 |
+
+In this run, allocated bytes fell 27.3% and time/op fell 9.4%. These are
+single-run synthetic-fixture measurements, not an estimate of general CLI or
+session-list performance. The change stops whitespace normalization once the
+96- or 320-rune display preview is determined, rather than materializing the
+entire assistant body.
+
+Reproduce at either revision with:
+
+```sh
+go test ./internal/sessionmanager -run '^$' -bench '^BenchmarkListLargeSessionLogs$' -benchtime=5x -benchmem
+```
+
+The benchmark does not remove the separate full-log decoding cost: session
+listing still calls upstream `Inspect` and `Items`, each of which reads and
+decodes the complete session log. A combined upstream metadata-and-items API
+would be needed to remove that duplicate decode without reimplementing the
+session format and its replay validation.
