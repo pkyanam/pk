@@ -1,0 +1,54 @@
+package webhook
+
+import (
+	"context"
+	"errors"
+	"sync"
+)
+
+// Store atomically inserts an event if its ID has not been seen. It returns
+// true only for the first successful insertion.
+type Store interface {
+	InsertIfAbsent(context.Context, Event) (bool, error)
+}
+
+// MemoryStore is a concurrency-safe process-local implementation of Store.
+type MemoryStore struct {
+	mu     sync.Mutex
+	events map[string]Event
+}
+
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{events: make(map[string]Event)}
+}
+
+func (store *MemoryStore) InsertIfAbsent(ctx context.Context, event Event) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if store.events == nil {
+		return false, errors.New("store is not initialized")
+	}
+	if _, exists := store.events[event.ID]; exists {
+		return false, nil
+	}
+	event.Payload = append([]byte(nil), event.Payload...)
+	store.events[event.ID] = event
+	return true, nil
+}
+
+// Get returns a copy of the stored event, if present.
+func (store *MemoryStore) Get(id string) (Event, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	event, ok := store.events[id]
+	if ok {
+		event.Payload = append([]byte(nil), event.Payload...)
+	}
+	return event, ok
+}

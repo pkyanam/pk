@@ -1,0 +1,31 @@
+package webhook
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+)
+
+type Event struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func (event Event) Validate() error {
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.Type) == "" {
+		return errors.New("event id and type are required")
+	}
+	var value map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(event.Payload))
+	if err := decoder.Decode(&value); err != nil || value == nil {
+		return errors.New("payload must be a JSON object")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("payload must contain exactly one JSON value")
+	}
+	return nil
+}

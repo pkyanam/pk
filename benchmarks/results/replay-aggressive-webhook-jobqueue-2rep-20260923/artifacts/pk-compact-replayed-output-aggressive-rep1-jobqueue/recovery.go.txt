@@ -1,0 +1,44 @@
+package jobqueue
+
+import (
+	"context"
+	"time"
+)
+
+// RecoverExpired moves expired leases back to ready, unless the job has
+// exhausted MaxAttempts, in which case the job becomes dead.
+func (s *MemoryStore) RecoverExpired(ctx context.Context, now time.Time) ([]Job, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check again after acquiring the lock, so a cancelled call waiting behind
+	// another transition does not make changes once it gets the lock.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	recovered := make([]Job, 0)
+	for _, id := range s.order {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		job, ok := s.jobs[id]
+		if !ok || job.State != StateLeased || job.LeaseUntil.After(now) {
+			continue
+		}
+		job.LeaseUntil = time.Time{}
+		job.UpdatedAt = now
+		if job.Attempts >= job.MaxAttempts {
+			job.State = StateDead
+		} else {
+			job.State = StateReady
+		}
+		s.jobs[id] = job
+		recovered = append(recovered, cloneJob(job))
+	}
+	return recovered, nil
+}

@@ -1,0 +1,52 @@
+package webhook
+
+import (
+	"context"
+	"sync"
+)
+
+// Store atomically inserts an event, reporting whether it was already present.
+type Store interface {
+	InsertIfAbsent(ctx context.Context, event Event) (inserted bool, err error)
+}
+
+type MemoryStore struct {
+	mu     sync.RWMutex
+	events map[string]Event
+}
+
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{events: make(map[string]Event)}
+}
+
+func (s *MemoryStore) InsertIfAbsent(ctx context.Context, event Event) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	event.Payload = append(event.Payload[:0:0], event.Payload...)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if s.events == nil {
+		s.events = make(map[string]Event)
+	}
+	if _, exists := s.events[event.ID]; exists {
+		return false, nil
+	}
+	s.events[event.ID] = event
+	return true, nil
+}
+
+// Get returns an isolated copy of a stored event.
+func (s *MemoryStore) Get(id string) (Event, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	event, ok := s.events[id]
+	if !ok {
+		return Event{}, false
+	}
+	event.Payload = append(event.Payload[:0:0], event.Payload...)
+	return event, ok
+}

@@ -1,0 +1,57 @@
+package webhook
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+)
+
+// Event is the signed, durable envelope accepted by the webhook endpoint.
+type Event struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+var ErrInvalidEvent = errors.New("invalid event")
+
+// Validate checks the required event envelope fields and object payload.
+func (event Event) Validate() error {
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.Type) == "" {
+		return ErrInvalidEvent
+	}
+	payload := bytes.TrimSpace(event.Payload)
+	if len(payload) == 0 || payload[0] != '{' || !json.Valid(payload) {
+		return ErrInvalidEvent
+	}
+	return nil
+}
+
+// DecodeEvent strictly decodes and validates one event JSON object.
+func DecodeEvent(data []byte) (Event, error) {
+	var event Event
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		return Event{}, ErrInvalidEvent
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return Event{}, ErrInvalidEvent
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' || len(event.Payload) == 0 {
+		return Event{}, ErrInvalidEvent
+	}
+	payload := bytes.TrimSpace(event.Payload)
+	if len(payload) == 0 || payload[0] != '{' || !json.Valid(payload) {
+		return Event{}, ErrInvalidEvent
+	}
+	if event.Validate() != nil {
+		return Event{}, ErrInvalidEvent
+	}
+	event.Payload = append(json.RawMessage(nil), event.Payload...)
+	return event, nil
+}

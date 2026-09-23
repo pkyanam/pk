@@ -1,0 +1,38 @@
+package webhook
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
+// Sign returns the lowercase hexadecimal HMAC-SHA256 digest of body.
+func Sign(secret, body []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifySignature accepts a lowercase hex digest, optionally prefixed sha256=.
+func VerifySignature(secret, body []byte, signature string) bool {
+	if strings.HasPrefix(signature, "sha256=") {
+		signature = strings.TrimPrefix(signature, "sha256=")
+	}
+	if len(signature) != sha256.Size*2 {
+		return false
+	}
+	// Reject uppercase or non-hex representations rather than normalizing them.
+	for _, c := range signature {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	supplied, err := hex.DecodeString(signature)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(body)
+	return hmac.Equal(supplied, mac.Sum(nil))
+}

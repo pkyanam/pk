@@ -14,3 +14,9 @@ These are small pilot observations from Luna on macOS ARM64 (medium for earlier 
 - A newer matched Luna/low comparison ran clamp and intervals twice on current pk and pinned Unreal v0.1.1. All 16 phases completed and all eight pristine holdouts passed. pk used 43,889 input tokens (28,017 uncached, 15,872 cached), 1,752 output tokens, and 22 responses. Unreal used 20,011 input tokens (all uncached), 1,333 output tokens, and 22 responses. pk therefore used more total and uncached input on this small cohort; caching did not reverse that result. Fixed pk-first ordering and overlapping local release checks confound wall-time comparisons. Exact source files and sanitized outputs are preserved: [`matched two-repetition results`](../benchmarks/results/pk-unreal-clamp-intervals-low-2rep-20260923/summary.md).
 
 Next useful evidence is more matched repetitions, with holdouts, success, provider-reported input/output/cache counts, and wall time retained per task. Do not compare cached tokens alone as cost or savings, and do not infer cache hits from session labels.
+
+## Aggressive replay compaction: measured regression
+
+The two-repetition Luna/low [webhook and jobqueue cohort](../benchmarks/results/replay-aggressive-webhook-jobqueue-2rep-20260923/summary.md) tested a 1,024-byte threshold and 256-rune head/tail excerpts. All four pristine holdouts per arm passed, but aggressive compaction reported 544,819 input tokens (97,331 uncached), 10,448 output, and 90 responses versus 127,054 input (55,374 uncached), 4,704 output, and 25 responses for full output. Smaller stored tool output did not yield lower usage. Cached tokens are part of input, not independent savings.
+
+This is a descriptive result for these fixtures. Shared-machine UI testing overlapped the run, so no latency comparison is claimed. Production full-context defaults remain unchanged. The complete source snapshot and sanitized run records accompany the result.

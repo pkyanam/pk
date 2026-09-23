@@ -1,0 +1,71 @@
+package webhook
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+)
+
+const MaxBodyBytes = 1 << 20
+
+const SignatureHeader = "X-Signature"
+
+type Handler struct {
+	Secret []byte
+	Store  Store
+}
+
+func NewHandler(secret []byte, store Store) *Handler {
+	return &Handler{Secret: append([]byte(nil), secret...), Store: store}
+}
+
+type response struct {
+	Accepted  bool `json:"accepted"`
+	Duplicate bool `json:"duplicate"`
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h == nil || len(h.Secret) == 0 || h.Store == nil {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+		}
+		return
+	}
+	if r.ContentLength > MaxBodyBytes {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if !VerifySignature(h.Secret, body, r.Header.Get(SignatureHeader)) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	event, err := DecodeEvent(body)
+	if err != nil {
+		http.Error(w, "invalid event", http.StatusBadRequest)
+		return
+	}
+	inserted, err := h.Store.InsertIfAbsent(r.Context(), event)
+	if err != nil {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	status := http.StatusAccepted
+	if !inserted {
+		status = http.StatusOK
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(response{Accepted: true, Duplicate: !inserted})
+}
