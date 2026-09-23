@@ -23,6 +23,9 @@ func TestMain(m *testing.M) {
 }
 
 func runFixtureServer() int {
+	if exitFile := os.Getenv("PK_MCPCLIENT_EXIT_FILE"); exitFile != "" {
+		defer func() { _ = os.WriteFile(exitFile, []byte("exited\n"), 0o600) }()
+	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "pk-mcp-test", Version: "1.0.0"}, nil)
 	schema := map[string]any{"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}}
 	mcp.AddTool(server, &mcp.Tool{Name: "echo", Description: "Echo one string", InputSchema: schema}, func(_ context.Context, _ *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
@@ -125,6 +128,118 @@ func TestStdioCallHonorsContextCancellation(t *testing.T) {
 	_, err = host.call(ctx, name, map[string]any{})
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("canceled MCP call error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestHostCloseReapsStdioServerProcess(t *testing.T) {
+	exitFile := filepath.Join(t.TempDir(), "server-exited")
+	config := fixtureConfig(t)
+	config.Env["PK_MCPCLIENT_EXIT_FILE"] = exitFile
+	host, report, err := NewHost(t.Context(), []ServerConfig{config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Loaded) != 1 {
+		t.Fatalf("fixture server did not connect: %+v", report)
+	}
+	var echoName string
+	for _, item := range host.Tools() {
+		if item.ServerToolName == "echo" {
+			echoName = item.Name
+		}
+	}
+	if echoName == "" {
+		t.Fatal("connected fixture did not expose echo tool")
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatalf("idempotent close: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(exitFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stdio MCP fixture did not exit after Host.Close")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := host.call(t.Context(), echoName, map[string]any{"text": "after close"}); err == nil {
+		t.Fatal("closed host still accepted tool calls")
+	}
+}
+
+func TestRemoteHandlerCancellationDrainsCallBeforeHostClose(t *testing.T) {
+	exitFile := filepath.Join(t.TempDir(), "server-exited")
+	config := fixtureConfig(t)
+	config.Env["PK_MCPCLIENT_EXIT_FILE"] = exitFile
+	host, report, err := NewHost(t.Context(), []ServerConfig{config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Loaded) != 1 {
+		t.Fatalf("fixture server did not connect: %+v", report)
+	}
+	var slow Tool
+	for _, item := range host.Tools() {
+		if item.ServerToolName == "slow" {
+			slow = item
+		}
+	}
+	if slow.Name == "" {
+		t.Fatal("connected fixture did not expose slow tool")
+	}
+	decorated, issues := DecorateRegistry(tool.NewRegistry(tool.StaticTranslators{}), host)
+	if len(issues) != 0 {
+		t.Fatalf("decorate issues=%v", issues)
+	}
+	translator, ok := decorated.Resolve(slow.Name)
+	if !ok {
+		t.Fatalf("registry did not expose %q", slow.Name)
+	}
+	callContext := &submitContext{}
+	status := translator.Translate(callContext, llm.ToolCall{CallID: "cancel-me", Name: slow.Name, Arguments: `{}`})
+	if status.Error != "" || len(status.WaitingFor) != 1 {
+		t.Fatalf("slow tool status=%+v", status)
+	}
+
+	handlerCtx, cancel := context.WithCancel(t.Context())
+	handler := host.RemoteJobHandlers(handlerCtx)[0]
+	defer cancel()
+	op := operation.Operation{ID: "mcp-slow", Type: callContext.spec.Type, Version: callContext.spec.Version, Status: operation.StatusReady, State: callContext.spec.State, MaxOutputLength: callContext.spec.MaxOutputLength}
+	if err := handler.AddRemoteJob(op); err != nil {
+		t.Fatal(err)
+	}
+	// Consume the initial Awaiting update so cancellation cannot block on the
+	// bounded update channel while the runner is tearing down.
+	select {
+	case <-handler.RemoteJobUpdates():
+	case <-time.After(3 * time.Second):
+		t.Fatal("remote job did not enter the awaiting state")
+	}
+	cancel()
+	waited := make(chan struct{})
+	go func() { handler.(interface{ Wait() }).Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("remote handler did not drain the canceled MCP call")
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(exitFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("MCP server process remained after canceled turn teardown")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
