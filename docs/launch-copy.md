@@ -65,5 +65,6 @@ https://github.com/pkyanam/pk
 - pk's own storage and integrations have different boundaries. pk operates no first-party telemetry service; model/search/MCP/plugin traffic still goes to configured providers. Do not call pk anonymous or claim external providers collect nothing. See the [data-handling disclosure](privacy.md).
 - TinyFish direct access requires a key. The Monid route accepts only responses that explicitly report zero cost and zero billed units; one live validation is not a guarantee of future pricing. See [web search](web-search.md).
 - Plugins and MCP servers require explicit configuration. Plugin programs run with pk's operating-system permissions; do not imply that they are sandboxed or bundled in a marketplace.
+- Extension hooks currently observe bounded run metadata only; do not imply they can rewrite prompts, intercept tools, or alter transcript content.
 - Do not claim a license until the repository contains one. Do not describe concept art as a product screenshot.
 - These drafts are not authorization to post or run an external campaign.
