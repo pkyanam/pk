@@ -90,6 +90,17 @@ describe("OpenTUI application", () => {
     expect(frame.split("\n")).toHaveLength(height + 1)
   })
 
+  test("shows measured response TPS and clears it when usage is unavailable", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "usage", payload: { input_tokens: 100, output_tokens: 80, cached_input_tokens: 0, output_tokens_per_second: 20, response_duration_ms: 4000 } }))
+    await setup.waitForFrame((frame) => frame.includes("20.0 tps avg"))
+    act(() => fake.emit({ version: 1, type: "usage", payload: { output_tokens_available: false, output_tokens_per_second: 20 } }))
+    await setup.waitForFrame((frame) => !frame.includes("tps avg"))
+  })
+
   test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("shows token usage with partial and unavailable coverage at $width × $height", async ({ width, height }) => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width, height })
@@ -2941,6 +2952,46 @@ describe("OpenTUI application", () => {
     const frame = setup.captureCharFrame()
     expect(frame).not.toContain("Discovered provider models")
     expect(frame).not.toContain("late-model")
+  })
+
+  test("provider model hover stays put while wheel scroll and click navigate the picker", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/provider models test-provider") })
+    act(() => setup.mockInput.pressEnter())
+    const request = fake.sent.find((item) => item.type === "provider_models")!
+    act(() => fake.emit({ version: 1, id: request.id, type: "provider_models", payload: {
+      provider_id: "test-provider",
+      models: Array.from({ length: 12 }, (_, index) => ({ id: `model-${String(index).padStart(2, "0")}`, task: "Text Generation", description: "A deliberately long model description for testing narrow picker rows and preventing hover-driven layout changes. ".repeat(2), capabilities: ["function_calling"] })),
+    } }))
+    const firstFrame = await setup.waitForFrame((frame) => frame.includes("model-00"))
+    const modelRows = (frame: string) => frame.split("\n").filter((line) => /model-\d\d · tool calling/.test(line)).map((line) => line.replace("›", " "))
+    const initialRows = modelRows(firstFrame)
+    expect(initialRows).toHaveLength(3)
+    expect(firstFrame).toContain("Esc close")
+    const hoverLine = firstFrame.split("\n").findIndex((line) => line.includes("model-02"))
+    await act(async () => setup.mockMouse.moveTo(12, hoverLine))
+    await setup.flush()
+    const hoveredFrame = setup.captureCharFrame()
+    expect(hoveredFrame).toContain("model-00")
+    expect(hoveredFrame).toContain("model-02")
+    expect(modelRows(hoveredFrame)).toEqual(initialRows)
+    expect(hoveredFrame.split("\n").findIndex((line) => line.includes("model-02"))).toBe(hoverLine)
+
+    for (let i = 0; i < 4; i++) await act(async () => setup.mockMouse.scroll(20, hoverLine, "down"))
+    const downFrame = await setup.waitForFrame((frame) => frame.includes("model-04"))
+    expect(downFrame).not.toContain("model-00")
+    await act(async () => setup.mockMouse.scroll(20, hoverLine, "up"))
+    const upFrame = await setup.waitForFrame((frame) => frame.includes("model-03"))
+    expect(upFrame).toContain("model-03")
+    const clickLine = upFrame.split("\n").findIndex((line) => line.includes("model-03"))
+    const clickColumn = upFrame.split("\n")[clickLine]!.indexOf("model-03")
+    await act(async () => setup.mockMouse.click(clickColumn, clickLine))
+    const selection = fake.sent.filter((item) => item.type === "provider_select").at(-1)
+    expect(selection?.payload).toEqual({ provider_id: "test-provider", model: "model-03" })
   })
 
   test("a stale provider-model error does not clear a newer lookup", async () => {

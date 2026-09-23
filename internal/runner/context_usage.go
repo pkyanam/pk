@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -33,14 +34,16 @@ type ContextUsageCategory struct {
 // ContextProviderUsage preserves unknown counters as JSON null instead of
 // turning missing provider fields into zero.
 type ContextProviderUsage struct {
-	InputTokens         *int64 `json:"input_tokens"`
-	InputAvailable      bool   `json:"input_tokens_available"`
-	OutputTokens        *int64 `json:"output_tokens"`
-	OutputAvailable     bool   `json:"output_tokens_available"`
-	CachedInputTokens   *int64 `json:"cached_input_tokens"`
-	CachedAvailable     bool   `json:"cached_input_tokens_available"`
-	CacheWriteTokens    *int64 `json:"cache_write_input_tokens"`
-	CacheWriteAvailable bool   `json:"cache_write_input_tokens_available"`
+	InputTokens           *int64   `json:"input_tokens"`
+	InputAvailable        bool     `json:"input_tokens_available"`
+	OutputTokens          *int64   `json:"output_tokens"`
+	OutputAvailable       bool     `json:"output_tokens_available"`
+	CachedInputTokens     *int64   `json:"cached_input_tokens"`
+	CachedAvailable       bool     `json:"cached_input_tokens_available"`
+	CacheWriteTokens      *int64   `json:"cache_write_input_tokens"`
+	CacheWriteAvailable   bool     `json:"cache_write_input_tokens_available"`
+	ResponseDurationMS    *float64 `json:"response_duration_ms,omitempty"`
+	OutputTokensPerSecond *float64 `json:"output_tokens_per_second,omitempty"`
 }
 
 // ContextUsageRecord is a content-free measurement of the latest provider
@@ -171,9 +174,50 @@ type contextUsageAdapter struct {
 	next    llm.Adapter
 	store   ContextUsageStore
 	id      session.ID
+	timings *responseTimingStore
 	mu      sync.Mutex
 	ordinal int
 	onError func(error)
+}
+
+type responseTiming struct {
+	responseID string
+	duration   time.Duration
+}
+
+// responseTimingStore correlates adapter-call duration with the later
+// session-store observer event. It is bounded in case a response is never
+// persisted by the coordinator.
+type responseTimingStore struct {
+	mu    sync.Mutex
+	items []responseTiming
+}
+
+func (store *responseTimingStore) Record(responseID string, duration time.Duration) {
+	if store == nil || duration <= 0 {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.items = append(store.items, responseTiming{responseID: responseID, duration: duration})
+	if len(store.items) > 128 {
+		store.items = append([]responseTiming(nil), store.items[len(store.items)-128:]...)
+	}
+}
+
+func (store *responseTimingStore) Take(responseID string) (time.Duration, bool) {
+	if store == nil {
+		return 0, false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for index, item := range store.items {
+		if item.responseID == responseID {
+			store.items = append(store.items[:index], store.items[index+1:]...)
+			return item.duration, true
+		}
+	}
+	return 0, false
 }
 
 func (adapter *contextUsageAdapter) Respond(ctx context.Context, request llm.Request, options llm.RequestOptions) (llm.Response, error) {
@@ -192,8 +236,13 @@ func (adapter *contextUsageAdapter) Respond(ctx context.Context, request llm.Req
 	adapter.mu.Unlock()
 	pending := contextUsageRecord(record, ordinal, benchcontext.Usage{}, true)
 	adapter.persist(ctx, pending)
+	started := time.Now()
 	response, responseErr := adapter.next.Respond(ctx, request, options)
-	completed := contextUsageRecord(record, ordinal, benchcontext.MeasureUsage(response.Usage), false)
+	duration := time.Since(started)
+	if adapter.timings != nil && ctx.Err() == nil {
+		adapter.timings.Record(response.ID, duration)
+	}
+	completed := contextUsageRecord(record, ordinal, benchcontext.MeasureUsage(response.Usage), false, duration)
 	completed.ResponseFailed = responseErr != nil
 	// The coordinator may stop without joining an in-flight adapter request. Do
 	// not let a late canceled response overwrite usage from a later turn.
@@ -212,7 +261,7 @@ func (adapter *contextUsageAdapter) persist(ctx context.Context, record ContextU
 	}
 }
 
-func contextUsageRecord(measured benchcontext.Record, ordinal int, usage benchcontext.Usage, pending bool) ContextUsageRecord {
+func contextUsageRecord(measured benchcontext.Record, ordinal int, usage benchcontext.Usage, pending bool, durations ...time.Duration) ContextUsageRecord {
 	categories := make([]ContextUsageCategory, 0, 6)
 	appendSize := func(id string, size benchcontext.Size) {
 		categories = append(categories, ContextUsageCategory{ID: id, Items: size.Items, Bytes: size.Bytes})
@@ -235,12 +284,12 @@ func contextUsageRecord(measured benchcontext.Record, ordinal int, usage benchco
 		Available: true, Pending: pending, RequestOrdinal: ordinal,
 		Measurement: "json_value_bytes", Categories: categories,
 		TotalBytes:          measured.InputValueBytes + measured.ToolSchemas.Bytes,
-		LatestProviderUsage: contextProviderUsage(usage),
+		LatestProviderUsage: contextProviderUsage(usage, durations...),
 		ContextLimitTokens:  nil,
 	}
 }
 
-func contextProviderUsage(usage benchcontext.Usage) ContextProviderUsage {
+func contextProviderUsage(usage benchcontext.Usage, durations ...time.Duration) ContextProviderUsage {
 	result := ContextProviderUsage{
 		InputAvailable: usage.InputAvailable, OutputAvailable: usage.OutputAvailable,
 		CachedAvailable: usage.CachedInputAvailable, CacheWriteAvailable: usage.CacheWriteAvailable,
@@ -256,6 +305,14 @@ func contextProviderUsage(usage benchcontext.Usage) ContextProviderUsage {
 	}
 	if usage.CacheWriteAvailable {
 		result.CacheWriteTokens = contextUsageInt64Pointer(usage.CacheWriteTokens)
+	}
+	if len(durations) > 0 && durations[0] > 0 {
+		milliseconds := float64(durations[0]) / float64(time.Millisecond)
+		result.ResponseDurationMS = &milliseconds
+		if usage.OutputAvailable {
+			rate := float64(usage.OutputTokens) / durations[0].Seconds()
+			result.OutputTokensPerSecond = &rate
+		}
 	}
 	return result
 }

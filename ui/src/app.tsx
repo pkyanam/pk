@@ -47,7 +47,7 @@ type CompactionUsage = {
 type SessionUsage = { sessionId: string; responseCount: number; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; uncachedInputTokens?: number; coverage: { input: number; output: number; cachedInput: number; uncachedInput: number }; compaction?: CompactionUsage }
 type ContextBudget = { provider_id: string; model_id: string; context_tokens?: number | null; input_tokens?: number | null; output_tokens?: number | null; context_source: string; input_source: string; output_source: string; operational_input_budget_tokens: number; operational_input_source: string; output_reserve_tokens: number; safety_margin_tokens: number; unknown_input_budget_tokens?: number; overrides?: Array<{ provider_id: string; model_id: string; context_tokens?: number | null; input_tokens?: number | null; output_tokens?: number | null }>; history_compaction?: { enabled?: boolean; trigger_ratio?: number; target_ratio?: number; summary_reserve_tokens?: number; max_summary_tokens?: number } }
 type ContextCompaction = { phase: string; reason?: string; estimate?: { tokens?: number; method?: string; confidence?: string }; before_estimate_tokens?: number; after_estimate_tokens?: number; summary_input_tokens?: number; summary_output_tokens?: number; checkpoint_version?: number; error_code?: string }
-type LatestProviderUsage = { input?: number; output?: number; cached?: number; inputAvailable: boolean; outputAvailable: boolean; cachedAvailable: boolean }
+type LatestProviderUsage = { tokensPerSecond?: number; responseDurationMs?: number; input?: number; output?: number; cached?: number; inputAvailable: boolean; outputAvailable: boolean; cachedAvailable: boolean }
 type PluginCommandRun = { id: string; name: string; startedAt: number; cancelRequested?: boolean }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean; source?: string; url?: string; installs?: number; id?: string }
 type SkillSearchOption = { name: string; id: string; source: string; installs: number; url: string }
@@ -270,6 +270,8 @@ function latestProviderUsage(value: unknown): LatestProviderUsage | null {
   const count = (field: unknown) => typeof field === "number" && Number.isFinite(field) && field >= 0 ? field : undefined
   const hasAvailabilityFlags = typeof data.input_tokens_available === "boolean" || typeof data.output_tokens_available === "boolean" || typeof data.cached_input_tokens_available === "boolean"
   return {
+    tokensPerSecond: data.output_tokens_available !== false ? count(data.output_tokens_per_second) : undefined,
+    responseDurationMs: count(data.response_duration_ms),
     input: count(data.input_tokens),
     output: count(data.output_tokens),
     cached: count(data.cached_input_tokens),
@@ -622,6 +624,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
   const [mcpManagerOpen, setMcpManagerOpen] = useState(false)
   const [selectionIndex, setSelectionIndex] = useState(0)
+  const [providerModelHoverIndex, setProviderModelHoverIndex] = useState<number | null>(null)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
   const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null)
@@ -2086,6 +2089,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "provider_models_started": {
         if (!event.id || event.id !== pendingProviderModelsRequest.current) break
         setProviderModels([])
+        setProviderModelHoverIndex(null)
         setProviderModelsLoading(true)
         setSelector("provider_models")
         break
@@ -2102,6 +2106,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         })) : []
         setProviderModels(available)
         setProviderModelQuery("")
+        setProviderModelHoverIndex(null)
         setSelectionIndex(0)
         setSelector("provider_models")
         if (!available.length) addEntry("system", `No models were returned for provider ${String(data.provider_id ?? "")} .`)
@@ -3567,10 +3572,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (key.name === "pagedown") { key.preventDefault(); usageScroll.current?.scrollBy(8, "step"); return }
         return
       }
-      if (key.name === "up" && optionCount > 0) { setSelectionIndex((index) => (index - 1 + optionCount) % optionCount); return }
-      if (key.name === "down" && optionCount > 0) { setSelectionIndex((index) => (index + 1) % optionCount); return }
+      if ((key.name === "up" || key.name === "down") && optionCount > 0) {
+        setProviderModelHoverIndex(null)
+        const step = key.name === "up" ? -1 : 1
+        setSelectionIndex((index) => selector === "provider_models"
+          ? Math.max(0, Math.min(optionCount - 1, index + step))
+          : (index + step + optionCount) % optionCount)
+        return
+      }
       if (key.name === "return") {
-        activateSelectorOption(selectionIndex)
+        activateSelectorOption(selector === "provider_models" ? providerModelHoverIndex ?? selectionIndex : selectionIndex)
         key.preventDefault()
         return
       }
@@ -3681,7 +3692,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider · ChatGPT login", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" })), { label: "Connect a provider…", value: "__provider_setup__", description: "Search supported providers and add a private API key", state: "setup" }]
     : selector === "image" ? [{ label: imagegenEnabled ? "Disable ImageGen" : "Enable ImageGen", value: imagegenEnabled ? "disable" : "enable", description: imageConfigPending ? "Saving configuration…" : imagegenEnabled ? `Enabled · ${imagegenDriver || "gpt-6-astra"}` : "Off by default · uses your ChatGPT login", state: imagegenEnabled ? "enabled" : "disabled" }]
       : selector === "extension_commands" ? extensionCommands.map((item) => ({ label: item.name, value: item.name, description: item.description || `Plugin command · ${item.extension_id}`, state: "available" }))
-    : selector === "provider_models" ? filteredProviderModels.map((item) => ({ label: item.id, value: item.id, description: [item.task, item.capabilities?.includes("function_calling") ? "tool calling" : "", item.description, item.object, item.owned_by].filter(Boolean).join(" · "), state: item.capabilities?.includes("function_calling") ? "tool calling" : "model" }))
+    : selector === "provider_models" ? filteredProviderModels.map((item) => ({ label: item.id, value: item.id, description: preview([item.task, item.capabilities?.includes("function_calling") ? "tool calling" : "", item.description, item.object, item.owned_by].filter(Boolean).join(" · "), 44), state: item.capabilities?.includes("function_calling") ? "tool calling" : "model" }))
       : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
       : selector === "tasks" ? tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}`, state: "" }))
         : selector === "skills" ? skillsView === "results" ? skillSearchResults.map((skill) => ({ label: skill.name, value: skill.id, description: `${skill.source} · ${skill.installs.toLocaleString()} installs · Enter to inspect source`, state: "search result" }))
@@ -3695,9 +3706,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             ? `${server.url} · ${server.auth_mode ?? "anonymous"} · ${server.auth_status ?? "configured"}${server.credential_env?.length ? ` · env ${server.credential_env.join(", ")}` : ""}`
             : `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: server.auth_status ?? "configured" }))
             : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
-  const selectorPageSize = selector === "history" ? Math.max(3, Math.min(6, Math.floor((renderer.height - 20) / 2))) : selector === "skills"
+  const selectorPageSize = selector === "provider_models" ? Math.max(2, Math.min(8, Math.floor((renderer.height - 18) / 2))) : selector === "history" ? Math.max(3, Math.min(6, Math.floor((renderer.height - 20) / 2))) : selector === "skills"
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
-    : selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
+    : selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
   const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
   const providerPresetPageSize = Math.max(3, Math.min(6, Math.floor((renderer.height - 14) / 2)))
   const providerPresetWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(providerPresetPageSize / 2), filteredProviderPresets.length - providerPresetPageSize))
@@ -3724,11 +3735,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
   const activityActive = busy || Boolean(maintenance) || Boolean(pluginCommandRun) || reloadPending || Boolean(contextCompaction && pendingCompactRequest.current === contextCompaction.id)
   const usagePart = (label: string, count: number | undefined, available: boolean) => `${label} ${available && count !== undefined ? count.toLocaleString() : "—"}`
-  const cacheLabel = usage
+  const throughputLabel = usage?.tokensPerSecond !== undefined ? ` · ${usage.tokensPerSecond.toFixed(1)} tps avg` : ""
+  const cacheLabel = (usage
     ? renderer.width < 105
       ? `${usagePart("in", usage.input, usage.inputAvailable)} · ${usagePart("out", usage.output, usage.outputAvailable)} · ${usagePart("cache", usage.cached, usage.cachedAvailable)} tok`
       : `latest ${usagePart("in", usage.input, usage.inputAvailable)} · ${usagePart("out", usage.output, usage.outputAvailable)} · ${usagePart("cache", usage.cached, usage.cachedAvailable)} tokens`
-    : renderer.width < 105 ? "latest tokens —" : "latest input/output/cache —"
+    : renderer.width < 105 ? "latest tokens —" : "latest input/output/cache —") + throughputLabel
   const transcriptOmitted = useMemo(() => entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id), [entries])
   const transcriptGroups = useMemo(() => groupTranscript(entries.filter((entry) => entry.id !== 0)), [entries])
   const transcriptHasLiveTool = useMemo(() => hasLiveToolDuration(transcriptGroups), [transcriptGroups])
@@ -3790,9 +3802,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && selector !== "provider_presets" && !mcpManagerOpen && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "usage" ? "6%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "usage" ? "8%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column", minHeight: selector === "usage" ? 0 : undefined, overflow: selector === "usage" ? "hidden" : undefined }}>
+      {selector && selector !== "provider_presets" && !mcpManagerOpen && <box onMouseScroll={selector === "provider_models" ? (event) => {
+        if (!event.scroll) return
+        setProviderModelHoverIndex(null)
+        const direction = event.scroll.direction === "down" ? 1 : event.scroll.direction === "up" ? -1 : 0
+        if (direction) setSelectionIndex((index) => Math.max(0, Math.min(filteredProviderModels.length - 1, index + direction * Math.max(1, Math.round(event.scroll!.delta)))))
+      } : undefined} style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "usage" ? "6%" : selector === "provider_models" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "usage" ? "8%" : selector === "provider_models" ? "5%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: selector === "provider_models" ? 1 : 2, flexDirection: "column", minHeight: selector === "usage" || selector === "provider_models" ? 0 : undefined, overflow: selector === "usage" || selector === "provider_models" ? "hidden" : undefined }}>
         <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "usage" && <>
+          {usage?.tokensPerSecond !== undefined && <text fg={palette.muted} content={`Latest response · ${usage.tokensPerSecond.toFixed(1)} output tokens/sec · average includes provider wait; excludes tools`} />}
           <scrollbox id="usage-scroll" ref={usageScroll} focused style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 1 }}>
           {contextBudgetLoading ? <text fg={palette.accent} content="Resolving context budget…" />
             : contextBudgetError ? <text fg={palette.amber} content={contextBudgetError} />
@@ -3883,7 +3901,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {selector === "providers" && <text fg={palette.dim} content="Enter selects a connected provider · choose Connect a provider to add one · changes apply to a new session" />}
         {selector === "image" && <text fg={imageConfigPending ? palette.accent : palette.dim} content={imageConfigPending ? "Saving ImageGen preference…" : "Uses a separate Astra image worker with your ChatGPT login. Your chat model stays unchanged. Start a new session with /new to apply."} />}
         {selector === "provider_models" && <>
-          {providerSetupModelID && !providerModelsLoading && <ProviderFilter id="provider-model-search" value={providerModelQuery} placeholder="Type to filter models…" maxLength={120} onChange={(value) => { setProviderModelQuery(value); setSelectionIndex(0) }} />}
+          {providerSetupModelID && !providerModelsLoading && <ProviderFilter id="provider-model-search" value={providerModelQuery} placeholder="Type to filter models…" maxLength={120} onChange={(value) => { setProviderModelQuery(value); setSelectionIndex(0); setProviderModelHoverIndex(null) }} />}
           <text fg={palette.dim} content={providerModelsLoading ? "Contacting provider model catalog…" : providerSetupModelID ? `↑↓ browse · Enter uses model${sessionHasPrompt.current ? " · starts a new session" : " in a new session"}${providers.find((item) => item.id === providerSetupModelID)?.supports_reasoning_effort === false ? " · effort provider-controlled" : ""}` : "Model discovery is read-only · use /provider use ID before the first prompt"} />
         </>}
         {selector === "tools" && <text fg={palette.dim} content={modelToolsLoading ? "Loading model-visible tools…" : modelToolsPreview ? modelToolsNotice || "Preview of the core tools available before the first prompt" : modelToolsSaved ? "Saved snapshot for this session" : modelToolsInitialized ? "Current available tool registry" : "The session tool catalog is not initialized until its first prompt."} />}
@@ -3907,10 +3925,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         </box>}
         {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
           const index = selectorWindowStart + localIndex
-          return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
+          const active = selector === "provider_models" ? providerModelHoverIndex ?? selectionIndex : selectionIndex
+          return <box key={option.value} onMouseOver={() => selector === "provider_models" ? setProviderModelHoverIndex(index) : setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === active ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
             <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
-              <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
-              <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
+              <text fg={index === active ? palette.accent : palette.muted} content={index === active ? "›" : " "} />
+              <text fg={index === active ? palette.text : palette.muted} content={option.label} />
               <text fg={(selector === "plugins" && (option.state === "enabled" || option.state === "add")) || (selector === "mcp" && option.state === "configured") || ((selector === "providers") && (option.state === "default" || option.state === "selected")) ? palette.accent : palette.dim} content={option.state ? `· ${option.state}` : ""} />
             </box>
             {option.description && <text fg={palette.dim} content={option.description} />}

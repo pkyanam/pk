@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -59,7 +60,8 @@ func TestContextUsageSidecarPairsPendingRequestAndResponseWithoutContents(t *tes
 		InputTokens: 10, OutputTokens: 4, CachedInputTokens: 2,
 		Raw: json.RawMessage(`{"input_tokens":10,"output_tokens":4,"input_tokens_details":{"cached_tokens":2}}`),
 	}}
-	adapter := &contextUsageAdapter{next: contextUsageFixtureAdapter{response: response, started: started, release: release}, store: store, id: session.ID("session-context-usage")}
+	timings := &responseTimingStore{}
+	adapter := &contextUsageAdapter{next: contextUsageFixtureAdapter{response: response, started: started, release: release}, store: store, id: session.ID("session-context-usage"), timings: timings}
 	finished := make(chan error, 1)
 	go func() {
 		_, err := adapter.Respond(context.Background(), request, llm.RequestOptions{})
@@ -70,12 +72,15 @@ func TestContextUsageSidecarPairsPendingRequestAndResponseWithoutContents(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pending.Available || !pending.Pending || pending.RequestOrdinal != 1 || pending.LatestProviderUsage.InputAvailable || pending.LatestProviderUsage.InputTokens != nil {
+	if !pending.Available || !pending.Pending || pending.RequestOrdinal != 1 || pending.LatestProviderUsage.InputAvailable || pending.LatestProviderUsage.InputTokens != nil || pending.LatestProviderUsage.ResponseDurationMS != nil || pending.LatestProviderUsage.OutputTokensPerSecond != nil {
 		t.Fatalf("pending measurement=%+v", pending)
 	}
 	close(release)
 	if err := <-finished; err != nil {
 		t.Fatal(err)
+	}
+	if duration, ok := timings.Take(response.ID); !ok || duration <= 0 {
+		t.Fatalf("provider response duration was not correlated: duration=%v found=%v", duration, ok)
 	}
 	complete, err := store.LoadContextUsage(context.Background(), adapter.id)
 	if err != nil {
@@ -86,6 +91,9 @@ func TestContextUsageSidecarPairsPendingRequestAndResponseWithoutContents(t *tes
 	}
 	if !complete.LatestProviderUsage.InputAvailable || complete.LatestProviderUsage.InputTokens == nil || *complete.LatestProviderUsage.InputTokens != 10 || !complete.LatestProviderUsage.CachedAvailable || complete.LatestProviderUsage.CachedInputTokens == nil || *complete.LatestProviderUsage.CachedInputTokens != 2 || !complete.LatestProviderUsage.OutputAvailable || complete.LatestProviderUsage.OutputTokens == nil || *complete.LatestProviderUsage.OutputTokens != 4 {
 		t.Fatalf("latest provider usage=%+v", complete.LatestProviderUsage)
+	}
+	if complete.LatestProviderUsage.ResponseDurationMS == nil || *complete.LatestProviderUsage.ResponseDurationMS <= 0 || complete.LatestProviderUsage.OutputTokensPerSecond == nil || *complete.LatestProviderUsage.OutputTokensPerSecond <= 0 {
+		t.Fatalf("completed usage did not persist response timing/rate: %+v", complete.LatestProviderUsage)
 	}
 	wantIDs := []string{"system_prompt", "tool_schemas", "messages", "tool_calls", "tool_results", "other_input"}
 	if len(complete.Categories) != len(wantIDs) {
@@ -221,6 +229,50 @@ func TestContextUsageRecordUsesProviderRawAvailability(t *testing.T) {
 	unknown := usageJSONEvent(session.ID("usage"), llm.Response{Usage: llm.Usage{Raw: json.RawMessage(`{"vendor_metadata":1}`)}})
 	if _, exists := unknown["input_tokens"]; exists || unknown["input_tokens_available"] != false {
 		t.Fatalf("unknown usage was represented as zero: %#v", unknown)
+	}
+}
+
+func TestUsageJSONEventReportsProviderOutputRateOnlyWhenKnown(t *testing.T) {
+	known := usageJSONEvent(session.ID("usage"), llm.Response{
+		ID:    "known",
+		Usage: llm.Usage{OutputTokens: 120, Raw: json.RawMessage(`{"output_tokens":120}`)},
+	}, 2*time.Second)
+	if known["response_duration_ms"] != float64(2000) || known["output_tokens_per_second"] != float64(60) {
+		t.Fatalf("known output rate = %#v", known)
+	}
+
+	zero := usageJSONEvent(session.ID("usage"), llm.Response{
+		ID:    "zero",
+		Usage: llm.Usage{OutputTokens: 0, Raw: json.RawMessage(`{"output_tokens":0}`)},
+	}, 500*time.Millisecond)
+	if zero["response_duration_ms"] != float64(500) || zero["output_tokens_per_second"] != float64(0) {
+		t.Fatalf("explicit zero output rate = %#v", zero)
+	}
+
+	unknown := usageJSONEvent(session.ID("usage"), llm.Response{
+		ID:    "unknown",
+		Usage: llm.Usage{Raw: json.RawMessage(`{"output_tokens":null}`)},
+	}, 3*time.Second)
+	if unknown["response_duration_ms"] != float64(3000) {
+		t.Fatalf("unknown usage lost measured duration: %#v", unknown)
+	}
+	if _, exists := unknown["output_tokens_per_second"]; exists {
+		t.Fatalf("unknown output usage was turned into a rate: %#v", unknown)
+	}
+	withoutTiming := usageJSONEvent(session.ID("usage"), llm.Response{Usage: llm.Usage{OutputTokens: 20, Raw: json.RawMessage(`{"output_tokens":20}`)}})
+	if _, exists := withoutTiming["output_tokens_per_second"]; exists {
+		t.Fatalf("rate emitted without response timing: %#v", withoutTiming)
+	}
+}
+
+func TestContextProviderUsagePersistsDurationButNotUnknownRate(t *testing.T) {
+	unknown := contextProviderUsage(benchcontext.MeasureUsage(llm.Usage{Raw: json.RawMessage(`{"output_tokens":null}`)}), 2*time.Second)
+	if unknown.ResponseDurationMS == nil || *unknown.ResponseDurationMS != 2000 || unknown.OutputTokensPerSecond != nil {
+		t.Fatalf("unknown usage timing = %+v", unknown)
+	}
+	zero := contextProviderUsage(benchcontext.MeasureUsage(llm.Usage{OutputTokens: 0, Raw: json.RawMessage(`{"output_tokens":0}`)}), 2*time.Second)
+	if zero.OutputTokensPerSecond == nil || *zero.OutputTokensPerSecond != 0 {
+		t.Fatalf("explicit zero usage rate = %+v", zero)
 	}
 }
 

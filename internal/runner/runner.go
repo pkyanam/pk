@@ -494,9 +494,10 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 		contextUsageOrdinal = previous.RequestOrdinal
 	}
 	providerAdapter := options.Adapter
+	responseTimings := &responseTimingStore{}
 	usageAdapter := &contextUsageAdapter{
 		next: options.Adapter, store: contextUsageStore, id: id,
-		ordinal: contextUsageOrdinal,
+		ordinal: contextUsageOrdinal, timings: responseTimings,
 		onError: func(err error) { fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", err) },
 	}
 	options.Adapter = usageAdapter
@@ -589,7 +590,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	// QueueInputs only governs how steering is admitted at model/tool
 	// boundaries. It must not turn a foreground prompt into an indefinitely
 	// live run: only KeepAlive suppresses the assistant-idle stop.
-	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, recordOutputErr, func() { lifecycle(LifecycleResponseComplete, "persisted") })
+	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, responseTimings, recordOutputErr, func() { lifecycle(LifecycleResponseComplete, "persisted") })
 	observerID := store.AddObserver(observer)
 	defer store.RemoveObserver(observerID)
 	current := coordinator.New(coordinator.Dependencies{
@@ -684,7 +685,7 @@ func checkPreallocatedSessionCollision(ctx context.Context, store sessionstore.S
 	return nil
 }
 
-func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, recordOutputErr func(error), onResponseComplete func()) sessionstore.Observer {
+func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, responseTimings *responseTimingStore, recordOutputErr func(error), onResponseComplete func()) sessionstore.Observer {
 	var mu sync.Mutex
 	toolCalls := make(map[string]toolCallMetadata)
 	return func(id session.ID, item sessionstore.Item) {
@@ -717,7 +718,8 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 				inputGate.modelResponse(runCtx, callIDs)
 			}
 			if jsonl {
-				if event := usageJSONEvent(id, response); event != nil {
+				duration, _ := responseTimings.Take(response.ID)
+				if event := usageJSONEvent(id, response, duration); event != nil {
 					recordOutputErr(emitJSONLine(&mu, out, event))
 				}
 			}
@@ -1312,7 +1314,7 @@ func sessionHasNoHistory(ctx context.Context, store sessionstore.Store, id sessi
 	return len(page.Items) == 0 && !page.More, nil
 }
 
-func usageJSONEvent(id session.ID, response llm.Response) map[string]any {
+func usageJSONEvent(id session.ID, response llm.Response, durations ...time.Duration) map[string]any {
 	usage := response.Usage
 	measured := benchcontext.MeasureUsage(usage)
 	event := map[string]any{
@@ -1327,6 +1329,14 @@ func usageJSONEvent(id session.ID, response llm.Response) map[string]any {
 	}
 	if measured.OutputAvailable {
 		event["output_tokens"] = usage.OutputTokens
+	}
+	var duration time.Duration
+	if len(durations) > 0 && durations[0] > 0 {
+		duration = durations[0]
+		event["response_duration_ms"] = float64(duration) / float64(time.Millisecond)
+		if measured.OutputAvailable {
+			event["output_tokens_per_second"] = float64(usage.OutputTokens) / duration.Seconds()
+		}
 	}
 	if usage.ReasoningTokens != 0 {
 		event["reasoning_tokens"] = usage.ReasoningTokens
