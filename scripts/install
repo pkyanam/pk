@@ -16,9 +16,9 @@ cp "$ROOT/ui/package.json" "$ROOT/ui/bun.lock" "$STAGED_UI/"
 cp -R "$ROOT/ui/dist" "$STAGED_UI/"
 (cd "$STAGED_UI" && bun install --production --frozen-lockfile)
 if [ -x "$BIN_DIR/pk" ] && [ -d "$LIB_DIR/ui" ]; then
-  "$ROOT/bin/pk" __install-artifacts --binary "$ROOT/bin/pk" --ui "$STAGED_UI" --legacy-binary "$BIN_DIR/pk" --legacy-ui "$LIB_DIR/ui"
+  "$ROOT/bin/pk" __install-artifacts --binary "$ROOT/bin/pk" --ui "$STAGED_UI" --source "$ROOT" --legacy-binary "$BIN_DIR/pk" --legacy-ui "$LIB_DIR/ui"
 else
-  "$ROOT/bin/pk" __install-artifacts --binary "$ROOT/bin/pk" --ui "$STAGED_UI"
+  "$ROOT/bin/pk" __install-artifacts --binary "$ROOT/bin/pk" --ui "$STAGED_UI" --source "$ROOT"
 fi
 cleanup
 trap - EXIT HUP INT TERM

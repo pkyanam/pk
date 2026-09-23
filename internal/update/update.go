@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,40 @@ type Status struct {
 // ImportArtifacts publishes an already-installed binary and matching UI tree
 // as an immutable release. It is used once to migrate legacy installations.
 func (manager Manager) ImportArtifacts(binaryPath, uiDirectory string) (Release, error) {
+	return manager.importArtifacts(binaryPath, uiDirectory, nil)
+}
+
+// ImportArtifactsFromSource publishes prebuilt artifacts and records provenance
+// from the source tree used to build them. It does not rebuild the source.
+func (manager Manager) ImportArtifactsFromSource(ctx context.Context, binaryPath, uiDirectory, source string) (Release, error) {
+	source, err := filepath.Abs(source)
+	if err != nil {
+		return Release{}, err
+	}
+	source, err = filepath.EvalSymlinks(source)
+	if err != nil {
+		return Release{}, fmt.Errorf("resolve install source: %w", err)
+	}
+	if err := validateSource(source); err != nil {
+		return Release{}, err
+	}
+	revision, dirty, dirtyKnown := manager.sourceState(ctx, source)
+	repository, ref := manager.sourceGitIdentity(ctx, source)
+	hash, err := hashSource(source)
+	if err != nil {
+		return Release{}, fmt.Errorf("hash install source: %w", err)
+	}
+	provenance := &sourceProvenance{source: source, repository: repository, ref: ref, revision: revision, dirty: dirty, dirtyKnown: dirtyKnown, hash: hash}
+	return manager.importArtifacts(binaryPath, uiDirectory, provenance)
+}
+
+type sourceProvenance struct {
+	source, repository, ref, revision string
+	dirty, dirtyKnown                 bool
+	hash                              string
+}
+
+func (manager Manager) importArtifacts(binaryPath, uiDirectory string, provenance *sourceProvenance) (Release, error) {
 	root, err := manager.root()
 	if err != nil {
 		return Release{}, err
@@ -118,6 +153,14 @@ func (manager Manager) ImportArtifacts(binaryPath, uiDirectory string) (Release,
 		return Release{}, err
 	}
 	release := Release{ID: id, Path: finalPath, BinaryPath: filepath.Join(finalPath, "pk"), UIPath: filepath.Join(finalPath, "ui", "dist", "main.js"), Source: "legacy installation", StagedAt: stagedAt}
+	if provenance != nil {
+		release.Source = provenance.source
+		if provenance.repository != "" {
+			release.Source = provenance.repository
+		}
+		release.GitRepository, release.GitRef = provenance.repository, provenance.ref
+		release.Revision, release.Dirty, release.DirtyKnown, release.SourceHash = provenance.revision, provenance.dirty, provenance.dirtyKnown, provenance.hash
+	}
 	if err := writeManifest(stagePath, release); err != nil {
 		return Release{}, err
 	}
@@ -506,6 +549,38 @@ func (manager Manager) sourceState(ctx context.Context, source string) (revision
 	return
 }
 
+func (manager Manager) sourceGitIdentity(ctx context.Context, source string) (repository, ref string) {
+	var stdout, stderr boundedBuffer
+	stdout.limit, stderr.limit = 16<<10, 16<<10
+	if manager.commandRunner().Run(ctx, source, "git", &stdout, &stderr, "config", "--get", "remote.origin.url") == nil {
+		repository = sanitizeRepositoryURL(strings.TrimSpace(stdout.String()))
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if manager.commandRunner().Run(ctx, source, "git", &stdout, &stderr, "symbolic-ref", "--quiet", "--short", "HEAD") == nil {
+		ref = strings.TrimSpace(stdout.String())
+	}
+	return repository, ref
+}
+
+func sanitizeRepositoryURL(repository string) string {
+	if !strings.Contains(repository, "://") {
+		// Git's scp-like SSH form (for example git@host:owner/repo.git) is
+		// intentionally preserved; it has no URL query or fragment fields.
+		return repository
+	}
+	parsed, err := url.Parse(repository)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}
+
 func validateSource(source string) error {
 	info, err := os.Stat(source)
 	if err != nil || !info.IsDir() {
@@ -638,6 +713,17 @@ func copyAndHashSource(source, destination string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// hashSource uses the same deterministic source-file selection and hashing as
+// Stage without building or copying artifacts into a release.
+func hashSource(source string) (string, error) {
+	stage, err := os.MkdirTemp("", "pk-source-hash-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(stage)
+	return copyAndHashSource(source, filepath.Join(stage, "source"))
 }
 
 func excludedSourcePath(rel string, isDir bool) bool {

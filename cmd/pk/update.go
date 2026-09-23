@@ -97,6 +97,7 @@ func runInstallArtifacts(ctx context.Context, args []string, stdout, stderr io.W
 	ui := flags.String("ui", "", "built UI directory")
 	legacyBinary := flags.String("legacy-binary", "", "currently installed binary to preserve")
 	legacyUI := flags.String("legacy-ui", "", "currently installed UI directory to preserve")
+	source := flags.String("source", "", "source tree used to build the artifacts")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -121,7 +122,12 @@ func runInstallArtifacts(ctx context.Context, args []string, stdout, stderr io.W
 			return 1
 		}
 	}
-	release, err := manager.ImportArtifacts(*binary, *ui)
+	var release pkupdate.Release
+	if *source != "" {
+		release, err = manager.ImportArtifactsFromSource(ctx, *binary, *ui, *source)
+	} else {
+		release, err = manager.ImportArtifacts(*binary, *ui)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "pk install: stage artifacts: %v\n", err)
 		return 1

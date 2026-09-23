@@ -15,13 +15,16 @@ pk is a terminal coding workspace built on [Unreal Agent v0.1.1](https://github.
 ## Get started
 
 ```sh
-git clone https://github.com/pkyanam/pk.git
-cd pk
-./scripts/install       # requires Go 1.27+ and Bun
+curl -fsSL https://raw.githubusercontent.com/pkyanam/pk/main/install.sh | bash
 pk login
 cd /path/to/project
 pk
 ```
+
+The installer requires Git, Bun, and Go 1.21+; Go selects the source module's Go 1.27 toolchain
+according to your `GOTOOLCHAIN` setting. It builds from a temporary source checkout, preserves an
+existing managed release for rollback, and honors `PK_BIN_DIR` and `PK_LIB_DIR`. It does not install
+system packages.
 
 For work that should keep running after you leave the interface:
 

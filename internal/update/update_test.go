@@ -15,6 +15,7 @@ type fakeCommandRunner struct {
 	fail        string
 	revision    string
 	dirtyStatus string
+	remoteURL   string
 	commands    []string
 }
 
@@ -30,6 +31,8 @@ func (runner *fakeCommandRunner) Run(ctx context.Context, directory, name string
 	}
 	if name == "git" && len(args) > 0 {
 		switch args[0] {
+		case "config":
+			_, _ = io.WriteString(stdout, runner.remoteURL+"\n")
 		case "rev-parse":
 			_, _ = io.WriteString(stdout, runner.revision+"\n")
 		case "status":
@@ -124,6 +127,48 @@ func TestStageBuildsPairedReleaseFromReadOnlySourceCopy(t *testing.T) {
 	}
 	if status.Current != nil || status.Previous != nil || len(status.Staged) != 1 || status.Staged[0].ID != release.ID {
 		t.Fatalf("status after staging=%+v", status)
+	}
+}
+
+func TestImportArtifactsFromSourceRecordsExactDirtyProvenance(t *testing.T) {
+	source := makeSource(t)
+	binary := filepath.Join(t.TempDir(), "pk")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ui := filepath.Join(t.TempDir(), "ui")
+	if err := os.MkdirAll(filepath.Join(ui, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ui, "dist", "main.js"), []byte("// fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ui, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{revision: "cafe123", dirtyStatus: " M cmd/pk/main.go\n", remoteURL: "https://build-user:supersecret@github.com/pkyanam/pk.git?access_token=also-secret#private"}
+	manager := Manager{Root: filepath.Join(t.TempDir(), "lib", "pk"), Runner: runner}
+	t.Cleanup(func() { makeTreeWritable(t, manager.Root) })
+	release, err := manager.ImportArtifactsFromSource(context.Background(), binary, ui, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, err := hashSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release.Revision != "cafe123" || !release.DirtyKnown || !release.Dirty || release.Source != "https://github.com/pkyanam/pk.git" || release.GitRepository != release.Source || release.SourceHash != wantHash || len(release.SourceHash) != 64 {
+		t.Fatalf("source metadata=%+v; want sanitized repository, revision, dirty state, and matching hash", release)
+	}
+	if strings.Contains(release.Source, "secret") || strings.Contains(release.GitRepository, "secret") {
+		t.Fatalf("repository credentials leaked into metadata: %+v", release)
+	}
+	loaded, err := manager.release(release.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != release.Revision || loaded.Dirty != release.Dirty || loaded.SourceHash != release.SourceHash {
+		t.Fatalf("persisted provenance=%+v differs from release %+v", loaded, release)
 	}
 }
 
