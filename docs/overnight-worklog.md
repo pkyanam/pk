@@ -891,3 +891,12 @@ User supplied the official GLM-5.3-Flash model page with a 1,310,720-token conte
 - The reproducible cold build completed using private pinned Bun 1.4.1 and Zig 0.16.0, with unchanged upstream lockfile. A production dependency reinstall preserved the patched native package. Binary release users do not download these build toolchains.
 - Generated-image cards now persist independently of assistant prose; an assistant link to the same image keeps a compact original-file link without remounting the bitmap. Preview captions/actions have softer contrast and vertical spacing. The latest four generated images receive previews; older artifacts keep original-file links.
 - Slash-menu navigation now separates the visible window from hover selection and handles mouse-wheel events. This prevents hover-induced window shifts and adds scrolling beyond the initial six commands.
+
+### v0.1.14 published verification
+
+- Source: `2f159751303e78352ec361a4d1d371572bd61664`; backend/native build checkpoint `41f2d8c`; context-capacity checkpoint `44d4729`.
+- Local checks: full Go suite and vet, affected runner/RPC race suite, UI typecheck/build, and 209 UI tests passed. Native upstream image/Kitty tests: 47 passed, one skipped.
+- CI `35928059356` passed all jobs; paired release `35928060154` passed on macOS arm64 and Linux amd64. A duplicate tag-triggered CI run was intentionally canceled; the identical source revision passed the main-triggered CI run.
+- Downloaded the GitHub macOS archive, verified its SHA-256 and bundled native source/binary provenance, installed into `/tmp/pk-v0114-verify`, and launched the installed CLI in a 120×36 PTY (composer present, clean exit). Its actual RPC restored one image card from a private copy of the user's existing saved image session, with no model call.
+- macOS archive SHA-256: `a182304a359b4d1480550d0d39a22659e319f8877c6e9dcc596d6f5b9794a24c`; Linux: `017163665dbd790c8d90406a61108ae1a0740d2d2fb4df30abb03bbfffae582a`.
+- Published https://github.com/pkyanam/pk/releases/tag/v0.1.14. User installation and running sessions were not replaced; update remains user-triggered with `pk update`.
