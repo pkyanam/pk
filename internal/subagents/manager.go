@@ -203,10 +203,12 @@ func (m *Manager) Launch(ctx context.Context, req LaunchRequest) (Child, error) 
 	now := time.Now().UTC()
 	c := &child{info: Child{ID: id, RequestID: req.RequestID, State: "running", Task: task, Files: files, Model: choose(req.Model, m.cfg.Model), Effort: choose(req.Effort, m.cfg.Effort), StartedAt: now, UpdatedAt: now}, ctx: childCtx, cancel: cancel, inputs: make(chan runner.Input, 64), done: make(chan struct{}), final: make(chan struct{})}
 	m.children[id] = c
+	initial := c.info
+	initial.Files = append([]string(nil), c.info.Files...)
 	m.mu.Unlock()
 	m.emit(Event{Type: "subagent", ChildID: id, RequestID: req.RequestID, State: "running", Text: "Child started"})
 	go m.run(c)
-	return c.info, nil
+	return initial, nil
 }
 
 func (m *Manager) run(c *child) {
