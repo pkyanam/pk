@@ -862,11 +862,7 @@ func writeResults(directory string, result suite) error {
 
 func writeMarkdown(path string, result suite) error {
 	var out strings.Builder
-	upstream := "Unreal Agent " + result.Unreal
-	if result.Experiment != "" {
-		upstream = "not used (pk-only policy experiment)"
-	}
-	fmt.Fprintf(&out, "# pk coding-task pilot\n\n- Started: %s\n- Model: `%s` / `%s`\n- Repetitions: %d\n- Per-phase timeout: %s\n- pk source revision: `%s`\n- Upstream baseline: %s\n- Runtime: %s %s/%s\n", result.StartedAt.Format(time.RFC3339), result.Model, result.Effort, result.Repetitions, result.Timeout, result.PKRevision, upstream, result.GoVersion, result.GOOS, result.GOARCH)
+	fmt.Fprintf(&out, "# pk coding-task pilot\n\n- Started: %s\n- Model: `%s` / `%s`\n- Repetitions: %d\n- Per-phase timeout: %s\n- pk source revision: `%s`\n- Upstream baseline: Unreal Agent %s\n- Runtime: %s %s/%s\n", result.StartedAt.Format(time.RFC3339), result.Model, result.Effort, result.Repetitions, result.Timeout, result.PKRevision, result.Unreal, result.GoVersion, result.GOOS, result.GOARCH)
 	if result.Experiment != "" {
 		fmt.Fprintf(&out, "- Experiment: %s\n- Source tree SHA-256: `%s`\n- Tracked diff SHA-256: `%s`\n", result.Experiment, result.SourceTreeSHA256, result.GitDiffSHA256)
 	}
@@ -875,9 +871,6 @@ func writeMarkdown(path string, result suite) error {
 		if result.ReplayCompactionExperiment {
 			fmt.Fprintln(&out, "Both arms use the production CLI, prompt, model and effort, empty skills, and identical Git-initialized task fixtures. The treatment compacts completed Bash result text over the 4096-byte threshold once, at translation, to a 768-rune head and tail, exact existing stdout/stderr capture paths, and exit code. It falls back to the original result if no capture file exists. The fixtures request ordinary verbose Go test output; they do not pad streams or modify tool output limits. Per-run eligible/compacted counts verify treatment exposure. Stored result bytes are a manipulation check only: provider-reported input, cached-input, output tokens and wall time are the efficiency measures. Holdout tests are restored from pristine fixtures after each run. Small stochastic results are descriptive and do not establish general task quality or cache savings.")
 			fmt.Fprintln(&out, "\n| Engine | Task | Rep | Phase | Responses | Input | Uncached input | Output | Cached | Eligible / compacted | Result bytes (before / stored) | Missing captures | Wall ms | Correct |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|")
-		} else if result.EffortAblationExperiment {
-			fmt.Fprintln(&out, "Both arms use the same Luna model, product CLI, system prompt, full tool-output context policy, prompts, empty skills, and Git-initialized fixtures. The only planned treatment is reasoning effort (low vs medium), applied consistently to each task's new session and resumed verification. Provider-reported input, cached-input, and output tokens are reported separately; cached input is included in total input and is not a separate cost measure. Correctness is checked against pristine holdout tests. This two-repetition pilot is small and stochastic; it does not establish a generally better effort setting or justify changing the product default.")
-			fmt.Fprintln(&out, "\n| Effort arm | Task | Rep | Phase | Responses | Input | Uncached input | Output | Cached | Wall ms | Correct |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|:---:|")
 		} else if result.ToolSchemaExperiment {
 			fmt.Fprintln(&out, "Both arms use the product CLI, system prompt, model and effort, task prompts, empty skills, and matching Git-initialized fixtures. The treatment shortens selected static tool descriptions while preserving tool names, translators, parameter types, constraints, and defaults. UTF-8 description-byte metrics are measured from the actual registry definitions; provider-reported usage is the token measure. Input/output/cache counters come from each model response, with uncached input shown only when input and cached counts are available. Correctness is checked against pristine holdout tests, and generated production Go files are archived as `.go.txt` files. This paired experiment measures only these tasks and this description treatment.")
 			fmt.Fprintln(&out, "\n| Engine | Task | Rep | Phase | Responses | Input | Uncached input | Output | Cached | Description bytes (before / after) | Fields changed | Wall ms | Correct |\n|---|---|---:|---|---:|---:|---:|---:|---:|---|---:|---:|:---:|")
@@ -910,9 +903,7 @@ func writeMarkdown(path string, result suite) error {
 		}
 		if result.Experiment != "" {
 			uncached := displayToken(record.UncachedInputTokens, record.UncachedInputAvailable)
-			if result.EffortAblationExperiment {
-				fmt.Fprintf(&out, "| %s (%s) | %s | %d | %s | %d | %s | %s | %s | %s | %d | %s |\n", record.Engine, record.Effort, record.Task, record.Repetition, record.Phase, record.ModelResponses, input, uncached, output, cached, record.WallMS, correct)
-			} else if result.ReplayCompactionExperiment {
+			if result.ReplayCompactionExperiment {
 				eligible, bytes, missing := "—", "—", "—"
 				if record.ReplayMetricsAvailable {
 					eligible = fmt.Sprintf("%d / %d", record.ReplayEligibleResults, record.ReplayCompactedResults)

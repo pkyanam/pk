@@ -1,0 +1,36 @@
+package webhook
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+)
+
+// Event is the signed, durable envelope accepted by the webhook endpoint.
+type Event struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// Validate checks that an event has a usable identity and exactly one JSON object payload.
+func (event Event) Validate() error {
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.Type) == "" {
+		return errors.New("event id and type are required")
+	}
+	payload := bytes.TrimSpace(event.Payload)
+	if len(payload) == 0 || payload[0] != '{' {
+		return errors.New("event payload must be a JSON object")
+	}
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return errors.New("event payload must be a JSON object")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return errors.New("event payload must contain exactly one JSON value")
+	}
+	return nil
+}
