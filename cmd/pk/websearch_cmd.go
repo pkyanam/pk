@@ -32,7 +32,7 @@ func runWebCommand(_ context.Context, args []string, input io.Reader, out, errOu
 		}
 		if !status["configured"].(bool) {
 			fmt.Fprintln(out, "TinyFish Search/Fetch: not configured.")
-			fmt.Fprintln(out, "Run `pk web setup` for the private setup flow, or set TINYFISH_API_KEY before launching pk.")
+			fmt.Fprintln(out, "Run `pk web setup` for setup options, or configure a TinyFish API key directly.")
 			return 0
 		}
 		fmt.Fprintf(out, "TinyFish Search/Fetch: configured via %s (credential hidden; validity not checked).\n", status["source"])
@@ -43,8 +43,8 @@ func runWebCommand(_ context.Context, args []string, input io.Reader, out, errOu
 			webUsage(errOut)
 			return 2
 		}
-		fmt.Fprintln(out, "Create a TinyFish API key from https://tinyfish.ai, then run `pk web configure` to enter it without echo.")
-		fmt.Fprintln(out, "Keys are stored in ~/.pk/websearch.json with owner-only permissions. The TINYFISH_API_KEY environment variable takes precedence.")
+		fmt.Fprintln(out, "Configure Monid CLI (`monid keys list` must show an active key) or create a TinyFish API key and run `pk web configure` to enter it without echo.")
+		fmt.Fprintln(out, "Direct TinyFish keys are stored in ~/.pk/websearch.json with owner-only permissions. TINYFISH_API_KEY takes precedence over Monid.")
 		fmt.Fprintln(out, "Check setup with `pk web status`. Clear the pk-managed key with `pk web clear`.")
 		return 0
 	case "configure":
@@ -85,15 +85,16 @@ func runWebCommand(_ context.Context, args []string, input io.Reader, out, errOu
 }
 
 func webStatusPayload() (map[string]any, error) {
-	key, source, err := websearch.ResolveAPIKey(pkHome())
+	config, source, err := resolveWebSearchConfig(context.Background())
 	if err != nil {
 		return nil, errors.New("could not inspect TinyFish configuration")
 	}
+	configured := config.Backend != nil || strings.TrimSpace(config.APIKey) != ""
 	return map[string]any{
-		"configured":                    key != "",
+		"configured":                    configured,
 		"source":                        source,
-		"tools_enabled":                 key != "",
-		"tools_enabled_for_new_session": key != "",
+		"tools_enabled":                 configured,
+		"tools_enabled_for_new_session": configured,
 		"credential_validity":           "not_checked",
 	}, nil
 }

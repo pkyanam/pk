@@ -1,9 +1,8 @@
 package main
 
 import (
+	"context"
 	"errors"
-
-	"github.com/pkyanam/pk/internal/websearch"
 )
 
 func (s *rpcServer) webMutationAllowed() error {
@@ -16,11 +15,11 @@ func (s *rpcServer) webMutationAllowed() error {
 }
 
 func rpcWebStatusPayload() (map[string]any, error) {
-	key, source, err := websearch.ResolveAPIKey(pkHome())
+	config, source, err := resolveWebSearchConfig(context.Background())
 	if err != nil {
 		return nil, errors.New("could not inspect TinyFish configuration")
 	}
-	configured := key != ""
+	configured := config.Backend != nil || config.APIKey != ""
 	note := "Web tools are available to new sessions; credential validity has not been checked."
 	if !configured {
 		note = "Web tools are unavailable until a TinyFish key is configured."

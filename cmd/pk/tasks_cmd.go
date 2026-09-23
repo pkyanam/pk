@@ -209,7 +209,7 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 			defer closer.Close()
 		}
 		o.Adapter = client
-		if _, err := configureCLIExtensions(ctx, &o, nil, nil, diagnostics, tinyFishRegistryExtension()); err != nil {
+		if _, err := configureCLIExtensions(ctx, &o, nil, nil, diagnostics, tinyFishRegistryExtension(ctx)); err != nil {
 			return err
 		}
 		mcpHost, err := configureCLIMCP(ctx, &o, diagnostics)

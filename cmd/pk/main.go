@@ -155,7 +155,7 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		imageConfig := imagegen.Config{Driver: imageDriver, Effort: "low", CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME"))}
 		imageExtension = append(imageExtension, cliRegistryExtension{Decorate: imagegen.Decorator(imageConfig, options.Workspace), RemoteJobHandlers: imagegen.HandlerFactory(imageConfig, options.Workspace)})
 	}
-	imageExtension = append(imageExtension, tinyFishRegistryExtension())
+	imageExtension = append(imageExtension, tinyFishRegistryExtension(ctx))
 	host, err := configureCLIExtensions(ctx, &options, extensionPaths, nil, stderr, imageExtension...)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk run: load extensions: %v\n", err)
@@ -241,7 +241,7 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 	options.Output = stdout
 	options.Diagnostics = stderr
 	options.ToolEvents = true
-	if _, err := configureCLIExtensions(ctx, &options, nil, nil, stderr, tinyFishRegistryExtension()); err != nil {
+	if _, err := configureCLIExtensions(ctx, &options, nil, nil, stderr, tinyFishRegistryExtension(ctx)); err != nil {
 		fmt.Fprintf(stderr, "pk: load web tools: %v\n", err)
 		return 1
 	}

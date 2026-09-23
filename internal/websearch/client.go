@@ -30,6 +30,14 @@ const (
 type Config struct {
 	APIKey     string
 	HTTPClient *http.Client
+	Backend    SearchFetchClient
+}
+
+// SearchFetchClient is implemented by the direct TinyFish API client and the
+// Monid CLI bridge. The latter keeps Monid credentials inside the CLI store.
+type SearchFetchClient interface {
+	Search(context.Context, string) ([]SearchResult, error)
+	Fetch(context.Context, []string) (FetchResponse, error)
 }
 
 type Client struct {

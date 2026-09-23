@@ -723,7 +723,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				s.mu.Unlock()
 				_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
 			}
-			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics, tinyFishRegistryExtension())
+			host, err := configureRPCPluginSession(broker.Context(), &opts, pluginPaths, broker, s.diagnostics, tinyFishRegistryExtension(broker.Context()))
 			if err != nil {
 				finished <- turnDone{id: msg.ID, err: fmt.Errorf("load session plugins: %w", err)}
 				return

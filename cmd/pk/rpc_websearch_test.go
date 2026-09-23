@@ -14,6 +14,7 @@ func TestRPCWebCredentialRoutesAreSanitizedAndIdleOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PK_HOME", home)
 	t.Setenv("TINYFISH_API_KEY", "")
+	t.Setenv("PATH", t.TempDir())
 	sink := &rpcEventSink{events: make(chan []byte, 8)}
 	server := &rpcServer{ctx: context.Background(), output: sink, diagnostics: io.Discard, requestTypes: map[string]string{}}
 	finished := make(chan turnDone, 1)
