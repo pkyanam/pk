@@ -607,3 +607,9 @@ gates or imply that every backlog item is complete.
 
 - Bounded Luna-low capture completed clamp and intervals with both holdout checks passing. All 11 responses correlated; totals 29,717 input / 13,824 cached / 774 output tokens. This was pk-only, one repetition, not a comparative gain.
 - Large tool-result growth followed Git usage errors in non-repository fixtures and persisted on resume. Saved count-only captures, sanitized traces and analysis under benchmarks/results/context-capture-luna-low-20260923. Next experiment should target unnecessary Git-error context while preserving useful errors and real-repository behavior.
+
+### Post-handoff — workspace Git awareness candidate
+
+- Fresh sessions now receive a concise not-inside-work-tree fact only after a bounded Git probe confirms it. Missing Git, malformed metadata and timeout remain unknown; inherited Git discovery variables are excluded. Bare repositories are described as not inside a work tree.
+- Runner race suite passes. Independent regression failed before the change and now verifies a resumed prefix remains byte-identical after git init while a fresh session updates. Five local probe iterations averaged 12.74ms on M3 (small shared-machine sample); timeout is 500ms plus bounded process drain.
+- This candidate has not yet established lower token usage and is not installed in the production release.
