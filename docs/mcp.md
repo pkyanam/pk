@@ -1,0 +1,13 @@
+# MCP server support
+
+pk can load explicitly configured Model Context Protocol servers over stdio. It uses the official [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk) for initialization, tool discovery, calls, protocol framing, cancellation, and shutdown. The first implementation supports stdio only.
+
+pk does not search a workspace or repository for MCP configuration and does not launch servers found there. The caller passes a trusted server list to `internal/mcpclient.NewHost`. Each entry requires an absolute executable path and may include arguments, explicit environment overrides, and an explicit working directory. With no working directory, the child starts from the user's home directory. The child receives a small baseline environment (`PATH`, `HOME`, temporary-directory variables, and platform essentials) plus the configured overrides; it does not inherit arbitrary process variables such as API keys by default.
+
+Each connected server's tools are discovered during host setup. pk exports a stable, namespaced tool name of the form `mcp_<server-id>_<tool>_<hash>`, sorts the catalog, and omits conflicting exports instead of shadowing built-in tools. The tool input schema and description are bounded before they reach the model. Server tool calls run asynchronously through the harness operation manager and receive the call's cancellation context.
+
+Text result content is returned to the model with a 256 KiB total text limit. Non-text result blocks are reported as unsupported content metadata rather than silently discarded or represented as delivered image data. Calls have a two-minute timeout. Initialization is bounded to 20 seconds; tool listing is limited to 256 tools per server and 64 KiB per schema. Server stderr is not included in model-visible results.
+
+MCP servers execute with the operating-system permissions of pk. Configuration is an explicit trust decision, not a sandbox or permission boundary. The current host does not support HTTP transports, prompts/resources, server-side elicitation, dynamic tool-list refresh after initialization, or passing image/audio result blocks through to the model. Shutdown closes stdio and allows the SDK to terminate an unresponsive child after a short grace period.
+
+The official MCP stdio binding specifies newline-delimited JSON-RPC over stdin/stdout, reserves stdout for protocol messages, and defines cancellation through `notifications/cancelled`; see the [stdio specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio). The SDK client exposes `Connect`, paginated `Tools`/`ListTools`, and `CallTool`; see its [client documentation](https://github.com/modelcontextprotocol/go-sdk/blob/main/docs/client.md).
