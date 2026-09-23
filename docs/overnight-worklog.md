@@ -681,3 +681,10 @@ gates or imply that every backlog item is complete.
 - Connection and authentication selectors now have explicit previous/next mouse buttons using the same behavior as arrow keys. Eleven renderer tests cover navigation and an 80×24 longest-auth form with visible Save/Cancel and ignored right-click.
 - Updated clipboard help to describe the native copy path, and removed stale current-release labels from the checklist.
 - A bounded Luna audit found no additional clipboard/modal/turn-completion focus bug. The original native freeze remains unconfirmed; this installment does not claim to fix it.
+
+### 09:59 EDT — ACP inline images installed
+
+- Installed clean b263a48 as 20260923T135842.276791000Z-69cbb8dd8335-343d5080 after full managed Go/UI/build validation. Installed `pk acp` initialization confirms image capability. Existing running sessions were untouched.
+- ACP inline images use private per-input artifacts and the existing ViewImage tool path; this is not native image parts in the initial provider request. Mixed block order survives process restart via bounded, prompt-hash-bound metadata. Archive/restore/purge includes the artifacts.
+- Limits: eight images and 2 MiB decoded bytes / 32M pixels per prompt, eight image-bearing active turns, existing 4 MiB JSON-line cap. Validation/replay reject malformed or mismatched data and unsafe artifact paths; pre-persist failure cleans only the current input.
+- Focused ACP/CLI race tests and attachment/session-manager race tests pass. Official ACP SDK loopback smoke verifies input, real CLI ViewImage execution, image content delivered to Chat Completions, and exact image replay after another restart. No paid model calls. Remote provider vision and named editor interoperability remain unverified.
