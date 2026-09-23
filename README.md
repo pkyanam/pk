@@ -44,7 +44,7 @@ Tasks have durable output and can be attached to, steered, canceled, or resumed.
 - **Choose a model connection.** ChatGPT/Codex is the built-in provider. Add OpenAI-compatible Responses or Chat Completions endpoints, inspect their model lists, and select a provider for new sessions.
 - **Stay in control of your session.** Context snapshots preserve the instructions, skills, and tool schemas a session started with. Provider usage and cache counters are shown when the provider reports them.
 - **Update from the terminal.** Run `pk update` or use `/update`, then roll back if needed. Selecting transcript text copies it when your terminal supports clipboard writes; Ctrl-Y is the fallback.
-- **Private by default.** pk collects no first-party usage analytics or crash reports; provider and enabled-tool requests happen when you use them. See [privacy and data handling](docs/privacy.md).
+- **No first-party telemetry.** pk operates no usage-analytics or crash-reporting service; provider and enabled-tool requests happen when you use them. See [privacy and data handling](docs/privacy.md).
 
 The default model is `gpt-6-luna` with `medium` reasoning effort. Change it with `pk config set model MODEL` and `pk config set effort EFFORT`. The default context policy is `full`; `pk config set context-policy compact` opts into compacting large completed Bash results in the model-visible context while preserving their local captures. This policy is snapshot-bound for a session and does not promise lower total usage.
 

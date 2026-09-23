@@ -1,6 +1,6 @@
 # pk launch copy — review drafts
 
-These drafts describe implemented pk behavior at `0e6947c`. They are for review only and have not been posted.
+These drafts describe shipped pk behavior. They are for review only and have not been posted.
 
 ## Short post options
 
