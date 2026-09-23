@@ -243,9 +243,11 @@ func (h *remoteHandler) execute(ctx context.Context, id operation.ID, item *job,
 	if canceled {
 		step, err = operation.CancelRemoteJob(item.op)
 	} else if runErr != nil {
-		step, err = operation.FailRemoteJob(item.op, runErr)
+		safeErr := h.host.redactForTool(plan.Name, runErr.Error())
+		step, err = operation.FailRemoteJob(item.op, errors.New(safeErr))
 	} else {
 		outputs := contentToOutputs(result)
+		outputs = h.host.redactOutputsForTool(plan.Name, outputs)
 		encoded, marshalErr := json.Marshal(outputs)
 		if marshalErr != nil {
 			step, err = operation.FailRemoteJob(item.op, marshalErr)

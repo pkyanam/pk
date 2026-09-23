@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
 
 const (
@@ -164,7 +165,7 @@ func connectHTTPServer(ctx context.Context, config ServerConfig) (*server, []Too
 	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	if config.Auth.Mode == "oauth" {
-		oauthHandler, listener, authClient, err := newOAuthHandler(config)
+		oauthHandler, listener, authClient, err := newOAuthHandler(ctx, config)
 		if err != nil {
 			client.CloseIdleConnections()
 			return nil, nil, err
@@ -278,6 +279,93 @@ func (h *Host) tool(name string) (Tool, bool) {
 	}
 	tool, ok := h.tools[name]
 	return tool, ok
+}
+
+// redactForTool removes only credential values configured for the MCP server
+// that owns this tool before remote output is persisted or returned to a model.
+func (h *Host) redactForTool(name, text string) string {
+	if h == nil || text == "" {
+		return text
+	}
+	h.mu.RLock()
+	tool, ok := h.tools[name]
+	if !ok {
+		h.mu.RUnlock()
+		return text
+	}
+	srv := h.servers[tool.ServerID]
+	if srv == nil {
+		h.mu.RUnlock()
+		return text
+	}
+	config := srv.config
+	h.mu.RUnlock()
+	for _, secret := range configuredCredentials(config) {
+		text = strings.ReplaceAll(text, secret, "[redacted]")
+	}
+	return text
+}
+
+func configuredCredentials(config ServerConfig) []string {
+	var values []string
+	add := func(value string) {
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	switch config.Auth.Mode {
+	case "bearer_env":
+		if value, ok := os.LookupEnv(config.Auth.BearerEnv); ok {
+			add(strings.TrimSpace(value))
+		}
+	case "header_env":
+		if value, ok := os.LookupEnv(config.Auth.HeaderValueEnv); ok {
+			add(value)
+		}
+	case "bearer_secret":
+		add(strings.TrimSpace(config.Auth.SecretValue))
+	case "header_secret":
+		add(config.Auth.SecretValue)
+	case "oauth":
+		addOAuthSession := func(raw string) {
+			if stored, err := oauthSessionFrom(raw); err == nil && stored != nil {
+				add(stored.Token.AccessToken)
+				add(stored.Token.RefreshToken)
+				add(stored.Config.ClientSecret)
+			}
+		}
+		addOAuthSession(config.Auth.SecretValue)
+		// A refresh may rotate tokens after the host was created. Consult the
+		// private store as well as the initial snapshot before persisting output.
+		if config.SecretStoreHome != "" && config.Auth.SecretRef != "" {
+			if current, err := (ConfigStore{Home: config.SecretStoreHome}).OAuthSession(config.Auth.SecretRef); err == nil && current != config.Auth.SecretValue {
+				addOAuthSession(current)
+			}
+		}
+	}
+	return values
+}
+
+func (h *Host) redactOutputsForTool(name string, outputs []llm.ToolResultOutput) []llm.ToolResultOutput {
+	if len(outputs) == 0 {
+		return outputs
+	}
+	var joined strings.Builder
+	for _, output := range outputs {
+		joined.WriteString(output.Value)
+	}
+	combined := joined.String()
+	redacted := h.redactForTool(name, combined)
+	if redacted != combined {
+		// A server can split a credential across adjacent text blocks. Collapse
+		// only when a cross-block redaction changed the joined text; otherwise
+		// preserve the original per-block boundaries.
+		return []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: redacted}}
+	}
+	for i := range outputs {
+		outputs[i].Value = h.redactForTool(name, outputs[i].Value)
+	}
+	return outputs
 }
 
 func (h *Host) call(ctx context.Context, name string, args map[string]any) (*mcp.CallToolResult, error) {

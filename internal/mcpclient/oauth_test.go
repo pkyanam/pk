@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,5 +100,64 @@ func TestOAuthStatusRequiresStoredSession(t *testing.T) {
 	summary, err = store.Summaries()
 	if err != nil || summary[0].AuthStatus != "needs_login" {
 		t.Fatalf("after logout=%#v err=%v", summary, err)
+	}
+}
+
+func TestStoredOAuthRefreshUsesCallerCancellation(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.NotFound(w, r)
+			return
+		}
+		started <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"unexpected","token_type":"Bearer","expires_in":3600}`))
+		}
+	}))
+	defer server.Close()
+	raw, err := json.Marshal(oauthSession{
+		Config: oauth2.Config{ClientID: "fixture-client", Endpoint: oauth2.Endpoint{TokenURL: server.URL + "/token"}},
+		Token:  oauth2.Token{AccessToken: "expired-access", RefreshToken: "refresh-fixture", Expiry: time.Now().Add(-time.Minute)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	config := ServerConfig{ID: "remote", URL: "https://example.test/mcp", Auth: HTTPAuthConfig{Mode: "oauth", SecretRef: "fixture-ref", SecretValue: string(raw)}, SecretStoreHome: t.TempDir()}
+	handler, listener, client, err := newOAuthHandler(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listener != nil {
+		t.Fatal("non-login OAuth handler unexpectedly opened a callback listener")
+	}
+	defer client.CloseIdleConnections()
+	source, err := handler.TokenSource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, tokenErr := source.Token()
+		result <- tokenErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("OAuth refresh request did not start")
+	}
+	cancel()
+	select {
+	case tokenErr := <-result:
+		if tokenErr == nil || !strings.Contains(tokenErr.Error(), "context canceled") {
+			t.Fatalf("refresh result error=%v; want caller cancellation", tokenErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OAuth refresh did not stop after caller cancellation")
 	}
 }

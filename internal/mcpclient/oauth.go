@@ -35,8 +35,11 @@ func oauthSessionFrom(raw string) (*oauthSession, error) {
 	return &session, nil
 }
 
-func newOAuthHandler(config ServerConfig) (auth.OAuthHandler, net.Listener, *http.Client, error) {
-	oauthClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func newOAuthHandler(ctx context.Context, config ServerConfig) (auth.OAuthHandler, net.Listener, *http.Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	oauthClient := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	var listener net.Listener
 	redirectURL := "http://127.0.0.1:37891/oauth/callback"
 	var fetcher auth.AuthorizationCodeFetcher
@@ -70,7 +73,7 @@ func newOAuthHandler(config ServerConfig) (auth.OAuthHandler, net.Listener, *htt
 			oauthClient.CloseIdleConnections()
 			return nil, nil, nil, err
 		}
-		tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, oauthClient)
+		tokenCtx := context.WithValue(ctx, oauth2.HTTPClient, oauthClient)
 		initial = &persistingTokenSource{source: stored.Config.TokenSource(tokenCtx, &stored.Token), config: stored.Config, token: &stored.Token, save: func(updated oauthSession) error { return saveOAuthSession(config, updated) }}
 		if !config.OAuthLogin && !stored.Token.Valid() { /* TokenSource can refresh; leave it available to the SDK. */
 		}

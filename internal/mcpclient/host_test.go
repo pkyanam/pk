@@ -2,7 +2,10 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -324,6 +327,80 @@ func TestRegistrySubmitsAsyncMCPCallAndTranslatesResult(t *testing.T) {
 	if len(result.Output) != 1 || result.Output[0].Value != "echo:async" {
 		t.Fatalf("tool result = %#v", result)
 	}
+}
+
+func TestAuthenticatedRemoteToolOutputRedactsExactCredentialBeforePersistence(t *testing.T) {
+	const secret = "fixture-secret-that-server-echoes"
+	server := mcp.NewServer(&mcp.Implementation{Name: "echo-auth", Version: "1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "echo_auth", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}}, func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, any, error) {
+		middle := len(secret) / 2
+		return &mcp.CallToolResult{Content: []mcp.Content{
+			&mcp.TextContent{Text: "Authorization: Bearer " + secret[:middle]},
+			&mcp.TextContent{Text: secret[middle:]},
+		}, IsError: true}, nil, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
+			t.Errorf("authorization header=%q", got)
+		}
+		return server
+	}, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+	store := ConfigStore{Home: t.TempDir()}
+	if err := store.AddWithSecret(ServerConfig{ID: "echo", URL: httpServer.URL + "/mcp"}, "bearer", secret); err != nil {
+		t.Fatal(err)
+	}
+	configs, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, report, err := NewHost(t.Context(), configs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if len(report.Loaded) != 1 || len(host.Tools()) != 1 {
+		t.Fatalf("report=%+v tools=%+v", report, host.Tools())
+	}
+	toolItem := host.Tools()[0]
+	decorated, issues := DecorateRegistry(tool.NewRegistry(tool.StaticTranslators{}), host)
+	if len(issues) != 0 {
+		t.Fatalf("decorate issues=%v", issues)
+	}
+	translator, ok := decorated.Resolve(toolItem.Name)
+	if !ok {
+		t.Fatalf("missing translator %q", toolItem.Name)
+	}
+	callCtx := &submitContext{}
+	status := translator.Translate(callCtx, llm.ToolCall{CallID: "call-auth", Name: toolItem.Name, Arguments: `{}`})
+	if status.Error != "" || len(status.WaitingFor) != 1 {
+		t.Fatalf("translate status=%+v", status)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	remoteHandler := host.RemoteJobHandlers(ctx)[0]
+	op := operation.Operation{ID: "op-auth-redact", Type: callCtx.spec.Type, Version: callCtx.spec.Version, Status: operation.StatusReady, State: callCtx.spec.State, MaxOutputLength: callCtx.spec.MaxOutputLength}
+	if err := remoteHandler.AddRemoteJob(op); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitForCompleted(t, remoteHandler.RemoteJobUpdates())
+	encoded, err := json.Marshal(completed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatalf("operation persisted echoed credential: %s", encoded)
+	}
+	result, err := translator.TranslateResult("call-auth", status, []operation.Operation{completed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Output) != 1 || result.Output[0].Value != "MCP tool reported an error: Authorization: Bearer [redacted]" {
+		t.Fatalf("model-visible output=%+v", result.Output)
+	}
+	cancel()
+	remoteHandler.(interface{ Wait() }).Wait()
 }
 
 func waitForCompleted(t *testing.T, updates <-chan operation.Operation) operation.Operation {
