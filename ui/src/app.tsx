@@ -160,6 +160,10 @@ function shortChildID(id: string) {
   return id.length <= 10 ? id : id.slice(0, 8)
 }
 
+function composerShouldBeFocused(selectorOpen: boolean, sessionManagerOpen: boolean, mcpManagerOpen: boolean, pluginSourceModalOpen: boolean) {
+  return !selectorOpen && !sessionManagerOpen && !mcpManagerOpen && !pluginSourceModalOpen
+}
+
 function compactSkillSource(source: string, path: string) {
   try {
     const url = new URL(source)
@@ -535,6 +539,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       pendingClipboardWrites.current.set(id, text)
       setCopyNotice("Copying…")
     } else fallbackClipboardCopy(text)
+    // Copying a drag selection can leave terminal focus on the transcript.
+    // Restore the input only after the selected text has been captured.
+    if (composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) textarea.current?.focus()
   }
 
   useSelectionHandler((selection) => {
@@ -2675,7 +2682,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea id="composer" ref={textarea} focused={!selector && !sessionManagerOpen && !mcpManagerOpen && !pluginSourceModalOpen} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea id="composer" ref={textarea} focused={composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)} placeholder={question ? "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {

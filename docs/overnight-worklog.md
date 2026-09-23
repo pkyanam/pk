@@ -554,3 +554,8 @@ gates or imply that every backlog item is complete.
 - Opt-in `run_start`, `response_complete`, and `run_end` notifications expose metadata only. Process workers use bounded one-way delivery; slow observers no longer time out the tool response channel. Shutdown queue accounting and invalid feature negotiation have regression coverage. Delivery remains best effort, not an audit-log guarantee.
 - The run-observer example passed a real subprocess handshake/event smoke without a provider request. The configured AgentMail checkout worker was rebuilt to include the exact-ID fixes, without reading private email or interrupting existing workers.
 - Next active checks: composer focus after selecting/copying responses, and redundant validation reads on cold session attachment. Overall benchmark superiority remains unproven.
+
+### Next checkpoint — copy focus and cold session lookup
+
+- `Manager.Get` now reuses its first validated snapshot instead of decoding the log a third time. Cache eligibility is captured before Inspect and checked again after Items, so concurrent file changes cannot populate the cache using a newer baseline. Race tests pass. The 128 KiB cold fixture measured 1.53 ms and 1.42 MB per lookup in root verification versus 2.31 ms and 2.10 MB before; allocation count rose from 312 to 372.
+- A renderer regression reproduces loss of composer focus after a delayed response and transcript copy; the proposed fix restores focus only when no setup modal owns input. Root's native pre-fix check on a restored Cmux demo session accepted typing after copy, so this does not establish the original full freeze's cause. No provider request was made for that native check.

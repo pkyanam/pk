@@ -695,6 +695,50 @@ describe("OpenTUI application", () => {
     expect(composer.plainText).toBe("")
   })
 
+  test("returns to typing after a long response gap, final output, and transcript copy", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+
+    await act(async () => { await setup.mockInput.typeText("Do the slow task") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const firstPrompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: firstPrompt.id, type: "turn_started", payload: {} }))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)) })
+    await setup.flush()
+    expect(setup.captureCharFrame()).toMatch(/Waiting for model · [1-9]s/)
+
+    act(() => fake.emit({ version: 1, id: firstPrompt.id, type: "assistant", payload: { text: "Delayed answer: all done." } }))
+    act(() => fake.emit({ version: 1, id: firstPrompt.id, type: "turn_finished", payload: { session_id: "slow-session" } }))
+    const answerFrame = await setup.waitForFrame((frame) => frame.includes("Delayed answer: all done.") && frame.includes("Ready"))
+    const answerRow = answerFrame.split("\n").findIndex((line) => line.includes("Delayed answer: all done."))
+    const answerColumn = answerFrame.split("\n")[answerRow]!.indexOf("Delayed answer")
+    const selectionEnd = answerColumn + "Delayed answer: all done.".length - 1
+    await act(async () => {
+      await setup.mockMouse.pressDown(answerColumn, answerRow)
+      await setup.mockMouse.moveTo(selectionEnd, answerRow)
+      await setup.mockMouse.release(selectionEnd, answerRow)
+    })
+    await setup.flush()
+    const copy = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)!
+    expect(copy.payload?.text).toContain("Delayed answer: all done.")
+    act(() => fake.emit({ version: 1, id: copy.id, type: "clipboard_written", payload: { bytes: 25 } }))
+    await setup.flush()
+
+    const composer = (setup.renderer.root as any).findDescendantById("composer")
+    await act(async () => { await setup.mockInput.typeText("Follow-up after copy") })
+    await setup.flush()
+    expect(composer.plainText).toBe("Follow-up after copy")
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompts = fake.sent.filter((item) => item.type === "prompt")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]?.payload?.text).toBe("Follow-up after copy")
+  })
+
   test("queues a steering message on the active turn and updates its delivery state without resetting progress", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
@@ -1691,6 +1735,32 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Copied to clipboard")
     expect(setup.captureCharFrame()).toContain("Copy this βeta text")
+  })
+
+  test("copying a transcript selection does not take focus from an open selector", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, type: "assistant", payload: { text: "Text remains behind the selector." } }))
+    await setup.waitForFrame((frame) => frame.includes("Text remains behind the selector."))
+    await act(async () => { await setup.mockInput.typeText("/model") })
+    act(() => setup.mockInput.pressEnter())
+    const selectorFrame = await setup.waitForFrame((frame) => frame.includes("Select model"))
+    const row = selectorFrame.split("\n").findIndex((line) => line.includes("Text remains behind the selector."))
+    expect(row).toBeGreaterThanOrEqual(0)
+    const start = selectorFrame.split("\n")[row]!.indexOf("Text remains")
+    const end = start + "Text remains behind the selector.".length - 1
+    await act(async () => {
+      await setup.mockMouse.pressDown(start, row)
+      await setup.mockMouse.moveTo(end, row)
+      await setup.mockMouse.release(end, row)
+    })
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "clipboard_write" && typeof item.payload?.text === "string" && item.payload.text.includes("Text remains behind the selector."))).toBe(true)
+    expect((setup.renderer.root as any).findDescendantById("composer").focused).toBe(false)
+    expect(setup.captureCharFrame()).toContain("Select model")
   })
 
   test("copies only transcript text when a long selection reaches fixed composer chrome", async () => {
