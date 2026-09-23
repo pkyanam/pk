@@ -149,3 +149,9 @@ conversation history and subsequent model prompts. They are provider output, not
 Native Codex private reasoning is not extracted. Providers that expose no such text show only
 activity information. Workers AI effort is provider-controlled unless its configured adapter
 explicitly supports an effort parameter.
+
+### Workers AI prompt-cache routing
+
+pk sends Cloudflare’s `x-session-affinity` header using an opaque hash of the durable session ID. It remains stable across tool exchanges, turns, and session resume; new sessions and child sessions receive separate values. This header is only sent for the Workers AI provider. It improves routing to an instance holding the prefix cache but does not guarantee a hit or retention. No prompt content, workspace path, or credential is included in the affinity value.
+
+The footer’s latest cached-token value comes from the provider’s last response, not a cumulative total, and can decrease. See [Cloudflare prompt caching](https://developers.cloudflare.com/workers-ai/features/prompt-caching/).

@@ -916,3 +916,9 @@ User supplied the official GLM-5.3-Flash model page with a 1,310,720-token conte
 - Published `v0.1.15` from `7fbc360134f44d4fb3652b5514b4092a5dc21499`. Release run `35930810219` passed both platforms. Exact-tag normal CI `35930797577` passed after retrying one existing history-test timing failure. Follow-up `77c6356` corrects that test's premature wait predicate; its CI `35931046983` passed all jobs. No production code changed in that follow-up.
 - Downloaded macOS archive SHA-256 `29ae1dca4d4d3aa499e9e4cd3d23beeab67f831a9cba6909189aa2d7a5f71e0f`, verified against published checksums, and installed only under `/tmp/pk-v0115-verify`. Saved Light via the installed config CLI and verified the installed TUI rendered the light palette and composer in a 120×36 PTY and exited cleanly. The terminal advertised 256 colors, so the palette was verified through its mapped ANSI color escapes.
 - Release: https://github.com/pkyanam/pk/releases/tag/v0.1.15. User can run `pk update`; no user installation or active session was replaced.
+
+### Workers AI session affinity
+
+- Added Workers AI-only `x-session-affinity`, derived as `pk-` plus SHA-256 of the coordinator’s durable session cache key. The coordinator already passes its session ID on every model exchange and resumes with the same ID; no prompt changes or added model tokens.
+- Tests verify stable headers across recreated clients, distinct sessions, omitted empty keys, no header on generic Chat Completions, and no raw session key in the request. Focused tests pass under race; full Go tests and vet pass.
+- Cache counts remain actual latest-response provider usage. Affinity improves routing opportunities but is not a cache-hit guarantee. No paid live comparison was run and no measured hit-rate improvement is claimed.

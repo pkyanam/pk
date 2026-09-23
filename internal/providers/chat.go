@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/json/jsontext"
@@ -53,7 +54,7 @@ func newChatAdapter(provider Provider, key, baseURL string) *chatAdapter {
 	return &chatAdapter{provider: provider, apiKey: key, endpoint: baseURL + "/chat/completions", http: newProviderHTTPClient()}
 }
 
-func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ llm.RequestOptions) (result llm.Response, retErr error) {
+func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, options llm.RequestOptions) (result llm.Response, retErr error) {
 	observed, observeErr := modelstream.BeginObservedCall(ctx, "", 1)
 	if observeErr != nil {
 		return llm.Response{}, observeErr
@@ -132,6 +133,14 @@ func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ 
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream")
+	// The coordinator's cache key is the durable session ID, not a turn or
+	// process ID. Hash it into an opaque, bounded value safe for HTTP headers.
+	// Workers AI uses affinity to improve prefix-cache routing; hits remain
+	// provider-controlled. Do not send this provider-specific header elsewhere.
+	if adapter.provider.Protocol == ProtocolCloudflareWorkersAI && options.CacheKey != "" {
+		digest := sha256.Sum256([]byte(options.CacheKey))
+		httpRequest.Header.Set("x-session-affinity", fmt.Sprintf("pk-%x", digest))
+	}
 	if adapter.apiKey != "" {
 		httpRequest.Header.Set("Authorization", "Bearer "+adapter.apiKey)
 	}
