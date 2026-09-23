@@ -9,7 +9,7 @@ type Entry = { id: number; role: Role; text: string; callId?: string; toolName?:
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "help" | "exit" }
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -22,6 +22,8 @@ const slashCommands: SlashCommand[] = [
   { name: "/effort", description: "Set reasoning effort", action: "effort" },
   { name: "/tasks", description: "Browse durable agent tasks", action: "tasks" },
   { name: "/task", description: "Create, attach, or control a durable task", action: "task" },
+  { name: "/file", description: "Queue an explicit file for your next prompt", action: "file" },
+  { name: "/files", description: "Review, remove, or clear queued files", action: "files" },
   { name: "/new", description: "Start a fresh session", action: "new" },
   { name: "/attach", description: "Resume a saved session", action: "attach" },
   { name: "/detach", description: "Leave this session running", action: "detach" },
@@ -123,6 +125,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [activeTaskId, setActiveTaskId] = useState("")
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
+  const [queuedFiles, setQueuedFiles] = useState<string[]>([])
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(() => new Set())
   const entryId = useRef(1)
   const waiting = useRef(false)
@@ -130,6 +133,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const busyRef = useRef(false)
   const promptCommandId = useRef("")
   const preferenceErrors = useRef(new Map<string, () => void>())
+  const pendingPromptFiles = useRef(new Map<string, string[]>())
 
   const clearComposer = (focus = false) => {
     textarea.current?.clear()
@@ -235,6 +239,22 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setTools([])
         turnActive.current = true
         break
+      case "attachments_loaded": {
+        const submitted = event.id ? pendingPromptFiles.current.get(event.id) : undefined
+        if (event.id) pendingPromptFiles.current.delete(event.id)
+        if (submitted?.length) {
+          setQueuedFiles((current) => current.filter((path) => !submitted.includes(path)))
+          const files = Array.isArray(data.files) ? data.files : []
+          const descriptions = files.map((file: any) => {
+            const name = String(file?.path ?? "file").split(/[\\/]/).pop() || "file"
+            const type = String(file?.kind ?? file?.content_type ?? "file")
+            const pages = Number(file?.pages_extracted ?? file?.pages_total)
+            return `${name} (${type}${Number.isFinite(pages) && pages > 0 ? `, ${pages} pages` : ""}${file?.truncated ? ", truncated" : ""})`
+          })
+          addEntry("system", `Loaded ${descriptions.join(" · ") || `${submitted.length} attachment${submitted.length === 1 ? "" : "s"}`}`)
+        }
+        break
+      }
       case "assistant":
         if (data.text) addEntry("assistant", String(data.text))
         break
@@ -331,6 +351,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           || data.command_type === "prompt"
           || data.request_type === "prompt"
         if (isPromptError) {
+          if (event.id) pendingPromptFiles.current.delete(event.id)
           waiting.current = false
           turnActive.current = false
           promptCommandId.current = ""
@@ -357,6 +378,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         waiting.current = false
         turnActive.current = false
         promptCommandId.current = ""
+        pendingPromptFiles.current.clear()
         setActiveTaskId("")
         addEntry("system", "Agent connection closed. Relaunch pk to reconnect.")
         break
@@ -383,8 +405,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     if (!text || !connected || (waiting.current && !activeTaskId)) return
     if (text.startsWith("/")) {
+      const [commandName, subcommand] = parseSlashWords(text)
+      if (commandName === "/task" && subcommand === "new" && queuedFiles.length) {
+        addEntry("system", "Queued files are not sent to background tasks. Clear the queue with /files clear before creating one; files remain queued for a foreground prompt.")
+        return
+      }
       runSlashCommand(text)
       clearComposer(true)
+      return
+    }
+    if (activeTaskId && queuedFiles.length) {
+      addEntry("system", "File attachments are not supported for this background task. The draft and file queue are kept; attachments work with foreground prompts.")
       return
     }
     addEntry("user", text)
@@ -395,7 +426,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     waiting.current = true
     setBusy(true)
-    promptCommandId.current = transport.send("prompt", { text }) ?? ""
+    const files = [...queuedFiles]
+    const commandId = transport.send("prompt", { text, ...(files.length ? { files } : {}) }) ?? ""
+    promptCommandId.current = commandId
+    if (commandId && files.length) pendingPromptFiles.current.set(commandId, files)
   }
 
   const setModelPreference = (nextModel: string, nextEffort: string) => {
@@ -466,7 +500,50 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else addEntry("system", "Usage: /task new [--workspace PATH] PROMPT · /task list · /task attach ID · /task resume ID · /task cancel ID")
         break
       }
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops · Ctrl-P opens commands · /task new [--workspace PATH] PROMPT · /tasks · /task attach ID · /task resume ID · /task cancel ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "file": {
+        const path = args.join(" ")
+        if (!path) {
+          addEntry("system", 'Usage: /file PATH · quote paths containing spaces, for example /file "docs/meeting notes.pdf"')
+          break
+        }
+        if (path.length > 4096) {
+          addEntry("system", "File path is too long (maximum 4096 characters).")
+          break
+        }
+        if (queuedFiles.includes(path)) {
+          addEntry("system", `Already queued · ${path}`)
+          break
+        }
+        if (queuedFiles.length >= 8) {
+          addEntry("system", "The attachment queue is full (8 files). Send a prompt or remove a file first.")
+          break
+        }
+        setQueuedFiles((current) => current.includes(path) ? current : [...current, path])
+        addEntry("system", `Queued file ${queuedFiles.length + 1}/8 · ${path}`)
+        break
+      }
+      case "files": {
+        const [operation, ...rest] = args
+        if (operation === "clear") {
+          setQueuedFiles([])
+          addEntry("system", queuedFiles.length ? `Cleared ${queuedFiles.length} queued file${queuedFiles.length === 1 ? "" : "s"}.` : "The file queue is already empty.")
+        } else if (operation === "remove") {
+          const target = rest.join(" ")
+          const index = /^\d+$/.test(target) ? Number(target) - 1 : queuedFiles.indexOf(target)
+          if (index < 0 || index >= queuedFiles.length) addEntry("system", "Usage: /files remove N · N is the 1-based file number shown below.")
+          else {
+            const removed = queuedFiles[index]!
+            setQueuedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))
+            addEntry("system", `Removed file · ${removed}`)
+          }
+        } else if (operation) {
+          addEntry("system", "Usage: /files · /files remove N · /files clear")
+        } else if (queuedFiles.length) {
+          addEntry("system", `Queued files:\n${queuedFiles.map((path, index) => `${index + 1}. ${path}`).join("\n")}\nUse /files remove N or /files clear.`)
+        } else addEntry("system", "No files queued. Use /file PATH to attach an explicit file to your next prompt.")
+        break
+      }
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops · Ctrl-P opens commands · /file PATH · /files · /files remove N · /files clear · /task new [--workspace PATH] PROMPT · /tasks · /task attach ID · /task resume ID · /task cancel ID · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -577,7 +654,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       if (key.name === "return" && filtered.length && !/\s/.test(draft.trim())) {
         key.preventDefault()
         const selected = filtered[slashIndex % filtered.length]
-        if (selected && selected.action !== "task" && selected.action !== "attach") runSlashCommand(selected.name)
+        if (selected && selected.action !== "task" && selected.action !== "attach") {
+          runSlashCommand(selected.name)
+          clearComposer(true)
+        }
         else if (selected) { textarea.current!.setText(`${selected.name} `); setDraft(`${selected.name} `) }
         return
       }
@@ -626,6 +706,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const filteredCommands = slashCommands.filter((item) => item.name.startsWith(draft.trim().split(/\s/)[0] || "/"))
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
   const cwd = message || workspace
+  const visibleFileCount = Math.max(1, Math.floor((renderer.width - 26) / 20))
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
@@ -647,6 +728,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {busy && tools.length === 0 && <box style={{ flexDirection: "row", gap: 1, paddingLeft: 2, height: 1 }}><text fg={palette.accent} content="◌" /><text fg={palette.muted} content="Thinking…" /></box>}
       </scrollbox>
       <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
+        {queuedFiles.length > 0 && <box style={{ flexDirection: "row", gap: 1, height: 1, flexShrink: 0, paddingLeft: 1 }}>
+          <text fg={palette.muted} content={`Files ${queuedFiles.length}/8`} />
+          {queuedFiles.slice(0, visibleFileCount).map((path, index) => {
+            const name = path.split(/[\\/]/).pop() || path
+            const label = name.length > 14 ? `${name.slice(0, 13)}…` : name
+            return <box key={`${path}-${index}`} id={`file-chip-${index}`} onMouseDown={(event) => leftMouseDown(event, () => {
+              setQueuedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))
+            })} style={{ flexDirection: "row", gap: 1, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, height: 1 }}>
+              <text fg={palette.text} content={label} />
+              <text fg={palette.accent} content="×" />
+            </box>
+          })}
+          {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
+        </box>}
         <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
           <text fg={palette.accent} content="›" />
           <text fg={palette.muted} content="Message" />
@@ -661,7 +756,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
               textarea.current!.setText(`${item.name} `)
               setDraft(`${item.name} `)
               textarea.current?.focus()
-            } else runSlashCommand(item.name)
+            } else {
+              runSlashCommand(item.name)
+              clearComposer(true)
+            }
           })} style={{ flexDirection: "row", gap: 2, backgroundColor: slashWindowStart + localIndex === slashIndex % filteredCommands.length ? palette.panel : palette.raised, height: 1 }}>
             <text fg={palette.accent} content={item.name} />
             <text fg={palette.muted} content={item.description} />

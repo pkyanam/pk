@@ -24,12 +24,12 @@ beforeEach(async () => {
 
 function fakeTransport() {
   let handler = (_event: ServerEvent) => {}
-  const sent: Array<{ type: string; payload?: Record<string, unknown> }> = []
+  const sent: Array<{ id: string; type: string; payload?: Record<string, unknown> }> = []
   let sequence = 0
   const transport = {
     setEventHandler(next: typeof handler) { handler = next },
     async start() {},
-    send(type: string, payload?: Record<string, unknown>) { sent.push({ type, payload }); return `fake-${++sequence}` },
+    send(type: string, payload?: Record<string, unknown>) { const id = `fake-${++sequence}`; sent.push({ id, type, payload }); return id },
     emit(event: ServerEvent) { handler(event) },
     async close() {},
   }
@@ -199,6 +199,154 @@ describe("OpenTUI application", () => {
     expect(fake.sent.filter((item) => item.type === "prompt")).toHaveLength(2)
     expect(fake.sent.filter((item) => item.type === "prompt")[1]?.payload?.text).toBe("second follow-up")
     expect(composer.plainText).toBe("")
+  })
+
+  test("queues quoted file paths, shows removable chips, and sends only explicit files", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+
+    await act(async () => { await setup.mockInput.typeText('/file "docs/meeting notes.pdf"') })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    const queued = await setup.waitForFrame((frame) => frame.includes("Files 1/8") && frame.includes("meeting note"))
+    expect(queued).toContain("Queued file 1/8 · docs/meeting notes.pdf")
+
+    await act(async () => { await setup.mockInput.typeText("/files") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    expect(await setup.waitForFrame((frame) => frame.includes("Queued files:") && frame.includes("1. docs/meeting notes.pdf"))).toContain("/files remove N")
+    await act(async () => { await setup.mockInput.typeText("/files remove 1") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Files 1/8")
+
+    await act(async () => { await setup.mockInput.typeText('/file "docs/meeting notes.pdf"') })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    const chipFrame = await setup.waitForFrame((frame) => frame.includes("Files 1/8") && frame.includes("meeting note"))
+
+    const filesRow = chipFrame.split("\n").findIndex((line) => line.includes("Files 1/8"))
+    await act(async () => setup.mockMouse.click(chipFrame.split("\n")[filesRow]!.indexOf("meeting note"), filesRow))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Files 1/8")
+
+    await act(async () => { await setup.mockInput.typeText('/file "docs/meeting notes.pdf"') })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("/files clear") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("Files 1/8")
+    await act(async () => { await setup.mockInput.typeText('/file "docs/meeting notes.pdf"') })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("Summarize this document") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    expect(prompt.payload?.text).toBe("Summarize this document")
+    expect(prompt.payload?.files).toEqual(["docs/meeting notes.pdf"])
+
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Files 1/8")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "attachments_loaded", payload: { files: [{ path: "/tmp/pk/docs/meeting notes.pdf", kind: "pdf", pages_extracted: 2, truncated: false }] } }))
+    const loaded = await setup.waitForFrame((frame) => frame.includes("Loaded meeting notes.pdf (pdf, 2 pages)"))
+    expect(loaded).not.toContain("Files 1/8")
+  })
+
+  test("rejects a ninth queued file to match the attachment service limit", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+
+    for (let index = 1; index <= 9; index++) {
+      await act(async () => { await setup.mockInput.typeText(`/file file-${index}.txt`) })
+      await setup.flush()
+      act(() => setup.mockInput.pressEnter())
+      await setup.flush()
+    }
+    const frame = await setup.waitForFrame((value) => value.includes("attachment queue is full (8 files)"))
+    expect(frame).toContain("Files 8/8")
+    expect(frame).not.toContain("Files 9/8")
+  })
+
+  test("preserves queued files when the backend rejects a prompt", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("/file report.pdf") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("Review the report") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "error", payload: { request_type: "prompt", message: "file not found" } }))
+    const frame = await setup.waitForFrame((value) => value.includes("file not found"))
+    expect(frame).toContain("Files 1/8")
+    expect(frame).toContain("report.pdf")
+  })
+
+  test("does not imply queued files were attached to a durable task", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("/file report.pdf") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText('/task new "Review report.pdf"') })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    const frame = await setup.waitForFrame((value) => value.includes("Queued files are not sent to background tasks"))
+    const composer = (setup.renderer.root as any).findDescendantById("composer")
+    expect(composer.plainText).toBe('/task new "Review report.pdf"')
+    expect(frame).toContain("Files 1/8")
+    expect(fake.sent.some((item) => item.type === "task_create")).toBe(false)
+  })
+
+  test("keeps prompt draft and queued files when the attached task cannot accept files", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Message"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("/file report.pdf") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    act(() => fake.emit({ version: 1, id: "attach-task", type: "task_attached", payload: { task_id: "task-1", status: "completed" } }))
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("Use the attached report") })
+    await setup.flush()
+    act(() => setup.mockInput.pressEnter())
+    const frame = await setup.waitForFrame((value) => value.includes("File attachments are not supported for this background task"))
+    const composer = (setup.renderer.root as any).findDescendantById("composer")
+    expect(composer.plainText).toBe("Use the attached report")
+    expect(frame).toContain("Files 1/8")
+    expect(fake.sent.some((item) => item.type === "send_input")).toBe(false)
   })
 
   test("rpc_closed ends thinking state and marks live tools interrupted", async () => {
