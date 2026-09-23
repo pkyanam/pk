@@ -1,0 +1,47 @@
+package jobqueue
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+var ErrInvalidLease = errors.New("lease duration must be positive")
+
+type Queue struct{ store Store }
+
+func New(store Store) (*Queue, error) {
+	if store == nil {
+		return nil, errors.New("store is required")
+	}
+	return &Queue{store: store}, nil
+}
+
+func (q *Queue) Enqueue(ctx context.Context, job Job) (bool, error) {
+	return q.store.Enqueue(ctx, job)
+}
+
+func (q *Queue) Claim(ctx context.Context, now time.Time, lease time.Duration) (Job, bool, error) {
+	if lease <= 0 {
+		return Job{}, false, ErrInvalidLease
+	}
+	return q.store.Claim(ctx, now, lease)
+}
+
+func (q *Queue) Complete(ctx context.Context, id string, now time.Time) (Job, error) {
+	return q.store.Complete(ctx, id, now)
+}
+
+func (q *Queue) Retry(ctx context.Context, id, cause string, now time.Time) (Job, error) {
+	return q.store.Retry(ctx, id, cause, now)
+}
+
+// RecoverExpired returns jobs whose lease expired and applies their retry
+// transition. Results retain the store's FIFO order.
+func (q *Queue) RecoverExpired(ctx context.Context, now time.Time) ([]Job, error) {
+	return q.store.(interface { RecoverExpired(context.Context, time.Time) ([]Job, error) }).RecoverExpired(ctx, now)
+}
+
+func (q *Queue) Get(ctx context.Context, id string) (Job, error) {
+	return q.store.Get(ctx, id)
+}

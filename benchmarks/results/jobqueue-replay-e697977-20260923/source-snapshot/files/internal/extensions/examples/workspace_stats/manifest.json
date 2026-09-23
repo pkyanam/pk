@@ -1,0 +1,21 @@
+{
+  "api_version": "pk.extensions/v1",
+  "id": "workspace-stats",
+  "version": "1.0.0",
+  "executable": "./workspace-stats",
+  "capabilities": ["workspace.read"],
+  "tools": [
+    {
+      "name": "workspace_stats",
+      "description": "Count regular files, subdirectories, and bytes in the current workspace.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ],
+  "commands": [
+    { "name": "stats", "description": "Show file and byte counts for the current workspace." }
+  ]
+}

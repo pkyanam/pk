@@ -38,20 +38,3 @@ response count, wall time, tool-result byte manipulation checks, failure state,
 and holdout result. These descriptive measurements on a single task do not
 establish general efficiency or quality effects. Do not publish provider
 credentials, local session content, or private failed-command logs.
-
-## Pilot results: 2026-09-23
-
-The two-repetition run is archived at
-[`../results/jobqueue-replay-e697977-20260923/`](../results/jobqueue-replay-e697977-20260923/).
-All eight model phases exited successfully and all four resumed verification
-holdouts passed. Compact mode triggered for 12 of 12 eligible Bash results,
-with no missing-capture fallbacks; it reduced those phase-recorded result bytes
-from 69,416 to 24,132. Provider input tokens were 74,571 compact versus 55,741
-full; uncached input was 25,931 versus 25,533. Compact mode had 19 model
-responses versus 12, and summed phase time was 63,749 ms versus 82,347 ms. One
-repetition was faster and the other slightly slower. The increased cached-input
-total accompanies the higher total input and does not establish better cache
-hit rate. These two repetitions show no overall token-efficiency gain and do
-not establish general quality or latency effects. Exact raw records, source
-manifest, source snapshot, and generated-source artifacts are retained with
-the result.
