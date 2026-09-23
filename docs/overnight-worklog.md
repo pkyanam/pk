@@ -507,8 +507,14 @@ gates or imply that every backlog item is complete.
 - Aggressive replay cohort completed all 16 phases in 7m55s with all four holdouts per arm passing. Aggressive input 544,819 vs control 127,054; uncached 97,331 vs 55,374; output 10,448 vs 4,704; responses 90 vs 25. No reruns. Keep full context default; no broad efficiency claim. Full results and exact 335-file source snapshot retained.
 - Installed clean revision `0436669` as release `20260923T102151.628967000Z-579be7d11287-2b400681`. Native Cmux fresh-session `/reload` restarted successfully without a prompt; the new process retained `/private/tmp/pk-demo-fixture.BFypqp`, `gpt-6-luna`, `low`, and explicit `native` provider. The welcome screen returned with no refusal. User workspace 1 was untouched.
 
-### 06:38 EDT — PDF previews and skill metadata validation
+### 06:34 EDT — PDF previews and skill metadata validation
 
 - Added bounded optional Poppler previews for scanned/image-only PDF pages, including mixed documents. Images use private session/input-owned storage and survive resume/archive/restore; purge removes them. The real local renderer smoke decoded page 2 and verified that lifecycle without external calls.
 - Replaced line-based skill metadata interpretation with bounded YAML decoding before default registry registration. Folded descriptions and quoted names now match in the catalog, SkillUse registry, and model context; malformed optional skills warn/skip and saved sessions retain their captured metadata.
 - All 123 UI tests/562 assertions pass. Affected Go race packages pass. A full Go run caught the temporary real-PDF smoke using macOS’s /var alias; the caller now canonicalizes the root while retaining managed-directory symlink checks. Final clean run/install follows.
+
+### 06:37 EDT — PDF and metadata installment installed
+
+- Clean GitHub revision `b5aa90b` activated as `20260923T103610.264877000Z-e6a9b9b1a6d2-34126c4e`. Full Go suite and all 123 UI tests passed; affected Go race suites and opt-in real Poppler test passed.
+- Native Cmux reload returned the owned fresh session with its ASCII welcome. `/skills available` now shows Monid’s actual folded description rather than `>` and compact skill descriptions. No model requests were needed. The user’s separate workspace was untouched.
+- Installed one-shot smoke used an isolated home/workspace and one localhost fake-provider request. Its PDF prompt referenced the rendered page and the folded skill description reached both request and saved snapshot; root independently verified the persisted 8,089-byte PNG is mode 0600. The initial inspection script used the wrong snapshot filename, then verified the correct SHA-256-named snapshot. No external model call was made.

@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/pkyanam/pk/main/install.sh | bash
 - Durable background tasks, saved-session browsing and recoverable bulk archive, restored tool history, provider/model/effort selection, and bounded subagents with queued task-only work.
 - Interactive skill and plugin setup, MCP stdio and Streamable HTTP configuration, supported credential and OAuth flows, and an ACP interface.
 - Managed GitHub updates, rollback, and session-preserving reload. Installed processes use paired immutable Go/UI releases.
-- Image file and clipboard intake, bounded PDF text extraction, opt-in ImageGen, and configured TinyFish search/fetch with a zero-price Monid route and no paid fallback.
+- Image file and clipboard intake, bounded PDF text extraction and scanned-page previews, opt-in ImageGen, and configured TinyFish search/fetch with a zero-price Monid route and no paid fallback.
 - `/usage` reads durable provider token totals locally, distinguishes unavailable counts from zero, and reports per-metric coverage. Opening it does not call the model.
 
 See the [project checklist](project-checklist.md) for the verification level and limits of each feature. Configured integrations and local fixture tests are not proof that every external service or editor has been exercised.
@@ -29,7 +29,7 @@ The matched Luna/low pk-versus-Unreal pilot passed all eight holdout checks, but
 
 Read [benchmark findings](benchmark-findings.md), [prompt overhead](research/prompt-overhead.md), and the [work log](overnight-worklog.md) for measurements and reproducibility details. Synthetic allocation improvements are separate from model-token savings.
 
-`/usage` passed the installed localhost-provider restart/attach smoke and native Cmux rendering check. The earlier complete terminal freeze has not been reliably reproduced. Native drag/drop remains unverified; Finder file-path paste and Preview pixel paste were verified. Scanned PDF page rendering is in development. Cloudflare account OAuth and a real external ACP editor have not been exercised.
+`/usage` passed the installed localhost-provider restart/attach smoke and native Cmux rendering check. The earlier complete terminal freeze has not been reliably reproduced. Native drag/drop remains unverified; Finder file-path paste and Preview pixel paste were verified. Scanned PDF page rendering passed a real local Poppler smoke; model interpretation of those rendered pages remains a separate check. Cloudflare account OAuth and a real external ACP editor have not been exercised.
 
 ## Launch material
 

@@ -101,8 +101,7 @@ notice, and got the exact expected PDF text marker from Luna; the composer was e
 Unit fixtures cover bounded rendering of scanned pages, selecting only image-only pages in a mixed
 PDF, private output modes, renderer absence/failure, timeout, and session archive/restore/purge.
 A real-Poppler local smoke also preserved selectable cover text, rendered scanned page 2 into a
-decodable PNG, and verified resume, archive, restore, and purge without a model request. Installation
-is pending. Earlier CLI smokes confirmed selectable-text PDF extraction and an explicitly selected external PNG inspected
+decodable PNG, and verified resume, archive, restore, and purge without a model request. Installed in `b5aa90b`. Earlier CLI smokes confirmed selectable-text PDF extraction and an explicitly selected external PNG inspected
 through `ViewImage`. These checks validate exercised routes, not broad format coverage. The TUI path
 is explicit text entry, not a native picker.
 
