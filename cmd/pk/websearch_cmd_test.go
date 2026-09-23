@@ -71,7 +71,10 @@ func TestRunMainDispatchesWebStatus(t *testing.T) {
 func TestWebSearchSelectionPrefersDirectKeyThenMonid(t *testing.T) {
 	monidDir := t.TempDir()
 	monidPath := filepath.Join(monidDir, "monid")
-	if err := os.WriteFile(monidPath, []byte("#!/bin/sh\nprintf '[{\\\"active\\\":true}]'\n"), 0o700); err != nil {
+	// Keep JSON in a printf argument and use a plain %s format. Backslash-
+	// escaped quotes inside printf's format are not portable across /bin/sh
+	// implementations (dash may preserve them, yielding invalid JSON).
+	if err := os.WriteFile(monidPath, []byte("#!/bin/sh\nprintf '%s\\n' '[{\"active\":true}]'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(monidPath, 0o700); err != nil {
