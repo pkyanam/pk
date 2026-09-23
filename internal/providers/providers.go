@@ -1,6 +1,6 @@
-// Package providers implements explicitly configured OpenAI-compatible model
-// providers. It never reads credentials from CLI arguments or emits them in
-// provider summaries/errors.
+// Package providers implements explicitly configured model providers over
+// native and OpenAI-compatible protocols. It never reads credentials from CLI
+// arguments or emits them in provider summaries/errors.
 package providers
 
 import (
@@ -20,6 +20,7 @@ type Protocol string
 const (
 	ProtocolResponses       Protocol = "responses"
 	ProtocolChatCompletions Protocol = "chat_completions"
+	ProtocolAnthropic       Protocol = "anthropic_messages"
 )
 
 var providerIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
@@ -52,8 +53,8 @@ func (provider Provider) Validate() error {
 	if !providerIDPattern.MatchString(provider.ID) {
 		return fmt.Errorf("invalid provider ID %q", provider.ID)
 	}
-	if provider.Protocol != ProtocolResponses && provider.Protocol != ProtocolChatCompletions {
-		return fmt.Errorf("provider %q protocol must be responses or chat_completions", provider.ID)
+	if provider.Protocol != ProtocolResponses && provider.Protocol != ProtocolChatCompletions && provider.Protocol != ProtocolAnthropic {
+		return fmt.Errorf("provider %q protocol must be responses, chat_completions, or anthropic_messages", provider.ID)
 	}
 	base, err := NormalizeBaseURL(provider.BaseURL)
 	if err != nil {
@@ -74,6 +75,9 @@ func (provider Provider) Validate() error {
 	}
 	if provider.DefaultEffort != "" && !config.ValidEffort(provider.DefaultEffort) {
 		return fmt.Errorf("provider %q has an unsupported default reasoning effort", provider.ID)
+	}
+	if provider.Protocol == ProtocolAnthropic && provider.SupportsReasoningEffort {
+		return fmt.Errorf("provider %q does not support the generic reasoning-effort option", provider.ID)
 	}
 	return nil
 }

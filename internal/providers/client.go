@@ -16,11 +16,12 @@ import (
 )
 
 type Client struct {
-	provider Provider
-	key      string
-	adapter  llm.Adapter
-	remote   *primitives.RemoteClient
-	chat     *chatAdapter
+	provider  Provider
+	key       string
+	adapter   llm.Adapter
+	remote    *primitives.RemoteClient
+	chat      *chatAdapter
+	anthropic *anthropicAdapter
 }
 
 var _ llm.Adapter = (*Client)(nil)
@@ -61,6 +62,9 @@ func NewClient(provider Provider) (*Client, error) {
 	case ProtocolChatCompletions:
 		client.chat = newChatAdapter(provider, key, baseURL)
 		client.adapter = client.chat
+	case ProtocolAnthropic:
+		client.anthropic = newAnthropicAdapter(provider, key, baseURL)
+		client.adapter = client.anthropic
 	default:
 		return nil, errors.New("unsupported provider protocol")
 	}
@@ -155,6 +159,9 @@ func (client *Client) Close() error {
 	if client.chat != nil {
 		return client.chat.Close()
 	}
+	if client.anthropic != nil {
+		return client.anthropic.Close()
+	}
 	return nil
 }
 
@@ -166,6 +173,9 @@ func (provider Provider) Models(ctx context.Context) ([]Model, error) {
 	key, err := provider.APIKeyValue()
 	if err != nil {
 		return nil, err
+	}
+	if provider.Protocol == ProtocolAnthropic {
+		return listAnthropicModels(ctx, baseURL, key)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {

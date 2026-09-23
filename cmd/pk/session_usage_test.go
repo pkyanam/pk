@@ -122,6 +122,66 @@ func TestReadSessionUsageTreatsNullAndMalformedAsUnavailableAndSupportsChatAlias
 	}
 }
 
+func TestReadSessionUsageAggregatesAnthropicNativeInputAndCacheCounters(t *testing.T) {
+	store, err := localfile.New(filepath.Join(t.TempDir(), "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, id, appendResponse := newUsageSession(t, store, "usage-anthropic")
+	appendResponse(llm.Usage{
+		InputTokens: 17, CachedInputTokens: 3, CacheWriteInputTokens: 2, OutputTokens: 7,
+		Raw: jsontext.Value(`{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":2,"output_tokens":7}`),
+	})
+	appendResponse(llm.Usage{
+		InputTokens: 0, CachedInputTokens: 0, CacheWriteInputTokens: 0, OutputTokens: 0,
+		Raw: jsontext.Value(`{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}`),
+	})
+	got, err := readSessionUsage(ctx, store, string(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResponseCount != 2 {
+		t.Fatalf("summary=%+v", got)
+	}
+	assertUsageTotal(t, got.InputTokens, 17)
+	assertUsageTotal(t, got.OutputTokens, 7)
+	assertUsageTotal(t, got.CachedInputTokens, 3)
+	// The existing uncached convention is total input minus cache reads, so
+	// cache-creation tokens remain included in this total.
+	assertUsageTotal(t, got.UncachedInputTokens, 14)
+	if got.Coverage != (sessionUsageCoverage{InputResponses: 2, OutputResponses: 2, CachedInputResponses: 2, UncachedResponses: 2}) {
+		t.Fatalf("coverage=%+v", got.Coverage)
+	}
+}
+
+func TestReadSessionUsageKeepsIncompleteAnthropicCountersUnavailable(t *testing.T) {
+	store, err := localfile.New(filepath.Join(t.TempDir(), "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, id, appendResponse := newUsageSession(t, store, "usage-anthropic-incomplete")
+	appendResponse(llm.Usage{
+		InputTokens: 9, CachedInputTokens: 0, OutputTokens: 4,
+		Raw: jsontext.Value(`{"input_tokens":9,"cache_read_input_tokens":null,"cache_creation_input_tokens":0,"output_tokens":4}`),
+	})
+	appendResponse(llm.Usage{
+		InputTokens: 8, CachedInputTokens: 2, OutputTokens: 3,
+		Raw: jsontext.Value(`{"input_tokens":5,"cache_read_input_tokens":2,"output_tokens":3}`),
+	})
+	got, err := readSessionUsage(ctx, store, string(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InputTokens != nil || got.UncachedInputTokens != nil {
+		t.Fatalf("incomplete native counters should not become totals: %+v", got)
+	}
+	assertUsageTotal(t, got.CachedInputTokens, 2)
+	assertUsageTotal(t, got.OutputTokens, 7)
+	if got.Coverage != (sessionUsageCoverage{OutputResponses: 2, CachedInputResponses: 1}) {
+		t.Fatalf("coverage=%+v", got.Coverage)
+	}
+}
+
 func TestReadSessionUsageReadsBeyond256ItemsAndHonorsCancellation(t *testing.T) {
 	store, err := localfile.New(filepath.Join(t.TempDir(), "sessions"))
 	if err != nil {
