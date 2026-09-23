@@ -66,24 +66,58 @@ cd /path/to/project
 pk
 ```
 
-Type a prompt and press Enter to submit. Shift-Enter or Ctrl-J adds a line. Ctrl-P opens the slash
-command menu; type to filter, use Up/Down to move, Tab to complete, and Enter to select. The menu
-contains `/model`, `/effort`, `/tasks`, `/task`, `/new`, `/attach SESSION_ID`, `/detach`, `/cancel`,
+Type a prompt and press Enter to submit. Shift-Enter or Ctrl-J adds a line without submitting.
+Ctrl-P opens the slash command menu; type to filter, use Up/Down to move, Tab to complete, and
+Enter to select. Ctrl+O toggles the latest tool details. The menu contains `/model`, `/effort`,
+`/tasks`, `/task`, `/new`, `/attach SESSION_ID`, `/detach`, `/cancel`,
 `/status`, `/login`, `/help`, and `/exit`. `/tasks` opens the detached task picker. Use
 `/attach SESSION_ID` to return to a saved conversation.
 
-During longer work, pk can show assistant progress messages in order alongside tool activity. Tool
-rows update as operations run and finish, with bounded command/argument previews, elapsed time, and
+During longer work, pk shows a live wait/run state and elapsed time, including while waiting for a
+model response. Assistant progress messages appear in order alongside tool activity. Tool rows
+update as operations run and finish, with bounded command/argument previews, elapsed time, and
 available shell result excerpts. The UI redacts common credential-shaped values in these previews;
 do not treat the preview filter as a complete secret detector. Use `/new` to start a fresh
 conversation with current system instructions and skills. Attaching an older session retains its
-saved instruction and tool/skill snapshot.
+saved instruction and tool/skill snapshot. See the [prompt and tool reference](prompt-reference.md)
+for the full prompt template and default TUI tool schemas, including the installed model-aware
+identity. Use `/new` to adopt the updated prompt; legacy sessions keep their saved prompt.
 
 When a foreground session needs a user decision, `AskUser` presents its choices above the composer;
 select with Up/Down and Enter, or type a freeform answer. Escape cancels the pending question and the
 current turn. This is a clarification flow, not a tool permission gate. Detached tasks do not expose
 model-generated questions, so include necessary choices in their initial prompt or steer them while
 attached.
+
+To attach explicitly selected files to a foreground prompt, queue a path with `/file` (quote a path
+containing spaces). You can also enter a bare path and press Enter to send it with the default
+request “Inspect the attached file,” or put a path first and add your request after it, such as
+`notes.txt describe this`. Terminal paste routes recognized file paths and file URIs into the
+attachment queue. Native drag/drop has not been verified yet.
+
+```text
+/file /tmp/report.pdf
+/file "/path with spaces/weekly report.pdf"
+/files
+/files remove 1
+/files clear
+/paste
+```
+
+`/files` lists queued paths. Click a visible file chip to remove it, or use `/files remove N` with
+its 1-based number. A prompt sends the queued files and shows a loaded notice; the queue clears only
+after the host confirms loading succeeded. If the prompt fails, the queued files remain available
+for retry. The effective limit is 8 files per prompt. Ctrl+V invokes clipboard import; Cmd+V can
+invoke it when the terminal delivers that key to pk, and `/paste` is the explicit fallback when it
+does not. A Cmux image clipboard was converted to a temporary path and queued; direct Finder-file
+Cmd+V has not completed verification. Bracketed paste recognizes file URI lists and quoted/escaped
+file paths.
+
+Double-click selects transcript text; Ctrl+Y copies the selection through OSC 52. Some terminals
+intercept Cmd+C, so Ctrl+Y is the reliable in-app copy shortcut. This is explicit path selection,
+not a file browser; relative paths use the session workspace, while explicitly selected absolute
+paths may be outside it. Attachments belong to the foreground prompt draft: starting a detached task
+does not transfer or consume the queued files. See [attachment formats and bounds](attachments-design.md).
 
 Esc closes an open picker or stops the active turn. Ctrl-D detaches from an idle session and closes
 the interface while preserving its durable conversation; with no session it closes pk. Ctrl-C
@@ -96,6 +130,21 @@ workspace, session, system-instruction, and credential flags as `pk run`:
 ```sh
 pk run -p "Summarize this project" --workspace /path/to/project --model gpt-6-luna --effort medium
 ```
+
+Backend changes in `1ebe672` add explicitly opted-in extension manifests and an optional ImageGen
+driver to one-shot requests:
+
+```sh
+pk -p "Inspect the repository" --extension /path/to/manifest.json
+pk -p "Create a small mint cursor image" --image-driver gpt-6-astra
+```
+
+Repeat `--extension` to load multiple manifests. The current extension CLI exposes tools, not
+extension commands or hooks; manifests execute trusted programs with pk's OS permissions. The
+ImageGen driver is separate from the chat model, and the verified path uses the Astra driver with
+ChatGPT authentication; this does not mean Luna generates images natively. These options change
+the available tool schema and cannot be combined with `--session`. See
+[extension design](extensions-design.md) for its current limits.
 
 For the line-oriented interface without OpenTUI, run `pk --plain`. Add `--session SESSION_ID` to
 continue a session. Its commands are `/help`, `/exit`, and `/quit`; Ctrl-C cancels the current turn

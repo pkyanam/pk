@@ -62,10 +62,27 @@ be absolute when it is outside the workspace because `ViewImage` accepts absolut
 still applies its own image decoding, resizing, and size limits. The host must not describe an image
 as analyzed until that tool call succeeds.
 
-The current user-facing route is `pk run -p PROMPT --file PATH` (repeat `--file` for multiple
-selections); relative paths use the run workspace, while an explicitly named absolute path may be
-outside it. The RPC prompt request also accepts a `files` array for a host that provides one. The
-OpenTUI currently has no file picker, `/file` command, or `@path` attachment flow, so interactive
-TUI prompts cannot attach files yet. A live CLI smoke extracted a selected one-page PDF marker into
-the prompt and another sent an explicitly selected PNG through `ViewImage`; both were completed by
-the configured Luna model. These smokes validate the implemented routes, not broad format coverage.
+The one-shot route is `pk run -p PROMPT --file PATH` (repeat `--file` for multiple selections);
+relative paths use the run workspace, while an explicitly named absolute path may be outside it.
+The RPC prompt request also accepts a `files` array for a host that provides one. In the OpenTUI,
+`/file PATH` queues an explicitly selected path for the next foreground prompt. Quote paths with
+spaces. `/files` lists the queue, `/files remove N` removes one item by its 1-based list number, and
+`/files clear` empties it. Click a visible chip to remove that selection. The effective per-prompt
+limit is 8 files. There is no file browser or implicit selection. A queued file remains in the
+foreground draft until the host acknowledges successful loading; a prompt error preserves it for
+retry. Detached task creation does not transfer or consume that draft queue.
+
+The OpenTUI also accepts a bare path as a prompt and sends it with the default request “Inspect the
+attached file.” A path followed by prose, such as `notes.txt describe this`, sends that prose as the
+request. Quote paths containing spaces; ambiguous unquoted paths stay in the draft. Bracketed terminal
+paste routes recognized file URI lists and quoted/escaped paths to the queue. Ctrl+V asks the native
+clipboard for content; `/paste` is the explicit fallback when a terminal intercepts the shortcut.
+Ctrl+Y copies selected transcript text using OSC 52; some terminals intercept Cmd+C. Shift+Enter and
+Ctrl+J insert a newline without submitting. Native drag-and-drop parsing has tests, but native GUI
+drop behavior has not been verified and is not promised.
+
+A live 80×24 PTY smoke attached `marker.pdf` with `/file`, submitted the prompt, received the loaded
+notice, and got the exact expected PDF text marker from Luna; the composer was empty afterward.
+Earlier CLI smokes also confirmed one-page PDF text extraction and an explicitly selected external
+PNG inspected through `ViewImage`. These checks validate the exercised routes, not broad format
+coverage. The TUI path is explicit text entry, not a native picker.
