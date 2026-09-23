@@ -1,65 +1,56 @@
 # pk launch copy — review drafts
 
-Local draft for review only. Nothing in this file has been posted. These drafts describe the
-`eba1d60` release and make no superiority or efficiency claim. Each post below is within 280
-characters including the full GitHub URL where included.
+These drafts describe the current terminal workspace. They are for review and have not been posted.
+They make no comparative performance claim and do not promise cache hits.
 
-## X post variants
+## Short post options
 
-**1 — Product**
+**A — Keep work moving**
 
-Meet pk: a Go coding engine with an OpenTUI terminal interface, built on Unreal Agent. Work in a
-focused session or hand a longer task to a durable worker in its own workspace.
+Meet pk: a coding workspace for the terminal. Work in a live OpenTUI session, delegate bounded subtasks, or leave a durable task running and return to its progress.
 https://github.com/pkyanam/pk
 
-**2 — Workflow**
+**B — Built for the long run**
 
-Coding takes more than one turn. pk keeps longer tasks running in a separate workspace, so you can
-check progress, attach, steer, cancel, or resume. Go engine, OpenTUI interface.
+Some coding work takes more than one turn. pk keeps tasks resumable, shows tool activity as it happens, and lets you steer work from the terminal.
 https://github.com/pkyanam/pk
 
-**3 — Practical details**
+**C — Your tools, your provider**
 
-Keep progress, tool activity, and your decisions close at hand. pk shows compact tool updates, asks
-when a foreground run needs your input, and reports provider-supplied cache counters.
+Use skills, explicitly enabled plugins, and MCP tools in pk. Choose the built-in ChatGPT/Codex provider or configure an OpenAI-compatible endpoint.
 https://github.com/pkyanam/pk
 
 ## Four-post thread
 
 **1/4**
 
-Meet pk: a Go coding engine with an OpenTUI terminal interface, built on Unreal Agent. Use it for a
-focused coding session or hand longer work to a durable task.
+Meet pk: a coding workspace for the terminal. Follow progress and tool activity in a live OpenTUI session, or hand longer work to a durable task.
 
 **2/4**
 
-Longer tasks run in their own workspace. Check progress, attach to follow along, send a follow-up,
-cancel, or resume interrupted work.
+Tasks can run in their own workspace. Attach to follow along, send more input, cancel, or resume saved work.
 
 **3/4**
 
-In a foreground session, pk shows progress alongside compact, expandable tool activity. When the
-model needs a decision, AskUser presents choices or accepts a freeform reply. Cache counters come
-from the provider.
+Bring your setup: discover skills, enable plugins, connect MCP tools, or use pk through ACP. Choose the built-in ChatGPT/Codex provider or configure an OpenAI-compatible one.
 
 **4/4**
 
-The CLI also accepts text, PDF, and image attachments. Start here:
+Update and roll back from the terminal. Start here:
 https://github.com/pkyanam/pk
 
 ## Demo captions
 
 - **Foreground session:** “Progress and tool activity, together in the terminal.”
-- **Long task:** “Start a separate task, attach to its output, and steer it as it works.”
-- **User decision:** “When a foreground run needs your input, answer from the terminal.”
+- **Long task:** “Leave a task running, attach to its progress, and steer it as it works.”
+- **Subtasks:** “Delegate a bounded piece of work and follow its result.”
+- **Your setup:** “Use skills, plugins, and MCP tools with the provider you choose.”
 
 ## Copy guardrails
 
-- Keep claims aligned with the installed `eba1d60` build. Go is the engine; OpenTUI is the terminal
-  interface. The feature list above is descriptive, not a comparative performance claim.
-- Do not claim token reduction, superiority, award recognition, or guaranteed cache hits.
-- Pi-like extensions and model-invokable image generation are future work; neither is shipped.
-- If the demo includes attachments, show the CLI path and describe PDF input as bounded text
-  extraction only. Do not imply an interactive TUI file picker or PDF OCR.
-- Review the final terminal capture for an accurate current UI before pairing it with these captions.
-- These are drafts for review. Do not post them without separate authorization.
+- Go is the engine and OpenTUI is the terminal interface. Describe shipped workflows without implying a performance advantage over another agent.
+- Cache counts are shown only when a provider supplies them. Do not promise a cache hit, lower cost, or token savings. The [small paired-task pilot](benchmark-findings.md) is exploratory and is not a general performance result.
+- The center image in the README is concept art, not a product screenshot. Replace the screenshot-coming-soon note only after a current UI capture is reviewed.
+- Plugins and MCP servers are explicitly configured; do not imply a bundled marketplace or that arbitrary plugin programs are sandboxed. Bash and extension processes use pk's operating-system permissions.
+- Do not claim open-source or other licensing terms until the repository has a selected license.
+- These are drafts. Do not post them or use them in an external campaign without explicit authorization.

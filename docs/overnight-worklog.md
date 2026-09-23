@@ -303,3 +303,12 @@ will do.
 - Invoked `/reload`; a new UI/backend process restored the same session ID and full transcript. Typed two lines with Shift+Enter afterward; both remained in the composer without submitting, confirming input remained responsive.
 - Finder file-paste validation was deferred when Computer Use reported external user interaction. No private files were uploaded or recorded. Native Finder drag/drop remains open.
 - Published the matched replay-compaction pilot in `a0e47cf`; it shows lower input tokens in this small sample with all holdouts passing, plus output/response-count increases and mixed paired latency. Default production behavior is unchanged.
+
+### 2026-09-23 02:31 EDT — provider and subagent release installed
+
+- Installed clean public GitHub revision `6ab5426` as release `20260923T062615.688896000Z-8c293a8c790f-8726563c`. Adds provider configuration/discovery and selection, foreground and durable provider routing, bounded parent-managed subagents, opt-in TinyFish tools, and refreshed self-knowledge. Existing processes remain untouched.
+- Full isolated Go race suite, vet, build, and actual GitHub updater validation passed. An installed local HTTP fixture verified provider setup, `/v1/models` discovery, and a streamed Chat Completions response without a paid call.
+- One bounded installed Luna/low run launched two children and verified both assigned files; one final assistant event, no parse errors. Isolated artifacts are in `/tmp/pk-subagent-smoke.yKIrmq/`; normal user config and sessions were not modified.
+- Output-compaction support remains default-off. The published pilot is exploratory, not evidence of general superiority. TinyFish requires an API key; authenticated search is not yet tested.
+- The existing 30-minute heartbeat now explicitly reserves the final stretch for validation, the edited Cmux/Cap video, and delivery by 08:00 EDT.
+- New user finding: `/tools` misleadingly appears empty before the first prompt, then resolves. Backend and UI owners are fixing initialization and loading-state handling. Plugin command UI and ACP saved-session loading are ready for the next validation checkpoint.
