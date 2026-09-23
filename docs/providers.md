@@ -136,3 +136,16 @@ guaranteed.
 OpenAI API-key access uses the OpenAI Responses API and is separate from native ChatGPT/Codex login.
 See the [getting-started guide](getting-started.md) for the interactive setup flow and
 [provider presets source](../internal/providers/presets.go) for current catalog metadata.
+
+### Streaming activity and reasoning details
+
+The activity line distinguishes recent stream progress from waiting for more data. A long wait
+alone cannot establish whether a provider is reasoning, queued, or stalled. Latest-response TPS
+includes provider wait and excludes tool execution; it is not a live decoder-speed measurement.
+
+In the TUI, Ctrl+O also expands reasoning text explicitly returned by compatible external chat
+providers when available. These optional details are bounded, transient, and excluded from saved
+conversation history and subsequent model prompts. They are provider output, not verified facts.
+Native Codex private reasoning is not extracted. Providers that expose no such text show only
+activity information. Workers AI effort is provider-controlled unless its configured adapter
+explicitly supports an effort parameter.

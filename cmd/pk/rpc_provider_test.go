@@ -68,9 +68,9 @@ func TestRPCProviderCatalogSelectionAndRuntime(t *testing.T) {
 	if modelsEvent.Type != "provider_models" {
 		t.Fatalf("provider models event=%+v", modelsEvent)
 	}
-	server.handle(rpcMessage{Version: 1, ID: "start", Type: "start", Payload: json.RawMessage(`{"workspace":"` + workspace + `","provider_id":"fixture","steering":true}`)}, make(chan turnDone, 1))
+	server.handle(rpcMessage{Version: 1, ID: "start", Type: "start", Payload: json.RawMessage(`{"workspace":"` + workspace + `","provider_id":"fixture","steering":true,"provider_reasoning":true}`)}, make(chan turnDone, 1))
 	ready := readRPCEvent(t, sink)
-	if ready.Type != "ready" || ready.Payload.(map[string]any)["provider_id"] != "fixture" {
+	if ready.Type != "ready" || ready.Payload.(map[string]any)["provider_id"] != "fixture" || ready.Payload.(map[string]any)["provider_reasoning_enabled"] != true {
 		t.Fatalf("ready event=%+v", ready)
 	}
 	finished := make(chan turnDone, 1)

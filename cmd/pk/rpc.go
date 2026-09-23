@@ -67,58 +67,60 @@ func rpcMain(ctx context.Context, input io.Reader, output, diagnostics io.Writer
 }
 
 type rpcServer struct {
-	ctx                     context.Context
-	input                   io.Reader
-	output, diagnostics     io.Writer
-	cfgPath, sessionDir     string
-	mu                      sync.Mutex
-	opts                    runner.Options
-	contextBudgetConfig     config.ContextBudgetConfig
-	historyCompactionConfig config.HistoryCompactionConfig
-	adapter                 *codexAdapter
-	useCodex                bool
-	codexPath               string
-	started                 bool
-	steeringEnabled         bool
-	session                 string
-	providerID              string
-	providerModelsRequestID string
-	providerModelsCancel    context.CancelFunc
-	pendingProviderModels   *providerModelsRequest
-	activeCancel            context.CancelFunc
-	releaseCancel           context.CancelFunc
-	releaseDone             chan struct{}
-	releaseActive           bool
-	pluginCommandCancel     context.CancelFunc
-	pluginCommandDone       chan struct{}
-	pluginCommandActive     bool
-	skillOperationCancel    context.CancelFunc
-	skillOperationDone      chan struct{}
-	skillOperationActive    bool
-	skillOperationKind      string
-	skillOperationRequestID string
-	reloadPrepared          bool
-	activeInputs            chan runner.Input
-	activeSteerRequests     chan steeringRequest
-	pendingSteers           map[string]func(error)
-	active                  bool
-	quit                    bool
-	attachedTask            string
-	taskFollowRequest       string
-	taskFollowCancel        context.CancelFunc
-	pluginPaths             []string
-	pluginIssues            []string
-	requestTypes            map[string]string
-	skillManagerFactory     func() skillinstall.Manager
-	broker                  *interaction.Broker
-	loadAttachments         func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
-	prepareAdapter          func(context.Context, bool, string) (*codexAdapter, error)
-	clipboardProvider       clipboard.Provider
-	clipboardWriter         clipboard.TextWriter
-	clipboardActive         bool
-	clipboardLateWrite      bool
-	clipboardTimeout        time.Duration
-	runReleaseCommand       func(context.Context, []string, io.Writer, io.Writer) int
+	ctx                        context.Context
+	input                      io.Reader
+	output, diagnostics        io.Writer
+	cfgPath, sessionDir        string
+	mu                         sync.Mutex
+	opts                       runner.Options
+	contextBudgetConfig        config.ContextBudgetConfig
+	historyCompactionConfig    config.HistoryCompactionConfig
+	adapter                    *codexAdapter
+	useCodex                   bool
+	codexPath                  string
+	started                    bool
+	steeringEnabled            bool
+	providerReasoningRequested bool
+	providerReasoningEnabled   bool
+	session                    string
+	providerID                 string
+	providerModelsRequestID    string
+	providerModelsCancel       context.CancelFunc
+	pendingProviderModels      *providerModelsRequest
+	activeCancel               context.CancelFunc
+	releaseCancel              context.CancelFunc
+	releaseDone                chan struct{}
+	releaseActive              bool
+	pluginCommandCancel        context.CancelFunc
+	pluginCommandDone          chan struct{}
+	pluginCommandActive        bool
+	skillOperationCancel       context.CancelFunc
+	skillOperationDone         chan struct{}
+	skillOperationActive       bool
+	skillOperationKind         string
+	skillOperationRequestID    string
+	reloadPrepared             bool
+	activeInputs               chan runner.Input
+	activeSteerRequests        chan steeringRequest
+	pendingSteers              map[string]func(error)
+	active                     bool
+	quit                       bool
+	attachedTask               string
+	taskFollowRequest          string
+	taskFollowCancel           context.CancelFunc
+	pluginPaths                []string
+	pluginIssues               []string
+	requestTypes               map[string]string
+	skillManagerFactory        func() skillinstall.Manager
+	broker                     *interaction.Broker
+	loadAttachments            func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
+	prepareAdapter             func(context.Context, bool, string) (*codexAdapter, error)
+	clipboardProvider          clipboard.Provider
+	clipboardWriter            clipboard.TextWriter
+	clipboardActive            bool
+	clipboardLateWrite         bool
+	clipboardTimeout           time.Duration
+	runReleaseCommand          func(context.Context, []string, io.Writer, io.Writer) int
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -696,6 +698,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		var steeringEnabled bool
 		_ = json.Unmarshal(payload["steering"], &steeringEnabled)
 		s.steeringEnabled = steeringEnabled
+		var providerReasoningRequested bool
+		_ = json.Unmarshal(payload["provider_reasoning"], &providerReasoningRequested)
+		s.providerReasoningRequested = providerReasoningRequested
+		s.providerReasoningEnabled = providerReasoningRequested && (provider.Protocol == providers.ProtocolChatCompletions || provider.Protocol == providers.ProtocolCloudflareWorkersAI)
 		if s.session != "" {
 			if err := s.emitSessionHistory(msg.ID, s.session); err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
@@ -704,7 +710,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		s.started = true
 		capabilities := rpcCapabilities(steeringEnabled)
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": s.providerReasoningEnabled, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
 		}
@@ -765,6 +771,8 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		var steeringRequests chan steeringRequest
 		var sessionReady chan string
 		steeringEnabled := s.steeringEnabled
+		providerReasoningEnabled := s.providerReasoningEnabled
+		ctx = modelstream.WithProviderReasoning(ctx, providerReasoningEnabled)
 		if steeringEnabled {
 			inputStream = make(chan runner.Input, 64)
 			steeringRequests = make(chan steeringRequest, 64)
@@ -1350,13 +1358,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		imageGenDriver := s.opts.ImageGenFingerprint
 		steeringEnabled, providerID := s.steeringEnabled, s.providerID
+		providerReasoningEnabled := s.providerReasoningEnabled
 		s.mu.Unlock()
 		if err := s.emitSessionHistory(msg.ID, id); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
 		_ = s.emit(msg.ID, "session", map[string]any{"session_id": id})
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "attached": true, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": id, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "attached": true, "provider_reasoning_enabled": providerReasoningEnabled, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "new":
 		s.mu.Lock()
 		active, sessionID := s.active || s.releaseActive || s.pluginCommandActive || s.skillOperationActive, s.session
@@ -1387,8 +1396,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		imageGenDriver := s.opts.ImageGenFingerprint
 		steeringEnabled, providerID := s.steeringEnabled, s.providerID
+		providerReasoningEnabled := s.providerReasoningEnabled
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
+		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": "", "previous_session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": providerReasoningEnabled, "capabilities": rpcCapabilities(steeringEnabled), "release_status": rpcCurrentReleaseStatus()})
 	case "history_before":
 		var request struct {
 			SessionID      string `json:"session_id"`
@@ -1820,11 +1830,12 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		s.providerID, s.opts.ProviderID, s.opts.Model, s.opts.Effort = providerID, providerID, model, effort
+		s.providerReasoningEnabled = s.providerReasoningRequested && (selected.Protocol == providers.ProtocolChatCompletions || selected.Protocol == providers.ProtocolCloudflareWorkersAI)
 		s.opts.ContextBudget = selectedOptions.ContextBudget
 		s.opts.HistoryCompaction = selectedOptions.HistoryCompaction
 		s.contextBudgetConfig, s.historyCompactionConfig = cfg.ContextBudget, cfg.HistoryCompaction
 		s.mu.Unlock()
-		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort, "persisted": true})
+		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort, "persisted": true, "provider_reasoning_enabled": s.providerReasoningEnabled})
 	case "plugins_enable":
 		var payload map[string]any
 		var err error

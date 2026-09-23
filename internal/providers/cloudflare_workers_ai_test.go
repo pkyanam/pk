@@ -215,3 +215,49 @@ func TestCloudflareWorkersAIReasoningStreamReportsSafeProgress(t *testing.T) {
 		t.Fatalf("incomplete safe stream progress: started=%v reasoning_bytes=%d visible=%v completed=%v events=%+v", sawStarted, reasoningBytes, sawVisible, sawCompleted, events)
 	}
 }
+
+func TestCloudflareWorkersAIProviderReasoningIsOptInTransientAndBounded(t *testing.T) {
+	provider := Provider{ID: "cf", Protocol: ProtocolCloudflareWorkersAI, BaseURL: "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1"}
+	adapter := newChatAdapter(provider, "fixture-token", provider.BaseURL)
+	reasoningOne, reasoningTwo := strings.Repeat("a", 20<<10), strings.Repeat("b", 20<<10)
+	adapter.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return fakeResponse(http.StatusOK, strings.Join([]string{
+			`data: {"id":"reasoning-response","choices":[{"delta":{"reasoning_content":"` + reasoningOne + `"},"finish_reason":null}]}`,
+			`data: {"id":"reasoning-response","choices":[{"delta":{"reasoning":"` + reasoningTwo + `"},"finish_reason":null}]}`,
+			`data: {"id":"reasoning-response","choices":[{"delta":{"content":"visible answer"},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n\n")), nil
+	})}
+	var mu sync.Mutex
+	var events []modelstream.Event
+	ctx := modelstream.WithProviderReasoning(modelstream.WithObserver(context.Background(), func(event modelstream.Event) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}), true)
+	response, err := adapter.Respond(ctx, llm.Request{
+		Model: llm.Model{ID: "@cf/zai-org/glm-5.3-flash"},
+		Input: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "fixture"}}},
+	}, llm.RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 1 || response.Output[0].Data.(llm.Message).Text != "visible answer" {
+		t.Fatalf("provider reasoning entered durable response output: %#v", response.Output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var got strings.Builder
+	for _, event := range events {
+		if event.Kind == modelstream.EventProviderReasoningDelta {
+			got.WriteString(event.Text)
+		}
+	}
+	if got.Len() != 32<<10 {
+		t.Fatalf("provider reasoning bytes=%d, want 32 KiB cap", got.Len())
+	}
+	if got.String() != reasoningOne+reasoningTwo[:12<<10] {
+		t.Fatal("provider reasoning cap did not preserve the stream prefix")
+	}
+}

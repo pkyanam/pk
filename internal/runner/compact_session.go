@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pkyanam/pk/internal/filetools"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -109,6 +110,7 @@ func CompactSession(ctx context.Context, options Options) (CompactionResult, err
 	if registry == nil {
 		return CompactionResult{}, errors.New("tool registry factory returned nil")
 	}
+	registry = filetools.Decorator(options.Workspace)(registry)
 	if options.DecorateRegistry != nil {
 		registry = options.DecorateRegistry(registry)
 		if registry == nil {

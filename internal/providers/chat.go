@@ -70,6 +70,8 @@ func (adapter *chatAdapter) Respond(ctx context.Context, request llm.Request, _ 
 			observed.Emit(modelstream.Event{Kind: modelstream.EventAssistantDelta, Text: event.Text, Bytes: len(event.Text)})
 		case "reasoning_progress":
 			observed.Emit(modelstream.Event{Kind: modelstream.EventReasoningProgress, Bytes: event.Bytes})
+		case "provider_reasoning_delta":
+			observed.Emit(modelstream.Event{Kind: modelstream.EventProviderReasoningDelta, Text: event.Text, Bytes: len(event.Text)})
 		case "tool_call_started":
 			observed.Emit(modelstream.Event{Kind: modelstream.EventToolCallStarted, ItemID: strconv.Itoa(event.ToolIndex), ToolName: event.ToolName})
 		case "tool_arguments_progress":
@@ -386,6 +388,14 @@ func decodeChatStream(ctx context.Context, source io.Reader) (llm.Response, erro
 			if reasoningBytes > 0 {
 				if observer != nil {
 					observer(Event{Kind: "reasoning_progress", Bytes: reasoningBytes})
+				}
+			}
+			if observer != nil && modelstream.ProviderReasoningEnabled(ctx) {
+				if choice.Delta.ReasoningContent != "" {
+					observer(Event{Kind: "provider_reasoning_delta", Text: choice.Delta.ReasoningContent})
+				}
+				if choice.Delta.Reasoning != "" {
+					observer(Event{Kind: "provider_reasoning_delta", Text: choice.Delta.Reasoning})
 				}
 			}
 			if choice.Delta.Content != "" {

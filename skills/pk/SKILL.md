@@ -15,6 +15,6 @@ Never print, log, or pass keys as command arguments. Provider keys saved by pk a
 
 ## Develop and update
 
-The source is [`pkyanam/pk`](https://github.com/pkyanam/pk). Locate the intended checkout with `git rev-parse --show-toplevel`; read `AGENTS.md`, `docs/README.md`, and `git status --short` before editing. Preserve user changes and keep a recoverable checkpoint. Go code is in `cmd/pk/` and `internal/`; OpenTUI is in `ui/src/`.
+The source is [`pkyanam/pk`](https://github.com/pkyanam/pk). Locate the intended checkout with `git rev-parse --show-toplevel`; read `AGENTS.md`, `docs/README.md`, and `git status --short` before editing. Preserve user changes and keep a recoverable checkpoint. Prefer WriteFile for new files and EditFile for exact changes when available; inspect existing content first. Go code is in `cmd/pk/` and `internal/`; OpenTUI is in `ui/src/`.
 
 Run focused tests, then relevant checks: `go test ./...`, `go vet ./...`, and `cd ui && bun run check && bun test`. Report only checks actually run. To stage a local checkout, use `pk update --source /absolute/path/to/pk`; the updater builds and validates a paired release before activation. Update only while the foreground session is idle. Verify with `pk version`, then `/reload` (or restart pk) to continue on the new release. If it regresses, run `pk rollback` and reload. Keep a concise handoff of changes, tests, release state, and remaining limits; do not claim pk is bug-free or fully autonomous.

@@ -22,6 +22,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/pkyanam/pk/internal/contextbudget"
+	"github.com/pkyanam/pk/internal/filetools"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/coordinator"
@@ -305,8 +306,9 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 		return RunResult{}, fmt.Errorf("create session inbox: %w", err)
 	}
 	var remoteJobHandlers []operation.RemoteJobHandler
+	remoteJobHandlers = append(remoteJobHandlers, filetools.HandlerFactory(options.Workspace)(runCtx)...)
 	if options.RemoteJobHandlers != nil {
-		remoteJobHandlers = options.RemoteJobHandlers(runCtx)
+		remoteJobHandlers = append(remoteJobHandlers, options.RemoteJobHandlers(runCtx)...)
 	}
 	manager := operation.NewLocalOperationManager(runCtx, remoteJobHandlers...)
 	defer func() {
@@ -410,6 +412,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	if registry == nil {
 		return RunResult{SessionID: string(id)}, errors.New("tool registry factory returned nil")
 	}
+	registry = filetools.Decorator(options.Workspace)(registry)
 	warnings = append(skillDiscoveryWarnings, warnings...)
 	if options.DecorateRegistry != nil {
 		registry = options.DecorateRegistry(registry)
@@ -1354,7 +1357,7 @@ const maxWorkspaceInstructions = 64 << 10
 
 func workspaceSystemPrompt(workspace, explicit string, diagnostics io.Writer) string {
 	sections := []string{
-		"You are pk, a local coding agent working in the user's current project. Use Bash to inspect, edit, and verify files in the supplied workspace. Explore relevant code before changing it, keep edits focused, and report what changed and what you verified without claiming checks that did not run. For substantial multi-step tasks, give the user a brief plan before the first tool call and concise factual updates at meaningful milestones while work continues. Put progress messages alongside the tool work they describe; do not send a standalone progress-only turn that ends the work. Never use timer-based filler updates, and do not expose hidden reasoning. Continue until the requested task is done and verified, then summarize the result and checks. Ask the user when key information is missing or an action needs a choice. Do not expose credentials or other secrets. Before editing a nested path, inspect and follow the nearest nested AGENTS.md; pk automatically loads only the workspace-root AGENTS.md.\n\nWorkspace: " + workspace + "\nPlatform: " + runtime.GOOS + "/" + runtime.GOARCH + "; shell: /bin/sh.",
+		"You are pk, a local coding agent working in the user's current project. Use Bash to inspect and verify files; prefer WriteFile and EditFile for focused file changes. Explore relevant code before changing it, keep edits focused, and report what changed and what you verified without claiming checks that did not run. For substantial multi-step tasks, give the user a brief plan before the first tool call and concise factual updates at meaningful milestones while work continues. Put progress messages alongside the tool work they describe; do not send a standalone progress-only turn that ends the work. Never use timer-based filler updates, and do not expose hidden reasoning. Continue until the requested task is done and verified, then summarize the result and checks. Ask the user when key information is missing or an action needs a choice. Do not expose credentials or other secrets. Before editing a nested path, inspect and follow the nearest nested AGENTS.md; pk automatically loads only the workspace-root AGENTS.md.\n\nWorkspace: " + workspace + "\nPlatform: " + runtime.GOOS + "/" + runtime.GOARCH + "; shell: /bin/sh.",
 	}
 	if probeWorkspaceGit(context.Background(), workspace) == workspaceGitNotWorkTree {
 		sections = append(sections, "At session start this workspace was not inside a Git work tree. Before relying on git diff, check whether this is the intended repository; this fact may change during the session.")

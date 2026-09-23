@@ -585,3 +585,57 @@ func TestProviderFailureReapsActiveBashBeforeRunReturns(t *testing.T) {
 		t.Errorf("Bash process %d was still present when Run returned (kill 0 error %v)", pid, err)
 	}
 }
+
+func TestRunUsesBuiltinWriteFileAndEditFileTools(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args, err := json.Marshal(map[string]any{"path": "pkg/generated.go", "content": "package generated\nfunc Value() int { return 1 }\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	editArgs, err := json.Marshal(map[string]any{"path": "pkg/generated.go", "old_string": "return 1", "new_string": "return 2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &scriptedAdapter{responses: []llm.Response{
+		{ID: "write-file", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "write-call", Name: "WriteFile", Arguments: string(args)}}}},
+		{ID: "edit-file", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "edit-call", Name: "EditFile", Arguments: string(editArgs)}}}},
+		{ID: "file-tools-done", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "file updated"}}}},
+	}}
+	result, err := runner.Run(t.Context(), runner.Options{Prompt: "create and update the file", Workspace: workspace, SessionDir: t.TempDir(), Adapter: adapter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "file updated\n" {
+		t.Fatalf("final result=%q", result.Text)
+	}
+	contents, err := os.ReadFile(filepath.Join(workspace, "pkg", "generated.go"))
+	if err != nil || string(contents) != "package generated\nfunc Value() int { return 2 }\n" {
+		t.Fatalf("file=%q err=%v", contents, err)
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.requests) != 3 {
+		t.Fatalf("requests=%d want write/edit/final", len(adapter.requests))
+	}
+	foundToolResult := false
+	for _, item := range adapter.requests[2].Input {
+		if item.Type != llm.ItemToolResult {
+			continue
+		}
+		toolResult, ok := item.Data.(llm.ToolResult)
+		if !ok {
+			continue
+		}
+		for _, output := range toolResult.Output {
+			if strings.Contains(output.Value, "sha256") && !strings.Contains(output.Value, "package generated") {
+				foundToolResult = true
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatal("model did not receive concise non-content file operation results")
+	}
+}
