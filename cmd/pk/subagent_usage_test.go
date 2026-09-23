@@ -32,6 +32,9 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 			if err := enc.Encode(map[string]any{"type": "assistant", "response_id": "r-1", "text": "private child response text"}); err != nil {
 				return runner.RunResult{}, err
 			}
+			if err := enc.Encode(map[string]any{"type": "model", "session_id": "private-child-session", "model": "gpt-6-luna", "effort": "low", "api_key": "private-model-secret"}); err != nil {
+				return runner.RunResult{}, err
+			}
 			if err := enc.Encode(map[string]any{
 				"type": "usage", "session_id": "private-child-session", "response_id": "r-1",
 				"input_tokens": 11, "output_tokens": 5, "reasoning_tokens": 2,
@@ -77,6 +80,7 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 
 	counts := map[string]int{}
 	usageByResponse := map[string]map[string]any{}
+	var modelEvent map[string]any
 	var unavailableEvent map[string]any
 	var terminalState map[string]any
 	scanner := bufio.NewScanner(strings.NewReader(out.String()))
@@ -94,6 +98,9 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 			responseID, _ := event["response_id"].(string)
 			usageByResponse[responseID] = event
 		}
+		if typ == "subagent_model" {
+			modelEvent = event
+		}
 		if typ == "subagent_accounting_unavailable" {
 			unavailableEvent = event
 		}
@@ -106,12 +113,18 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 		if strings.Contains(scanner.Text(), "private child response text") || strings.Contains(scanner.Text(), "private-child-session") {
 			t.Fatalf("child content leaked into parent CLI stream: %s", scanner.Text())
 		}
+		if strings.Contains(scanner.Text(), "private-model-secret") || strings.Contains(scanner.Text(), "api_key") {
+			t.Fatalf("unallowlisted model payload leaked into parent CLI stream: %s", scanner.Text())
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if counts["parent_marker"] != 40 || counts["subagent_started"] != 1 || counts["subagent_usage"] != 2 || counts["subagent_accounting_unavailable"] != 1 || counts["subagent_state"] != 1 {
+	if counts["parent_marker"] != 40 || counts["subagent_started"] != 1 || counts["subagent_usage"] != 2 || counts["subagent_accounting_unavailable"] != 1 || counts["subagent_model"] != 1 || counts["subagent_state"] != 1 {
 		t.Fatalf("forwarded event counts=%v", counts)
+	}
+	if modelEvent == nil || modelEvent["child_id"] != child.ID || modelEvent["model"] != "gpt-6-luna" || modelEvent["effort"] != "low" || modelEvent["model_available"] != true || modelEvent["effort_available"] != true {
+		t.Fatalf("child model event=%v", modelEvent)
 	}
 	if terminalState == nil || terminalState["child_id"] != child.ID || terminalState["state"] != "completed" {
 		t.Fatalf("child terminal state=%v, want completed for %s", terminalState, child.ID)
@@ -132,5 +145,42 @@ func TestConfiguredSubagentUsageIsSafelyForwardedAlongsideParentJSONL(t *testing
 	}
 	if counts["subagent_response"] != 0 || counts["assistant"] != 0 {
 		t.Fatalf("unapproved child events were copied to parent stream: %v", counts)
+	}
+}
+
+func TestSubagentModelForwarderMarksInvalidMetadataUnavailable(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		model   bool
+		effort  bool
+	}{
+		{"malformed", `{not-json`, false, false},
+		{"missing", `{"session_id":"must-not-copy"}`, false, false},
+		{"long model", `{"model":"` + strings.Repeat("m", 129) + `","effort":"medium"}`, false, true},
+		{"invalid effort", `{"model":"fixture-model","effort":"none","session_id":"must-not-copy"}`, true, false},
+		{"long effort", `{"model":"fixture-model","effort":"` + strings.Repeat("e", 17) + `"}`, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			forward := subagentJSONLForwarder(&out, true)
+			forward(subagents.Event{Type: "model", ChildID: "child-fixture", Payload: json.RawMessage(tc.payload)})
+			var event map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &event); err != nil {
+				t.Fatalf("model event=%q: %v", out.String(), err)
+			}
+			if event["type"] != "subagent_model" || event["child_id"] != "child-fixture" || event["model_available"] != tc.model || event["effort_available"] != tc.effort {
+				t.Fatalf("unavailable model event=%v", event)
+			}
+			_, hasModel := event["model"]
+			_, hasEffort := event["effort"]
+			if hasModel != tc.model || hasEffort != tc.effort {
+				t.Fatalf("values do not match availability markers: %v", event)
+			}
+			if strings.Contains(out.String(), "must-not-copy") || strings.Contains(out.String(), "none") || strings.Contains(out.String(), strings.Repeat("e", 17)) {
+				t.Fatalf("unallowlisted model metadata copied: %s", out.String())
+			}
+		})
 	}
 }

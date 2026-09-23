@@ -61,5 +61,7 @@ retained in [the result directory](../../benchmarks/results/subagent-schema-pilo
 
 The dispatcher used fewer total input tokens, but slightly more uncached input.
 No dollar savings are established. This single ordered pilot is stochastic and
-does not isolate cache effects or cover steering/cancellation. Production keeps
+does not isolate cache effects or cover steering/cancellation. The trace records
+the parent model and effort, but did not capture each child's actual selection;
+defaults alone do not prove that neither parent requested an override. Production keeps
 the existing controls pending broader, counterbalanced evidence.

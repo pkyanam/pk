@@ -115,6 +115,65 @@ func TestSubagentAccountingReportLabelsParentAndCombinedScopes(t *testing.T) {
 	}
 }
 
+func TestCombinedUncachedInputRequiresValidCompleteCounters(t *testing.T) {
+	if got, available := uncachedInput(100, 30, true, true); !available || got != 70 {
+		t.Fatalf("uncached input = %d, available=%t; want 70,true", got, available)
+	}
+	for name, counters := range map[string]struct {
+		input, cached                   int64
+		inputAvailable, cachedAvailable bool
+	}{
+		"missing input":        {100, 10, false, true},
+		"missing cache count":  {100, 10, true, false},
+		"cached exceeds input": {10, 11, true, true},
+	} {
+		got, available := uncachedInput(counters.input, counters.cached, counters.inputAvailable, counters.cachedAvailable)
+		if available || got != 0 {
+			t.Errorf("%s: uncached input = %d, available=%t; want unavailable", name, got, available)
+		}
+	}
+}
+
+func TestSubagentModelEffortConfigurationCoverage(t *testing.T) {
+	got := parseOutput("pk", []byte(`{"type":"subagent_started","child_id":"a"}
+{"type":"subagent_started","child_id":"b"}
+{"type":"subagent_model","child_id":"a","model":"gpt-6-luna","effort":"low","model_available":true,"effort_available":true}
+{"type":"subagent_model","child_id":"b","model":"gpt-6-luna","effort":"low","model_available":true,"effort_available":true}`))
+	if !got.subagentModelsAvailable || len(got.childModels) != 2 {
+		t.Fatalf("model configuration coverage=%t models=%v", got.subagentModelsAvailable, got.childModels)
+	}
+	records := childModelRecords(got.childModels)
+	if len(records) != 2 || records[0].ChildID != "a" || records[1].Model != "gpt-6-luna" || records[1].Effort != "low" {
+		t.Fatalf("child model records = %#v", records)
+	}
+	missing := parseOutput("pk", []byte(`{"type":"subagent_started","child_id":"a"}`))
+	if missing.subagentModelsAvailable {
+		t.Fatal("missing child model/effort was reported as available")
+	}
+}
+
+func TestPerResponseCachedInputGreaterThanInputInvalidatesUncachedCoverage(t *testing.T) {
+	got := parseOutput("pk", []byte(`{"type":"usage","response_id":"parent","usage_available":true,"input_tokens":10,"output_tokens":1,"cached_input_tokens":2,"cached_input_tokens_available":true}
+{"type":"subagent_started","child_id":"child"}
+{"type":"subagent_usage","child_id":"child","response_id":"child-response","usage_available":true,"input_tokens":10,"output_tokens":1,"cached_input_tokens":11,"cached_input_tokens_available":true}`))
+	if !got.inputAvailable || !got.outputAvailable {
+		t.Fatalf("valid input/output counters were lost: %#v", got)
+	}
+	if got.subagentCachedAvailable || got.combinedCachedAvailable || got.combinedInputAvailable == false {
+		t.Fatalf("cached>input should invalidate cached totals but preserve input totals: %#v", got)
+	}
+	combined, available := uncachedInput(got.combinedInput, got.combinedCached, got.combinedInputAvailable, got.combinedCachedAvailable)
+	if available || combined != 0 {
+		t.Fatalf("uncached input = %d available=%t, want unavailable", combined, available)
+	}
+	parentInvalid := parseOutput("pk", []byte(`{"type":"usage","response_id":"parent","usage_available":true,"input_tokens":10,"output_tokens":1,"cached_input_tokens":11,"cached_input_tokens_available":true}
+{"type":"subagent_started","child_id":"child"}
+{"type":"subagent_usage","child_id":"child","response_id":"child-response","usage_available":true,"input_tokens":10,"output_tokens":1,"cached_input_tokens":2,"cached_input_tokens_available":true}`))
+	if parentInvalid.cachedAvailable || parentInvalid.combinedCachedAvailable || !parentInvalid.combinedInputAvailable {
+		t.Fatalf("parent cached>input should invalidate cached totals but preserve input totals: %#v", parentInvalid)
+	}
+}
+
 func TestDispatcherWithoutChildAccountingDoesNotImplyFreeDelegation(t *testing.T) {
 	sum := parseOutput("pk", []byte(`{"type":"usage","response_id":"parent","usage_available":true,"input_tokens":10,"output_tokens":2}
 {"type":"tool_call","name":"Subagent","state":"completed"}

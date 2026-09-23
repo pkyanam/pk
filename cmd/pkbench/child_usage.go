@@ -1,6 +1,10 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+)
 
 func validSubagentActionCoverage(record runRecord) bool {
 	return subagentActionCoverageAvailable(record) &&
@@ -56,6 +60,32 @@ func observeChildState(sum *usageSum, event map[string]any) {
 		sum.childStates = map[string]string{}
 	}
 	sum.childStates[childID] = state
+}
+
+func observeChildModel(sum *usageSum, event map[string]any) {
+	childID, model, effort := stringValue(event["child_id"]), strings.TrimSpace(stringValue(event["model"])), strings.TrimSpace(stringValue(event["effort"]))
+	if childID == "" || model == "" || effort == "" || !boolValue(event["model_available"]) || !boolValue(event["effort_available"]) {
+		sum.childModelInvalid = true
+		return
+	}
+	if sum.childModels == nil {
+		sum.childModels = make(map[string]subagentModelRecord)
+	}
+	record := subagentModelRecord{ChildID: childID, Model: model, Effort: effort}
+	if previous, exists := sum.childModels[childID]; exists && previous != record {
+		sum.childModelInvalid = true
+		return
+	}
+	sum.childModels[childID] = record
+}
+
+func childModelRecords(models map[string]subagentModelRecord) []subagentModelRecord {
+	result := make([]subagentModelRecord, 0, len(models))
+	for _, model := range models {
+		result = append(result, model)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ChildID < result[j].ChildID })
+	return result
 }
 
 func observeChildResponse(sum *usageSum, event map[string]any, usage bool) {
@@ -165,6 +195,15 @@ func finalizeUsageAccounting(sum *usageSum) {
 			sum.subagentChildrenWithUsage++
 		}
 	}
+	sum.subagentModelsAvailable = len(sum.childStarted) > 0 && !sum.childModelInvalid && len(sum.childModels) == len(sum.childStarted)
+	if sum.subagentModelsAvailable {
+		for childID := range sum.childStarted {
+			if model, ok := sum.childModels[childID]; !ok || model.Model == "" || model.Effort == "" {
+				sum.subagentModelsAvailable = false
+				break
+			}
+		}
+	}
 	if !sum.childActivityObserved && !sum.childStartToolSeen {
 		// No child tool call or child lifecycle event was present in this trace.
 		sum.subagentResponsesAvailable = true
@@ -190,10 +229,16 @@ func finalizeUsageAccounting(sum *usageSum) {
 		sum.subagentCachedAvailable = sum.subagentCachedAvailable && response.cachedAvailable
 		sum.subagentWritesAvailable = sum.subagentWritesAvailable && response.writesAvailable
 	}
+	if !responseCachesConsistent(sum.childResponses) {
+		sum.subagentCachedAvailable = false
+	}
 
 	parentResponses := len(sum.parentResponses)
 	parentResponseCountAvailable := !sum.parentUnknownResponse && len(sum.parentResponses) > 0
 	parentUsageComplete := parentResponseCountAvailable && allResponseUsagePresent(sum.parentResponses)
+	if !responseCachesConsistent(sum.parentResponses) {
+		sum.cachedAvailable = false
+	}
 	parentInput, parentOutput, parentCached, parentWrites := sumParentValues(sum.parentResponses)
 	sum.combinedResponses = parentResponses + len(sum.childResponses)
 	sum.combinedResponsesAvailable = parentResponseCountAvailable && sum.subagentResponsesAvailable
@@ -201,7 +246,7 @@ func finalizeUsageAccounting(sum *usageSum) {
 	sum.combinedCached, sum.combinedWrites = parentCached+sum.subagentCached, parentWrites+sum.subagentWrites
 	sum.combinedInputAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "input") && sum.subagentInputAvailable
 	sum.combinedOutputAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "output") && sum.subagentOutputAvailable
-	sum.combinedCachedAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "cached") && sum.subagentCachedAvailable
+	sum.combinedCachedAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "cached") && responseCachesConsistent(sum.parentResponses) && sum.subagentCachedAvailable
 	sum.combinedWritesAvailable = parentUsageComplete && allResponseMetricAvailable(sum.parentResponses, "writes") && sum.subagentWritesAvailable
 }
 
@@ -222,6 +267,15 @@ func childHasCompleteUsage(responses map[responseKey]*responseUsage, childID str
 func allResponseUsagePresent[K comparable](responses map[K]*responseUsage) bool {
 	for _, response := range responses {
 		if !response.usageSeen {
+			return false
+		}
+	}
+	return true
+}
+
+func responseCachesConsistent[K comparable](responses map[K]*responseUsage) bool {
+	for _, response := range responses {
+		if response.inputAvailable && response.cachedAvailable && response.cached > response.input {
 			return false
 		}
 	}

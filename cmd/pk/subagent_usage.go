@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
+	"unicode"
 
+	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/subagents"
 )
 
@@ -34,7 +37,7 @@ type childUsageRecord struct {
 }
 
 // subagentJSONLForwarder exposes only lifecycle and accounting metadata. Child
-// prompts, assistant text, tool arguments, model names, and raw payloads stay
+// prompts, assistant text, and raw payloads stay
 // in their own runner stream and are never copied to the parent CLI output.
 func subagentJSONLForwarder(out io.Writer, enabled bool) func(subagents.Event) {
 	if !enabled || out == nil {
@@ -44,6 +47,7 @@ func subagentJSONLForwarder(out io.Writer, enabled bool) func(subagents.Event) {
 	started := make(map[string]struct{})
 	responses := make(map[string]struct{})
 	unavailable := make(map[string]struct{})
+	modelEvents := make(map[string]string)
 	emitUnavailable := func(childID, responseID string) {
 		key := childID + "\x00" + responseID
 		mu.Lock()
@@ -116,8 +120,52 @@ func subagentJSONLForwarder(out io.Writer, enabled bool) func(subagents.Event) {
 				line["cache_write_input_tokens_available"] = *usage.CacheWriteInputTokensAvailable
 			}
 			_ = writeSubagentJSONLine(out, line)
+		case event.Type == "model":
+			var selection struct {
+				Model  string `json:"model"`
+				Effort string `json:"effort"`
+			}
+			validPayload := len(event.Payload) > 0 && json.Unmarshal(event.Payload, &selection) == nil
+			line := map[string]any{"type": "subagent_model", "child_id": event.ChildID}
+			if validPayload && validChildModel(selection.Model) {
+				line["model"] = strings.TrimSpace(selection.Model)
+				line["model_available"] = true
+			} else {
+				line["model_available"] = false
+			}
+			if validPayload && config.ValidEffort(selection.Effort) {
+				line["effort"] = strings.ToLower(strings.TrimSpace(selection.Effort))
+				line["effort_available"] = true
+			} else {
+				line["effort_available"] = false
+			}
+			encoded, err := json.Marshal(line)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			if modelEvents[event.ChildID] == string(encoded) {
+				mu.Unlock()
+				return
+			}
+			modelEvents[event.ChildID] = string(encoded)
+			mu.Unlock()
+			_ = writeSubagentJSONLine(out, line)
 		}
 	}
+}
+
+func validChildModel(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || len(model) > 128 {
+		return false
+	}
+	for _, r := range model {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeSubagentJSONLine(out io.Writer, value any) error {

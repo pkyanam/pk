@@ -104,7 +104,8 @@ func runSubagentSchemaExperiment(repo, out string, repetitions int, phaseTimeout
 			if err := initializeFixtureGit(ctx, workspace); err != nil {
 				return failWithResults(err)
 			}
-			record, runErr := runPhase(ctx, phaseOptions{engine: arm.name, phase: "delegation", prompt: subagentSchemaPrompt, effort: modelEffort, workspace: workspace, timeout: phaseTimeout, binary: pkBinary, mode: arm.mode, pkHome: pkHome, outputDir: resultDir, skillsDir: emptySkills, taskName: "clamp+intervals", repetition: rep})
+			prompt := subagentSchemaPrompt + fmt.Sprintf(" Use model %q and reasoning effort %q for both children.", model, modelEffort)
+			record, runErr := runPhase(ctx, phaseOptions{engine: arm.name, phase: "delegation", prompt: prompt, effort: modelEffort, workspace: workspace, timeout: phaseTimeout, binary: pkBinary, mode: arm.mode, pkHome: pkHome, outputDir: resultDir, skillsDir: emptySkills, taskName: "clamp+intervals", repetition: rep})
 			if runErr != nil {
 				record.Error = sanitizeError(runErr.Error())
 			}

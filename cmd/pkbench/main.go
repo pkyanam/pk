@@ -52,82 +52,86 @@ var tasks = []task{
 }
 
 type runRecord struct {
-	Engine                          string `json:"engine"`
-	Task                            string `json:"task"`
-	Repetition                      int    `json:"repetition"`
-	Phase                           string `json:"phase"`
-	Effort                          string `json:"effort,omitempty"`
-	SessionMode                     string `json:"session_mode"`
-	SessionID                       string `json:"session_id,omitempty"`
-	WallMS                          int64  `json:"wall_ms"`
-	ModelResponses                  int    `json:"model_responses"`
-	SubagentModelResponses          int    `json:"subagent_model_responses"`
-	SubagentResponsesAvailable      bool   `json:"subagent_model_responses_available"`
-	SubagentStartedChildren         int    `json:"subagent_started_children"`
-	SubagentStartedAvailable        bool   `json:"subagent_started_children_available"`
-	SubagentCompletedChildren       int    `json:"subagent_completed_children"`
-	SubagentStateAvailable          bool   `json:"subagent_child_states_available"`
-	SubagentChildrenWithUsage       int    `json:"subagent_children_with_usage"`
-	SubagentChildrenUsageAvail      bool   `json:"subagent_children_with_usage_available"`
-	SubagentActionCoverage          bool   `json:"subagent_action_coverage"`
-	SubagentActionCoverageAvailable bool   `json:"subagent_action_coverage_available"`
-	SubagentSchemaBytesBefore       int64  `json:"subagent_tool_definition_bytes_before"`
-	SubagentSchemaBytesAfter        int64  `json:"subagent_tool_definition_bytes_after"`
-	SubagentSchemaBytesSaved        int64  `json:"subagent_tool_definition_bytes_saved"`
-	SubagentSchemaAvailable         bool   `json:"subagent_schema_metrics_available"`
-	SubagentInputTokens             int64  `json:"subagent_input_tokens"`
-	SubagentInputAvailable          bool   `json:"subagent_input_tokens_available"`
-	SubagentOutputTokens            int64  `json:"subagent_output_tokens"`
-	SubagentOutputAvailable         bool   `json:"subagent_output_tokens_available"`
-	SubagentCachedTokens            int64  `json:"subagent_cached_input_tokens"`
-	SubagentCachedAvailable         bool   `json:"subagent_cached_input_tokens_available"`
-	SubagentCacheWriteTokens        int64  `json:"subagent_cache_write_input_tokens"`
-	SubagentCacheWriteAvailable     bool   `json:"subagent_cache_write_input_tokens_available"`
-	CombinedModelResponses          int    `json:"combined_model_responses"`
-	CombinedResponsesAvailable      bool   `json:"combined_model_responses_available"`
-	CombinedInputTokens             int64  `json:"combined_input_tokens"`
-	CombinedInputAvailable          bool   `json:"combined_input_tokens_available"`
-	CombinedOutputTokens            int64  `json:"combined_output_tokens"`
-	CombinedOutputAvailable         bool   `json:"combined_output_tokens_available"`
-	CombinedCachedTokens            int64  `json:"combined_cached_input_tokens"`
-	CombinedCachedAvailable         bool   `json:"combined_cached_input_tokens_available"`
-	CombinedCacheWriteTokens        int64  `json:"combined_cache_write_input_tokens"`
-	CombinedCacheWriteAvailable     bool   `json:"combined_cache_write_input_tokens_available"`
-	ExplicitLimits                  int64  `json:"explicit_bash_output_limits"`
-	OmittedLimits                   int64  `json:"omitted_bash_output_limits"`
-	DefaultedLimits                 int64  `json:"benchmark_default_applied"`
-	BashOutputBytes                 int64  `json:"bash_output_bytes"`
-	BashErrorBytes                  int64  `json:"bash_error_bytes"`
-	BashRawOutputBytes              int64  `json:"bash_raw_output_bytes"`
-	BashRawErrorBytes               int64  `json:"bash_raw_error_bytes"`
-	BashOutputTruncated             int64  `json:"bash_output_truncated_operations"`
-	BashErrorTruncated              int64  `json:"bash_error_truncated_operations"`
-	BashMetricsAvailable            bool   `json:"bash_metrics_available"`
-	ToolDescriptionBytesBefore      int64  `json:"tool_description_bytes_before"`
-	ToolDescriptionBytesAfter       int64  `json:"tool_description_bytes_after"`
-	ToolDescriptionFieldsChanged    int64  `json:"tool_description_fields_changed"`
-	ToolSchemaMetricsAvailable      bool   `json:"tool_schema_metrics_available"`
-	ReplayEligibleResults           int64  `json:"eligible_bash_results"`
-	ReplayCompactedResults          int64  `json:"compacted_bash_results"`
-	ReplayOriginalBytes             int64  `json:"original_result_bytes"`
-	ReplayStoredBytes               int64  `json:"stored_result_bytes"`
-	ReplayMissingCapture            int64  `json:"missing_capture_fallbacks"`
-	ReplayMetricsAvailable          bool   `json:"context_compaction_metrics_available"`
-	InputTokens                     int64  `json:"input_tokens"`
-	InputTokensAvailable            bool   `json:"input_tokens_available"`
-	UncachedInputTokens             int64  `json:"uncached_input_tokens"`
-	UncachedInputAvailable          bool   `json:"uncached_input_tokens_available"`
-	OutputTokens                    int64  `json:"output_tokens"`
-	OutputTokensAvailable           bool   `json:"output_tokens_available"`
-	CachedTokens                    int64  `json:"cached_input_tokens"`
-	CachedTokensAvailable           bool   `json:"cached_input_tokens_available"`
-	CacheWriteTokens                int64  `json:"cache_write_input_tokens"`
-	CacheWriteAvailable             bool   `json:"cache_write_input_tokens_available"`
-	ExitCode                        int    `json:"exit_code"`
-	Error                           string `json:"error,omitempty"`
-	ContextMetricsAvailable         bool   `json:"context_metrics_available"`
-	CorrectnessPassed               *bool  `json:"correctness_passed,omitempty"`
-	PrivateFailedCommands           string `json:"private_failed_commands,omitempty"`
+	Engine                          string                `json:"engine"`
+	Task                            string                `json:"task"`
+	Repetition                      int                   `json:"repetition"`
+	Phase                           string                `json:"phase"`
+	Effort                          string                `json:"effort,omitempty"`
+	SessionMode                     string                `json:"session_mode"`
+	SessionID                       string                `json:"session_id,omitempty"`
+	WallMS                          int64                 `json:"wall_ms"`
+	ModelResponses                  int                   `json:"model_responses"`
+	SubagentModelResponses          int                   `json:"subagent_model_responses"`
+	SubagentResponsesAvailable      bool                  `json:"subagent_model_responses_available"`
+	SubagentStartedChildren         int                   `json:"subagent_started_children"`
+	SubagentStartedAvailable        bool                  `json:"subagent_started_children_available"`
+	SubagentCompletedChildren       int                   `json:"subagent_completed_children"`
+	SubagentStateAvailable          bool                  `json:"subagent_child_states_available"`
+	SubagentChildrenWithUsage       int                   `json:"subagent_children_with_usage"`
+	SubagentChildrenUsageAvail      bool                  `json:"subagent_children_with_usage_available"`
+	SubagentActionCoverage          bool                  `json:"subagent_action_coverage"`
+	SubagentActionCoverageAvailable bool                  `json:"subagent_action_coverage_available"`
+	SubagentModels                  []subagentModelRecord `json:"subagent_models,omitempty"`
+	SubagentModelsAvailable         bool                  `json:"subagent_models_available"`
+	SubagentSchemaBytesBefore       int64                 `json:"subagent_tool_definition_bytes_before"`
+	SubagentSchemaBytesAfter        int64                 `json:"subagent_tool_definition_bytes_after"`
+	SubagentSchemaBytesSaved        int64                 `json:"subagent_tool_definition_bytes_saved"`
+	SubagentSchemaAvailable         bool                  `json:"subagent_schema_metrics_available"`
+	SubagentInputTokens             int64                 `json:"subagent_input_tokens"`
+	SubagentInputAvailable          bool                  `json:"subagent_input_tokens_available"`
+	SubagentOutputTokens            int64                 `json:"subagent_output_tokens"`
+	SubagentOutputAvailable         bool                  `json:"subagent_output_tokens_available"`
+	SubagentCachedTokens            int64                 `json:"subagent_cached_input_tokens"`
+	SubagentCachedAvailable         bool                  `json:"subagent_cached_input_tokens_available"`
+	SubagentCacheWriteTokens        int64                 `json:"subagent_cache_write_input_tokens"`
+	SubagentCacheWriteAvailable     bool                  `json:"subagent_cache_write_input_tokens_available"`
+	CombinedModelResponses          int                   `json:"combined_model_responses"`
+	CombinedResponsesAvailable      bool                  `json:"combined_model_responses_available"`
+	CombinedInputTokens             int64                 `json:"combined_input_tokens"`
+	CombinedInputAvailable          bool                  `json:"combined_input_tokens_available"`
+	CombinedUncachedInputTokens     int64                 `json:"combined_uncached_input_tokens"`
+	CombinedUncachedInputAvailable  bool                  `json:"combined_uncached_input_tokens_available"`
+	CombinedOutputTokens            int64                 `json:"combined_output_tokens"`
+	CombinedOutputAvailable         bool                  `json:"combined_output_tokens_available"`
+	CombinedCachedTokens            int64                 `json:"combined_cached_input_tokens"`
+	CombinedCachedAvailable         bool                  `json:"combined_cached_input_tokens_available"`
+	CombinedCacheWriteTokens        int64                 `json:"combined_cache_write_input_tokens"`
+	CombinedCacheWriteAvailable     bool                  `json:"combined_cache_write_input_tokens_available"`
+	ExplicitLimits                  int64                 `json:"explicit_bash_output_limits"`
+	OmittedLimits                   int64                 `json:"omitted_bash_output_limits"`
+	DefaultedLimits                 int64                 `json:"benchmark_default_applied"`
+	BashOutputBytes                 int64                 `json:"bash_output_bytes"`
+	BashErrorBytes                  int64                 `json:"bash_error_bytes"`
+	BashRawOutputBytes              int64                 `json:"bash_raw_output_bytes"`
+	BashRawErrorBytes               int64                 `json:"bash_raw_error_bytes"`
+	BashOutputTruncated             int64                 `json:"bash_output_truncated_operations"`
+	BashErrorTruncated              int64                 `json:"bash_error_truncated_operations"`
+	BashMetricsAvailable            bool                  `json:"bash_metrics_available"`
+	ToolDescriptionBytesBefore      int64                 `json:"tool_description_bytes_before"`
+	ToolDescriptionBytesAfter       int64                 `json:"tool_description_bytes_after"`
+	ToolDescriptionFieldsChanged    int64                 `json:"tool_description_fields_changed"`
+	ToolSchemaMetricsAvailable      bool                  `json:"tool_schema_metrics_available"`
+	ReplayEligibleResults           int64                 `json:"eligible_bash_results"`
+	ReplayCompactedResults          int64                 `json:"compacted_bash_results"`
+	ReplayOriginalBytes             int64                 `json:"original_result_bytes"`
+	ReplayStoredBytes               int64                 `json:"stored_result_bytes"`
+	ReplayMissingCapture            int64                 `json:"missing_capture_fallbacks"`
+	ReplayMetricsAvailable          bool                  `json:"context_compaction_metrics_available"`
+	InputTokens                     int64                 `json:"input_tokens"`
+	InputTokensAvailable            bool                  `json:"input_tokens_available"`
+	UncachedInputTokens             int64                 `json:"uncached_input_tokens"`
+	UncachedInputAvailable          bool                  `json:"uncached_input_tokens_available"`
+	OutputTokens                    int64                 `json:"output_tokens"`
+	OutputTokensAvailable           bool                  `json:"output_tokens_available"`
+	CachedTokens                    int64                 `json:"cached_input_tokens"`
+	CachedTokensAvailable           bool                  `json:"cached_input_tokens_available"`
+	CacheWriteTokens                int64                 `json:"cache_write_input_tokens"`
+	CacheWriteAvailable             bool                  `json:"cache_write_input_tokens_available"`
+	ExitCode                        int                   `json:"exit_code"`
+	Error                           string                `json:"error,omitempty"`
+	ContextMetricsAvailable         bool                  `json:"context_metrics_available"`
+	CorrectnessPassed               *bool                 `json:"correctness_passed,omitempty"`
+	PrivateFailedCommands           string                `json:"private_failed_commands,omitempty"`
 }
 
 type suite struct {
@@ -469,6 +473,9 @@ type usageSum struct {
 	parentUnknownResponse                                                                                       bool
 	childStarted                                                                                                map[string]bool
 	childStates                                                                                                 map[string]string
+	childModels                                                                                                 map[string]subagentModelRecord
+	childModelInvalid                                                                                           bool
+	subagentModelsAvailable                                                                                     bool
 	childResponses                                                                                              map[responseKey]*responseUsage
 	childUnknownResponse                                                                                        bool
 	childActivityObserved                                                                                       bool
@@ -491,6 +498,12 @@ type usageSum struct {
 }
 
 type responseKey struct{ childID, responseID string }
+
+type subagentModelRecord struct {
+	ChildID string `json:"child_id"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort"`
+}
 
 type responseUsage struct {
 	usageSeen                                                         bool
@@ -593,6 +606,7 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 		SubagentStartedChildren: usage.subagentStartedChildren, SubagentStartedAvailable: usage.subagentStartedAvailable,
 		SubagentCompletedChildren: usage.subagentCompletedChildren, SubagentStateAvailable: usage.subagentStateAvailable,
 		SubagentChildrenWithUsage: usage.subagentChildrenWithUsage, SubagentChildrenUsageAvail: usage.subagentChildrenUsageAvailable,
+		SubagentModels: childModelRecords(usage.childModels), SubagentModelsAvailable: usage.subagentModelsAvailable,
 		SubagentSchemaBytesBefore: usage.subagentSchemaBytesBefore, SubagentSchemaBytesAfter: usage.subagentSchemaBytesAfter,
 		SubagentSchemaBytesSaved: usage.subagentSchemaBytesSaved, SubagentSchemaAvailable: usage.subagentSchemaMetricsAvailable,
 		SubagentInputTokens: usage.subagentInput, SubagentInputAvailable: usage.subagentInputAvailable,
@@ -625,6 +639,7 @@ func runPhase(parent context.Context, options phaseOptions) (runRecord, error) {
 	}
 	record.SubagentActionCoverageAvailable = subagentActionCoverageAvailable(record)
 	record.SubagentActionCoverage = validSubagentActionCoverage(record)
+	record.CombinedUncachedInputTokens, record.CombinedUncachedInputAvailable = uncachedInput(record.CombinedInputTokens, record.CombinedCachedTokens, record.CombinedInputAvailable, record.CombinedCachedAvailable)
 	record.ContextMetricsAvailable = contextMetricsAvailable
 	if err != nil {
 		record.Error = sanitizeError(err.Error() + " " + stderr.String())
@@ -700,6 +715,8 @@ func parseOutput(engine string, output []byte) usageSum {
 				observeChildStart(&sum, event)
 			case "subagent_state":
 				observeChildState(&sum, event)
+			case "subagent_model":
+				observeChildModel(&sum, event)
 			case "subagent_response":
 				observeChildResponse(&sum, event, false)
 			case "subagent_usage":
@@ -834,7 +851,7 @@ func sumValue(sum *usageSum, event map[string]any, field, availability string, d
 func sanitizePkEvent(event map[string]any) map[string]any {
 	typ := stringValue(event["type"])
 	out := map[string]any{"type": typ}
-	for _, key := range []string{"session_id", "response_id", "child_id", "model", "effort", "phase", "call_id", "name", "state", "elapsed_ms", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cached_input_tokens_available", "cache_write_input_tokens", "cache_write_input_tokens_available", "usage_available", "explicit_bash_output_limits", "omitted_bash_output_limits", "benchmark_default_applied", "bash_output_bytes", "bash_error_bytes", "bash_raw_output_bytes", "bash_raw_error_bytes", "bash_output_truncated_operations", "bash_error_truncated_operations", "bash_metrics_available", "tool_description_bytes_before", "tool_description_bytes_after", "tool_description_fields_changed", "tool_schema_metrics_available", "subagent_tool_definition_bytes_before", "subagent_tool_definition_bytes_after", "subagent_tool_definition_bytes_saved", "subagent_schema_metrics_available", "mode"} {
+	for _, key := range []string{"session_id", "response_id", "child_id", "model", "effort", "model_available", "effort_available", "phase", "call_id", "name", "state", "elapsed_ms", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cached_input_tokens_available", "cache_write_input_tokens", "cache_write_input_tokens_available", "usage_available", "explicit_bash_output_limits", "omitted_bash_output_limits", "benchmark_default_applied", "bash_output_bytes", "bash_error_bytes", "bash_raw_output_bytes", "bash_raw_error_bytes", "bash_output_truncated_operations", "bash_error_truncated_operations", "bash_metrics_available", "tool_description_bytes_before", "tool_description_bytes_after", "tool_description_fields_changed", "tool_schema_metrics_available", "subagent_tool_definition_bytes_before", "subagent_tool_definition_bytes_after", "subagent_tool_definition_bytes_saved", "subagent_schema_metrics_available", "mode"} {
 		if value, exists := event[key]; exists {
 			out[key] = value
 		}
@@ -1313,7 +1330,7 @@ func writeSubagentUsageTable(out *strings.Builder, records []runRecord) {
 	}
 	fmt.Fprint(out, "\n## Subagent usage (separate accounting)\n\n")
 	fmt.Fprintln(out, "Parent totals are not changed by this table. Combined values are available only when parent and child response usage is fully correlated; unavailable values are not treated as zero.")
-	fmt.Fprintln(out, "\n| Engine | Task | Rep | Phase | Child responses | Child input | Child output | Child cached | Child cache write | Combined responses | Combined input | Combined output | Combined cached | Combined cache write |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+	fmt.Fprintln(out, "\n| Engine | Task | Rep | Phase | Child responses | Child input | Child output | Child cached | Child cache write | Combined responses | Combined input | Combined uncached input | Combined output | Combined cached | Combined cache write |\n|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 	for _, record := range records {
 		childResponses := "unknown"
 		if record.SubagentResponsesAvailable {
@@ -1323,17 +1340,25 @@ func writeSubagentUsageTable(out *strings.Builder, records []runRecord) {
 		if record.CombinedResponsesAvailable {
 			combinedResponses = fmt.Sprint(record.CombinedModelResponses)
 		}
-		fmt.Fprintf(out, "| %s | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(out, "| %s | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			record.Engine, record.Task, record.Repetition, record.Phase, childResponses,
 			displayToken(record.SubagentInputTokens, record.SubagentInputAvailable),
 			displayToken(record.SubagentOutputTokens, record.SubagentOutputAvailable),
 			displayToken(record.SubagentCachedTokens, record.SubagentCachedAvailable),
 			displayToken(record.SubagentCacheWriteTokens, record.SubagentCacheWriteAvailable),
 			combinedResponses, displayToken(record.CombinedInputTokens, record.CombinedInputAvailable),
+			displayToken(record.CombinedUncachedInputTokens, record.CombinedUncachedInputAvailable),
 			displayToken(record.CombinedOutputTokens, record.CombinedOutputAvailable),
 			displayToken(record.CombinedCachedTokens, record.CombinedCachedAvailable),
 			displayToken(record.CombinedCacheWriteTokens, record.CombinedCacheWriteAvailable))
 	}
+}
+
+func uncachedInput(input, cached int64, inputAvailable, cachedAvailable bool) (int64, bool) {
+	if !inputAvailable || !cachedAvailable || cached > input {
+		return 0, false
+	}
+	return input - cached, true
 }
 
 func displayToken(value int64, available bool) string {
