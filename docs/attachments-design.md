@@ -127,3 +127,30 @@ Native cross-window drag/drop remains unverified: automated attempts did not pro
 file. Use `/file`, Finder paste, or `/paste` while that interaction is still being validated.
 
 A bounded live Luna/low run on installed `b5aa90b` attached a valid mixed PDF, invoked `ViewImage` on the rendered second page, and returned “A solid red square appears against a white background.” The opt-in Poppler integration test now checks visible red pixels, not only valid PNG decoding. This one fixture does not establish general PDF fidelity. [Usage record](../benchmarks/results/pdf-vision-smoke-20260923/result.json).
+
+## Inline output previews
+
+Assistant replies can display local PNG, JPEG, WebP, and GIF files inline, from either
+`![description](path)` or an ordinary image link. Previews fit within the transcript and use
+OpenTUI's native terminal graphics when supported, with a colored-cell fallback elsewhere.
+Remote images are not fetched automatically. Rendering a preview is local UI work and adds no
+model request or tokens.
+
+Preview sources must resolve to regular files inside the active workspace; generated `sandbox:`
+references may also resolve inside the temporary directory. Source files are limited to 32 MiB, 8192 pixels per dimension, and 16 million pixels,
+and each reply displays at most two previews. Decoding is serialized; mounted previews
+share a 32-million-pixel budget. When full, the original-file link remains available. The full-image link uses a local file URL rather
+than passing the unsupported `sandbox:` scheme to the operating system.
+
+Cmux uses native Kitty graphics, preserving image detail rather than drawing colored text
+cells. Until OpenTUI publishes its next package, pk builds the matching 0.5.12 native
+renderer from the pinned [upstream layering fix](https://github.com/anomalyco/opentui/pull/1525).
+Release archives include that library; users running `pk update` do not compile it.
+Source builds use `scripts/prepare-opentui-native`, which verifies the toolchain and caches
+the built library. It leaves the pinned JavaScript packages unchanged.
+
+Successful ImageGen tool results also create an output card, independently of the assistant's
+final reply. Saved sessions reconstruct those cards from completed operation results after
+validating the local artifact. The card stays in place if later prose links the same image.
+Missing or deleted images cannot be reconstructed from a filename; the original file remains
+necessary. These previews do not send image bytes back to the model.

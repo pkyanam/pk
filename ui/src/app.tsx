@@ -1,6 +1,8 @@
 import { useKeyboard, usePaste, useRenderer, useSelectionHandler } from "@opentui/react"
 import { SyntaxStyle, type TextareaRenderable } from "@opentui/core"
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import type { PkTransport } from "./transport"
 import type { ServerEvent } from "./protocol"
 import { SessionManager, type ManagedSession } from "./session-manager"
@@ -9,10 +11,12 @@ import { Wordmark } from "./wordmark"
 import { SecretInput } from "./secret-input"
 import { ContextUsage, type ContextUsageSnapshot } from "./context-usage"
 import { WorkersAISetup, type SetupKey } from "./workers-ai-setup"
+import { InlineImage, isLocalImageReference } from "./inline-image"
 
 type Role = "user" | "assistant" | "system" | "tool"
 type HistoryAttachment = { name: string; kind: string; contentType?: string; truncated?: boolean; pagesExtracted?: number; pagesTotal?: number }
-type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; historyAttachments?: HistoryAttachment[]; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; progressText?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
+type GeneratedImage = { path: string; width: number; height: number; mime: string }
+type Entry = { id: number; role: Role; text: string; speaker?: string; callId?: string; toolName?: string; toolState?: string; historySummary?: string; historical?: boolean; historyAttachments?: HistoryAttachment[]; generatedImages?: GeneratedImage[]; startedAt?: number; elapsedMs?: number; commandPreview?: string; detail?: string; progressText?: string; provisional?: boolean; delivery?: "queued" | "accepted" | "rejected"; deliveryMessage?: string }
 const MAX_TRANSCRIPT_ENTRIES = 300
 const OMITTED_TRANSCRIPT_ENTRY: Entry = { id: -1, role: "system", text: "Earlier activity omitted from this view · transcript is bounded for responsiveness." }
 function appendTranscriptEntries(current: Entry[], incoming: Entry | Entry[]): Entry[] {
@@ -47,6 +51,7 @@ type CompactionUsage = {
 }
 type SessionUsage = { sessionId: string; responseCount: number; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; uncachedInputTokens?: number; coverage: { input: number; output: number; cachedInput: number; uncachedInput: number }; compaction?: CompactionUsage }
 type ContextBudget = { provider_id: string; model_id: string; context_tokens?: number | null; input_tokens?: number | null; output_tokens?: number | null; context_source: string; input_source: string; output_source: string; operational_input_budget_tokens: number; operational_input_source: string; output_reserve_tokens: number; safety_margin_tokens: number; unknown_input_budget_tokens?: number; overrides?: Array<{ provider_id: string; model_id: string; context_tokens?: number | null; input_tokens?: number | null; output_tokens?: number | null }>; history_compaction?: { enabled?: boolean; trigger_ratio?: number; target_ratio?: number; summary_reserve_tokens?: number; max_summary_tokens?: number } }
+type ContextRequestReadout = { turn_id: string; session_id?: string; request_ordinal: number; pending: boolean; estimated_input_tokens?: number | null; context_limit_tokens?: number | null; operational_input_budget_tokens?: number | null; context_source?: string; operational_input_source?: string; estimate_method?: string; estimate_confidence?: string }
 type ContextCompaction = { phase: string; reason?: string; estimate?: { tokens?: number; method?: string; confidence?: string }; before_estimate_tokens?: number; after_estimate_tokens?: number; summary_input_tokens?: number; summary_output_tokens?: number; checkpoint_version?: number; error_code?: string }
 type LatestProviderUsage = { tokensPerSecond?: number; responseDurationMs?: number; input?: number; output?: number; cached?: number; inputAvailable: boolean; outputAvailable: boolean; cachedAvailable: boolean }
 type PluginCommandRun = { id: string; name: string; startedAt: number; cancelRequested?: boolean }
@@ -63,7 +68,30 @@ type ModelToolOption = { name: string; description: string; source?: string }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
 type ProviderPreset = { id: string; label: string; base_url: string; protocol: string; api_style: string; api_key_env: string; default_effort: string; supports_reasoning_effort: boolean; requires_account_id?: boolean; docs_url: string; compatibility_note: string }
 type ProviderModelOption = { id: string; object?: string; owned_by?: string; task?: string; description?: string; capabilities?: string[] }
-type SavedHistoryEntry = { role: "user" | "assistant" | "tool"; text: string; sequence: number; toolName?: string; toolState?: string; toolCallID?: string; attachments?: HistoryAttachment[] }
+type SavedHistoryEntry = { role: "user" | "assistant" | "tool"; text: string; sequence: number; toolName?: string; toolState?: string; toolCallID?: string; attachments?: HistoryAttachment[]; generatedImages?: GeneratedImage[] }
+
+function parseGeneratedImages(value: unknown): GeneratedImage[] {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 2).flatMap((item: any) => {
+    if (typeof item?.path !== "string" || item.path.length > 4096 || !isLocalImageReference(item.path)) return []
+    const width = Number(item.width)
+    const height = Number(item.height)
+    if (!Number.isSafeInteger(width) || width < 1 || width > 8192 || !Number.isSafeInteger(height) || height < 1 || height > 8192) return []
+    const mime = typeof item.mime === "string" ? item.mime.slice(0, 80) : "image/png"
+    return [{ path: item.path, width, height, mime }]
+  })
+}
+
+function imageSourceIdentity(source: string, workspace: string): string {
+  try {
+    let target = source
+    if (source.startsWith("sandbox:")) target = decodeURIComponent(new URL(source).pathname)
+    else if (source.startsWith("file:")) target = fileURLToPath(new URL(source))
+    return path.resolve(workspace, target)
+  } catch {
+    return source
+  }
+}
 
 function parseHistoryAttachments(value: unknown): HistoryAttachment[] {
   if (!Array.isArray(value)) return []
@@ -124,20 +152,64 @@ function formatTokenCount(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value).toLocaleString() : "unavailable"
 }
 
+function compactTokenCount(value: number): string {
+  const count = Math.max(0, Math.floor(value))
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}m`
+  if (count >= 10_000) return `${Math.round(count / 1_000)}k`
+  if (count >= 1_000) return `${(count / 1_000).toFixed(count >= 10_000 ? 0 : 1).replace(/\.0$/, "")}k`
+  return count.toLocaleString()
+}
+
+function contextFooterLabel(record: ContextRequestReadout | null): string {
+  if (!record) return ""
+  const estimate = record.estimated_input_tokens
+  const current = estimate != null && Number.isFinite(estimate) ? `~${compactTokenCount(estimate)}` : "—"
+  const capacity = record.context_limit_tokens != null && record.context_limit_tokens > 0
+    ? compactTokenCount(record.context_limit_tokens)
+    : record.operational_input_budget_tokens != null && record.operational_input_budget_tokens > 0
+      ? `budget ${compactTokenCount(record.operational_input_budget_tokens)}`
+      : ""
+  return capacity ? `ctx ${current} / ${capacity}` : estimate != null ? `ctx ${current}` : ""
+}
+
+function fitFooterText(value: string, maxChars: number): string {
+  const chars = [...value]
+  if (chars.length <= maxChars) return value
+  if (maxChars < 2) return chars.slice(0, Math.max(0, maxChars)).join("")
+  return `${chars.slice(0, maxChars - 1).join("")}…`
+}
+
+export function moveSlashMenu(index: number, offset: number, delta: number, count: number, pageSize = 6): { index: number; offset: number } {
+  if (count < 1) return { index: 0, offset: 0 }
+  const nextIndex = (index + delta % count + count) % count
+  const maxOffset = Math.max(0, count - pageSize)
+  let nextOffset = Math.max(0, Math.min(offset, maxOffset))
+  if (nextIndex < nextOffset) nextOffset = nextIndex
+  else if (nextIndex >= nextOffset + pageSize) nextOffset = Math.min(maxOffset, nextIndex - pageSize + 1)
+  return { index: nextIndex, offset: nextOffset }
+}
+
+export function hoverSlashMenu(offset: number, hoveredIndex: number, count: number): { index: number; offset: number } {
+  if (count < 1) return { index: 0, offset: 0 }
+  return { index: Math.max(0, Math.min(count - 1, hoveredIndex)), offset: Math.max(0, Math.min(offset, count - 1)) }
+}
+
 function parseSavedHistoryEntries(items: unknown): SavedHistoryEntry[] {
   if (!Array.isArray(items)) return []
   return items.flatMap((item: any) => {
     const role = item?.role === "user" || item?.role === "assistant" || item?.role === "tool" ? item.role : null
     const text = typeof item?.text === "string" ? item.text : ""
     const attachments = parseHistoryAttachments(item?.attachments)
+    const generatedImages = parseGeneratedImages(item?.generated_images)
     const sequence = Number(item?.sequence)
-    if (!role || (!text.trim() && !(role === "user" && attachments.length)) || !Number.isFinite(sequence)) return []
+    if (!role || (!text.trim() && !(role === "user" && attachments.length) && !(role === "tool" && generatedImages.length)) || !Number.isFinite(sequence)) return []
     return [{
       role, text, sequence,
       ...(attachments.length ? { attachments } : {}),
       ...(typeof item?.name === "string" ? { toolName: item.name } : {}),
       ...(typeof item?.state === "string" ? { toolState: item.state } : {}),
       ...(typeof item?.tool_call_id === "string" ? { toolCallID: item.tool_call_id } : {}),
+      ...(generatedImages.length ? { generatedImages } : {}),
     }]
   })
 }
@@ -583,6 +655,127 @@ function hasMarkdownSyntax(content: string): boolean {
   return blockSyntax.test(content) || inlineSyntax.test(content)
 }
 
+type TranscriptMarkdownPart = { kind: "markdown"; text: string } | { kind: "image"; source: string; alt: string } | { kind: "omitted"; source: string; alt: string }
+
+function localImageReference(href: string): boolean {
+  return isLocalImageReference(href)
+}
+
+function parseLocalImageLink(source: string, start: number): { end: number; href: string; alt: string } | undefined {
+  const image = source[start] === "!"
+  const open = image ? start + 1 : start
+  if (source[open] !== "[") return
+  let close = open + 1
+  let depth = 1
+  for (; close < source.length; close++) {
+    if (source[close] === "\\") { close++; continue }
+    if (source[close] === "[") depth++
+    else if (source[close] === "]" && --depth === 0) break
+  }
+  if (close >= source.length || source[close + 1] !== "(") return
+  let cursor = close + 2
+  while (/\s/.test(source[cursor] ?? "")) cursor++
+  let href = ""
+  if (source[cursor] === "<") {
+    const end = source.indexOf(">", cursor + 1)
+    if (end < 0) return
+    href = source.slice(cursor + 1, end)
+    cursor = end + 1
+  } else {
+    const hrefStart = cursor
+    let parens = 0
+    for (; cursor < source.length; cursor++) {
+      if (source[cursor] === "\\") { cursor++; continue }
+      if (source[cursor] === "(") parens++
+      else if (source[cursor] === ")") {
+        if (parens === 0) break
+        parens--
+      } else if (/\s/.test(source[cursor]!)) break
+    }
+    href = source.slice(hrefStart, cursor)
+  }
+  href = href.replace(/\\([\\()[\]<>])/g, "$1")
+  if (!href || !localImageReference(href)) return
+  let parens = 0
+  for (; cursor < source.length; cursor++) {
+    if (source[cursor] === "\\") { cursor++; continue }
+    if (source[cursor] === "(") parens++
+    else if (source[cursor] === ")") {
+      if (parens === 0) break
+      parens--
+    }
+  }
+  if (cursor >= source.length) return
+  return { end: cursor + 1, href, alt: source.slice(open + 1, close).replace(/\\([\\()[\]<>])/g, "$1") }
+}
+
+/** Splits only local image links outside code spans/fences; other Markdown stays untouched. */
+export function splitTranscriptMarkdownImages(source: string): TranscriptMarkdownPart[] {
+  const parts: TranscriptMarkdownPart[] = []
+  const seenImages = new Set<string>()
+  let imageCount = 0
+  let textStart = 0
+  let cursor = 0
+  let lineStart = true
+  let fenceChar = ""
+  let fenceLength = 0
+  while (cursor < source.length) {
+    if (lineStart) {
+      const lineEnd = source.indexOf("\n", cursor)
+      const end = lineEnd < 0 ? source.length : lineEnd
+      const line = source.slice(cursor, end)
+      const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+      if (fence) {
+        const marker = fence[1]!
+        if (!fenceChar) { fenceChar = marker[0]!; fenceLength = marker.length }
+        else if (marker[0] === fenceChar && marker.length >= fenceLength) { fenceChar = ""; fenceLength = 0 }
+        cursor = lineEnd < 0 ? source.length : lineEnd + 1
+        lineStart = true
+        continue
+      }
+    }
+    if (fenceChar) {
+      const nextLine = source.indexOf("\n", cursor)
+      if (nextLine < 0) break
+      cursor = nextLine + 1
+      lineStart = true
+      continue
+    }
+    if (source[cursor] === "`" || source[cursor] === "~") {
+      const char = source[cursor]!
+      let count = 1
+      while (source[cursor + count] === char) count++
+      if (char === "`") {
+        const marker = char.repeat(count)
+        const end = source.indexOf(marker, cursor + count)
+        if (end >= 0) { cursor = end + count; lineStart = false; continue }
+      }
+    }
+    const candidateStart = source[cursor] === "!" && source[cursor + 1] === "[" ? cursor : source[cursor] === "[" ? cursor : -1
+    if (candidateStart >= 0) {
+      const parsed = parseLocalImageLink(source, candidateStart)
+      if (parsed) {
+        if (candidateStart > textStart) parts.push({ kind: "markdown", text: source.slice(textStart, candidateStart) })
+        if (seenImages.has(parsed.href) || imageCount >= 2) {
+          parts.push({ kind: "omitted", source: parsed.href, alt: parsed.alt })
+        } else {
+          parts.push({ kind: "image", source: parsed.href, alt: parsed.alt })
+          seenImages.add(parsed.href)
+          imageCount++
+        }
+        cursor = parsed.end
+        textStart = cursor
+        lineStart = false
+        continue
+      }
+    }
+    lineStart = source[cursor] === "\n"
+    cursor++
+  }
+  if (textStart < source.length) parts.push({ kind: "markdown", text: source.slice(textStart) })
+  return parts.length ? parts : [{ kind: "markdown", text: source }]
+}
+
 export function parsePastedPaths(input: string, mimeType = ""): { paths: string[]; prompt: string } | undefined {
   const raw = input.replace(/\r/g, "").trim()
   if (!raw) return
@@ -615,6 +808,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [model, setModel] = useState(process.env.PK_MODEL || "gpt-6-luna")
   const [effort, setEffort] = useState(process.env.PK_EFFORT || "medium")
   const [sessionId, setSessionId] = useState(initialSession || "")
+  const [slashNavigation, setSlashNavigation] = useState({ index: 0, offset: 0 })
   const [newSessionPending, setNewSessionPending] = useState(false)
   const [usage, setUsage] = useState<LatestProviderUsage | null>(null)
   const [connected, setConnected] = useState(false)
@@ -625,6 +819,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [sessionUsage, setSessionUsage] = useState<SessionUsage | null>(null)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | null>(null)
   const [contextBudget, setContextBudget] = useState<ContextBudget | null>(null)
+  const [contextRequestReadout, setContextRequestReadout] = useState<ContextRequestReadout | null>(null)
+  const contextRequestReadoutRef = useRef<ContextRequestReadout | null>(null)
   const [contextBudgetExpanded, setContextBudgetExpanded] = useState(false)
   const [contextBudgetLoading, setContextBudgetLoading] = useState(false)
   const [contextBudgetError, setContextBudgetError] = useState("")
@@ -652,7 +848,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [providerReasoningEnabled, setProviderReasoningEnabled] = useState(false)
   const [message, setMessage] = useState("")
   const [draft, setDraft] = useState("")
-  const [slashIndex, setSlashIndex] = useState(0)
+  const slashIndex = slashNavigation.index
+  const slashWindowOffset = slashNavigation.offset
   const [tasks, setTasks] = useState<Array<{ session_id: string; updated_at?: string; title?: string }>>([])
   const [skills, setSkills] = useState<SkillOption[]>([])
   const [skillInstallations, setSkillInstallations] = useState<SkillInstalled[]>([])
@@ -866,6 +1063,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       sessionGeneration.current++
       pendingClipboardRequests.current.clear()
       sessionIdentity.current = nextSessionId
+      contextRequestReadoutRef.current = null
+      setContextRequestReadout(null)
       cancelSessionUsageRequest()
       setSessionUsage(null)
       setContextUsage(null)
@@ -1368,8 +1567,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     enterPhase(activeToolIds.current.size ? "tools" : "model")
     const error = preview(data.status?.error ?? data.error)
     const displayState = error ? "failed" : terminal ? status : status === "awaiting" ? "working" : status
+    const reportedImages = terminal && !error && ["completed", "complete", "succeeded"].includes(status.toLowerCase())
+      ? parseGeneratedImages(data.generated_images)
+      : []
     setEntries((current) => {
       const previous = current.find((entry) => entry.callId === callId)
+      const generatedImages = reportedImages.length ? reportedImages : previous?.generatedImages
       const next: Entry = {
         id: previous?.id ?? entryId.current++, role: "tool", text: error || detail,
         callId, toolName: name, toolState: displayState,
@@ -1377,6 +1580,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         elapsedMs: Number.isFinite(data.elapsed_ms) ? Number(data.elapsed_ms) : undefined,
         commandPreview: preview(data.command_preview || data.arguments_preview, 120),
         detail,
+        ...(generatedImages?.length ? { generatedImages } : {}),
       }
       return previous ? current.map((entry) => entry.callId === callId ? next : entry) : appendTranscriptEntries(current, next)
     })
@@ -1396,7 +1600,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     return () => clearInterval(poll)
   }, [connected, transport])
   useEffect(() => () => { if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current) }, [])
-  useEffect(() => { setSlashIndex(0) }, [draft])
+  useEffect(() => { setSlashNavigation({ index: 0, offset: 0 }) }, [draft])
   useEffect(() => { busyRef.current = busy }, [busy])
 
   useEffect(() => {
@@ -1464,6 +1668,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const restored = saved.map((item) => ({
           id: entryId.current++, role: item.role, text: item.role === "tool" ? "" : item.text,
           ...(item.role === "user" && item.attachments ? { historyAttachments: item.attachments } : {}),
+          ...(item.role === "tool" && item.generatedImages ? { generatedImages: item.generatedImages } : {}),
           ...(item.role === "tool" ? { toolName: item.toolName ?? "tool", toolState: item.toolState ?? "completed", historySummary: `${item.toolName ?? "tool"} · ${["running", "working"].includes((item.toolState ?? "").toLowerCase()) ? "was running" : item.toolState ?? "completed"}`, historical: true, callId: item.toolCallID ?? `history-${item.sequence}`, detail: item.text } : {}),
           historySequence: item.sequence,
         } as Entry))
@@ -1801,6 +2006,32 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const persisted = data.persisted === false ? "" : " · saved"
         setContextBudgetNotice(`${scope}${persisted}`)
         setContextBudgetError("")
+        break
+      }
+      case "context_usage": {
+        const turnID = String(data.turn_id ?? "")
+        const record = data.context_usage && typeof data.context_usage === "object" ? data.context_usage as Record<string, unknown> : null
+        if (!record || !turnID || event.id !== turnID || turnID !== promptCommandId.current) break
+        if (typeof record.session_id === "string" && sessionIdentity.current && record.session_id !== sessionIdentity.current) break
+        const ordinal = Number(record.request_ordinal)
+        const numberOrNull = (value: unknown): number | null | undefined => value === null ? null : typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+        const next: ContextRequestReadout = {
+          turn_id: turnID,
+          ...(typeof record.session_id === "string" ? { session_id: record.session_id } : {}),
+          request_ordinal: Number.isSafeInteger(ordinal) && ordinal >= 0 ? ordinal : 0,
+          pending: record.pending === true,
+          estimated_input_tokens: numberOrNull(record.estimated_input_tokens),
+          context_limit_tokens: numberOrNull(record.context_limit_tokens),
+          operational_input_budget_tokens: numberOrNull(record.operational_input_budget_tokens),
+          ...(typeof record.context_source === "string" ? { context_source: record.context_source } : {}),
+          ...(typeof record.operational_input_source === "string" ? { operational_input_source: record.operational_input_source } : {}),
+          ...(typeof record.estimate_method === "string" ? { estimate_method: record.estimate_method } : {}),
+          ...(typeof record.estimate_confidence === "string" ? { estimate_confidence: record.estimate_confidence } : {}),
+        }
+        const previous = contextRequestReadoutRef.current
+        if (previous?.turn_id === turnID && (next.request_ordinal < previous.request_ordinal || (next.request_ordinal === previous.request_ordinal && previous.pending === false && next.pending))) break
+        contextRequestReadoutRef.current = next
+        setContextRequestReadout(next)
         break
       }
       case "compact_started": {
@@ -2792,6 +3023,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }
     waiting.current = true
     setBusy(true)
+    contextRequestReadoutRef.current = null
+    setContextRequestReadout(null)
     setActivityStartedAt(Date.now())
     activeToolIds.current.clear()
     enterPhase("model")
@@ -3716,7 +3949,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       if (filtered.length && (key.name === "up" || key.name === "down")) {
         key.preventDefault()
-        setSlashIndex((index) => key.name === "up" ? (index - 1 + filtered.length) % filtered.length : (index + 1) % filtered.length)
+        setSlashNavigation((current) => moveSlashMenu(current.index, current.offset, key.name === "up" ? -1 : 1, filtered.length))
         return
       }
       if (filtered.length && key.name === "tab") {
@@ -3824,7 +4057,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const skillOptionCount = selector === "skills" ? skillsView === "results" ? skillSearchResults.length : skillsView === "candidates" ? skillCandidates.length : skillsView === "installed" ? skillInstallations.length : skillsView === "review" ? 0 : skills.length : 0
   const availableSlashCommands: SlashCommand[] = [...slashCommands, ...extensionCommands.filter((item) => item.enabled && !item.error).map((item) => ({ name: item.name, description: item.description || `Plugin command · ${item.extension_id}`, action: "plugin_commands" as const }))]
   const filteredCommands = availableSlashCommands.filter((item) => item.name.startsWith(draft.trim().split(/\s/)[0] || "/"))
-  const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
+  const slashWindowStart = Math.max(0, Math.min(slashWindowOffset, filteredCommands.length - 6))
   const cwd = message || workspace
   const visibleFileCount = Math.max(1, Math.floor((renderer.width - 26) / 20))
   const taskQuestionDismissed = Boolean(question?.taskID && question.dismissed)
@@ -3856,11 +4089,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       ? `${usagePart("in", usage.input, usage.inputAvailable)} · ${usagePart("out", usage.output, usage.outputAvailable)} · ${usagePart("cache", usage.cached, usage.cachedAvailable)} tok`
       : `latest ${usagePart("in", usage.input, usage.inputAvailable)} · ${usagePart("out", usage.output, usage.outputAvailable)} · ${usagePart("cache", usage.cached, usage.cachedAvailable)} tokens`
     : renderer.width < 105 ? "latest tokens —" : "latest input/output/cache —") + throughputLabel
+  const contextLabel = contextFooterLabel(contextRequestReadout)
   const transcriptOmitted = useMemo(() => entries.some((entry) => entry.id === OMITTED_TRANSCRIPT_ENTRY.id), [entries])
   const transcriptGroups = useMemo(() => groupTranscript(entries.filter((entry) => entry.id !== 0)), [entries])
   const transcriptHasLiveTool = useMemo(() => hasLiveToolDuration(transcriptGroups), [transcriptGroups])
   const welcomeVisible = (entries.length === 0 && connected && !newSessionPending) || (entries.length === 1 && entries[0]?.id === 0)
   const skillsEmptyLabel = skillOperation || (skillsView === "installed" ? "No managed skills installed · use /skills search QUERY" : skillsView === "results" ? "No skills matched that search." : skillsView === "candidates" ? "No skill manifests found in this source." : "No skills available")
+  const footerStatus = `${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`
+  const footerWidth = Math.max(0, renderer.width - 4)
+  const footerLeftWidth = contextLabel ? Math.max(8, footerWidth - [...contextLabel].length - 1) : footerWidth
+  const displayedFooterStatus = fitFooterText(footerStatus, footerLeftWidth)
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
@@ -3873,7 +4111,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingRight: 1, paddingBottom: 0 }}>
         {welcomeVisible
           ? <WelcomeEntry onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
-          : <TranscriptTimeline groups={transcriptGroups} clock={clock} hasLiveTool={transcriptHasLiveTool} expandedToolGroups={expandedToolGroups} onToggle={toggleToolGroup} />}
+          : <TranscriptTimeline groups={transcriptGroups} clock={clock} workspace={cwd} hasLiveTool={transcriptHasLiveTool} expandedToolGroups={expandedToolGroups} onToggle={toggleToolGroup} />}
       </scrollbox>
       <box style={{ border: compactionRunning ? undefined : ["top"], borderColor: compactionRunning ? palette.accent : palette.line, paddingTop: 0, flexShrink: 0 }}>
         {compactionRunning && <box style={{ flexDirection: "row", height: 1 }}>
@@ -3893,15 +4131,29 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           })}
           {queuedFiles.length > visibleFileCount && <text fg={palette.dim} content={`+${queuedFiles.length - visibleFileCount} · /files`} />}
         </box>}
-        <box style={{ flexDirection: "row", height: 1 }}>
-          <text selectable={false} onMouseDown={taskQuestionDismissed ? (event) => leftMouseDown(event, () => setQuestion((current) => current?.taskID ? { ...current, dismissed: false } : current)) : undefined} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
+        <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
+          <text style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }} selectable={false} onMouseDown={taskQuestionDismissed ? (event) => leftMouseDown(event, () => setQuestion((current) => current?.taskID ? { ...current, dismissed: false } : current)) : undefined} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={displayedFooterStatus} />
+          {contextLabel && <>
+            <box style={{ flexGrow: 1 }} />
+            <text id="context-footer-readout" selectable={false} fg={palette.muted} onMouseDown={(event) => leftMouseDown(event, openSessionUsage)} content={contextLabel} />
+          </>}
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
           <textarea id="composer" ref={textarea} focused={composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen) && !taskQuestionDismissed && !providerReasoningExpanded} placeholder={question ? taskQuestionDismissed ? "Task is waiting for an answer · click status or press Enter to reopen" : "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
-        {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
-          {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
-            setSlashIndex(slashWindowStart + localIndex)
+        {draft.startsWith("/") && filteredCommands.length > 0 && <box id="slash-menu" onMouseScroll={(event) => {
+          if (!event.scroll) return
+          const direction = event.scroll.direction === "down" ? 1 : event.scroll.direction === "up" ? -1 : 0
+          if (!direction) return
+          event.preventDefault()
+          event.stopPropagation()
+          const amount = Math.max(1, Math.round(event.scroll.delta))
+          setSlashNavigation((current) => moveSlashMenu(current.index, current.offset, direction * amount, filteredCommands.length))
+        }} style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
+          {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => {
+            setSlashNavigation((current) => hoverSlashMenu(current.offset, slashWindowStart + localIndex, filteredCommands.length))
+          }} onMouseDown={(event) => leftMouseDown(event, () => {
+            setSlashNavigation((current) => ({ ...current, index: slashWindowStart + localIndex }))
             if (item.action === "task" || item.action === "attach") {
               textarea.current!.setText(`${item.name} `)
               setDraft(`${item.name} `)
@@ -4240,7 +4492,7 @@ function WelcomeEntry({ onAction }: { onAction: (command: string) => void }) {
   </box>
 }
 
-const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { entry: Entry; clock: number }) {
+const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock, workspace, generatedImageSources }: { entry: Entry; clock: number; workspace: string; generatedImageSources: ReadonlySet<string> }) {
   const renderer = useRenderer()
   if (entry.role === "system") return <box style={{ paddingLeft: 2, paddingBottom: 1 }}><text fg={palette.dim} content={entry.text} /></box>
   if (entry.role === "tool") return <box style={{ flexDirection: "column", marginLeft: 2, marginBottom: 1, paddingLeft: 1, border: ["left"], borderColor: entry.toolState === "failed" ? palette.red : palette.accent }}>
@@ -4253,10 +4505,23 @@ const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { en
   </box>
   const isUser = entry.role === "user"
   const markdown = hasMarkdownSyntax(entry.text)
+  const markdownParts = !isUser && !entry.provisional && entry.text ? splitTranscriptMarkdownImages(entry.text) : []
+  const hasInlineImages = markdownParts.some((part) => part.kind === "image")
+  const previewWidth = Math.max(1, Math.min(renderer.width < 100 ? 40 : 56, renderer.width - 12))
+  const previewHeight = Math.max(4, Math.min(renderer.height < 30 ? 7 : renderer.width < 100 ? 12 : 16, Math.round(previewWidth * 0.48)))
   const delivery = entry.delivery === "queued" ? "queued · waiting for a boundary" : entry.delivery === "accepted" ? "accepted by active turn" : entry.delivery === "rejected" ? "not accepted" : ""
   return <box style={{ flexDirection: "column", width: "100%", paddingLeft: isUser ? 0 : 2, paddingBottom: 1 }}>
     <text fg={isUser ? palette.blue : palette.accent} content={isUser ? `you${delivery ? ` · ${delivery}` : ""}` : entry.speaker ?? "pk"} />
-    {entry.text && (isUser || entry.provisional || !markdown
+    {entry.text && hasInlineImages ? <box style={{ flexDirection: "column", width: "100%", flexShrink: 0 }}>
+      {markdownParts.map((part, index) => part.kind === "image"
+        ? <InlineImage key={`image-${index}`} source={part.source} workspace={workspace} alt={part.alt} width={previewWidth} height={previewHeight} preview={!generatedImageSources.has(imageSourceIdentity(part.source, workspace))} />
+        : part.kind === "omitted"
+          ? <text key={`omitted-${index}`} fg={palette.dim} content={`Image preview omitted · ${part.alt || part.source}`} />
+        : part.text.trim() ? hasMarkdownSyntax(part.text)
+          ? <markdown key={`markdown-${index}`} content={part.text} syntaxStyle={markdownStyle} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />
+          : <text key={`text-${index}`} fg={palette.text} content={part.text} />
+          : null)}
+    </box> : entry.text && (isUser || entry.provisional || !markdown
       ? <text fg={palette.text} content={entry.text} />
       : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />)}
     {isUser && entry.historyAttachments?.length ? <box style={{ flexDirection: "row", gap: 1, flexWrap: "wrap", paddingTop: entry.text ? 1 : 0 }}>
@@ -4295,20 +4560,59 @@ function hasLiveToolDuration(groups: TranscriptGroup[]) {
 type TranscriptTimelineProps = {
   groups: TranscriptGroup[]
   clock: number
+  workspace: string
   hasLiveTool: boolean
   expandedToolGroups: Set<string>
   onToggle: (key: string) => void
 }
 
 export function transcriptTimelineShouldUpdate(previous: TranscriptTimelineProps, next: TranscriptTimelineProps) {
-  if (previous.groups !== next.groups || previous.expandedToolGroups !== next.expandedToolGroups || previous.onToggle !== next.onToggle || previous.hasLiveTool !== next.hasLiveTool) return true
+  if (previous.groups !== next.groups || previous.expandedToolGroups !== next.expandedToolGroups || previous.onToggle !== next.onToggle || previous.hasLiveTool !== next.hasLiveTool || previous.workspace !== next.workspace) return true
   return previous.hasLiveTool && previous.clock !== next.clock
 }
 
-const TranscriptTimeline = memo(function TranscriptTimeline({ groups, clock, expandedToolGroups, onToggle }: TranscriptTimelineProps) {
+const TranscriptTimeline = memo(function TranscriptTimeline({ groups, clock, workspace, expandedToolGroups, onToggle }: TranscriptTimelineProps) {
+  const renderer = useRenderer()
+  const generatedImageSources = new Set<string>()
+  for (const group of groups) {
+    const entries = group.kind === "entry" ? [group.entry] : group.entries
+    for (const entry of entries) {
+      if (entry.role !== "tool" || entry.toolName?.toLowerCase() !== "imagegen") continue
+      for (const image of entry.generatedImages ?? []) generatedImageSources.add(imageSourceIdentity(image.path, workspace))
+    }
+  }
+  const uniqueGeneratedImages = new Map<string, GeneratedImage>()
+  for (const group of groups) {
+    if (group.kind !== "tools") continue
+    for (const entry of group.entries) {
+      if (entry.toolName?.toLowerCase() !== "imagegen") continue
+      for (const image of entry.generatedImages ?? []) {
+        const identity = imageSourceIdentity(image.path, workspace)
+        if (!uniqueGeneratedImages.has(identity)) uniqueGeneratedImages.set(identity, image)
+      }
+    }
+  }
+  const latestGeneratedImages = new Set([...uniqueGeneratedImages.keys()].slice(-4))
+  const renderedGeneratedImages = new Set<string>()
+  const previewWidth = Math.max(1, Math.min(renderer.width < 100 ? 40 : 56, renderer.width - 12))
+  const previewHeight = Math.max(4, Math.min(renderer.height < 30 ? 7 : renderer.width < 100 ? 12 : 16, Math.round(previewWidth * 0.48)))
   return <>{groups.map((item) => {
-    if (item.kind === "entry") return <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
+    if (item.kind === "entry") return <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} workspace={workspace} generatedImageSources={generatedImageSources} />
     const key = toolGroupKey(item.entries)
-    return <ToolTranscriptGroup key={`tools-${key}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(key)} onToggle={() => onToggle(key)} />
+    const generated = item.entries.filter((entry) => entry.toolName?.toLowerCase() === "imagegen").flatMap((entry) => entry.generatedImages ?? [])
+    const previews: Array<{ image: GeneratedImage; showPreview: boolean }> = []
+    for (const image of generated) {
+      const identity = imageSourceIdentity(image.path, workspace)
+      if (renderedGeneratedImages.has(identity)) continue
+      renderedGeneratedImages.add(identity)
+      previews.push({ image, showPreview: latestGeneratedImages.has(identity) })
+    }
+    return <Fragment key={`tool-output-${key}`}>
+      <ToolTranscriptGroup key={`tools-${key}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(key)} onToggle={() => onToggle(key)} />
+      {previews.map(({ image, showPreview }, index) => <box key={`imagegen-${key}-${index}`} style={{ flexDirection: "column", marginLeft: 2, marginBottom: 1 }}>
+        <text fg={palette.dim} content={`ImageGen output · ${path.basename(image.path).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 64)}`} />
+        <InlineImage source={image.path} workspace={workspace} alt="Generated image" width={previewWidth} height={previewHeight} preview={showPreview} />
+      </box>)}
+    </Fragment>
   })}</>
 }, (previous, next) => !transcriptTimelineShouldUpdate(previous, next))

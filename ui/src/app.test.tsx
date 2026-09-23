@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { destroyTreeSitterClient, getTreeSitterClient } from "@opentui/core"
+import { destroyTreeSitterClient, getTreeSitterClient, ImageRenderable, NativeImage } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 import { act } from "react"
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import type { ServerEvent } from "./protocol"
-import { PkApp, streamProgressStatus, transcriptTimelineShouldUpdate } from "./app"
+import { PkApp, splitTranscriptMarkdownImages, streamProgressStatus, transcriptTimelineShouldUpdate } from "./app"
 import { leadingPathFromPrompt, parsePastedPaths } from "./app"
+import { resolveLocalImageSource } from "./inline-image"
 import type { PkTransport } from "./transport"
 
 const openRenderers: Array<Awaited<ReturnType<typeof testRender>>> = []
@@ -54,12 +58,60 @@ function findDescendant(root: any, predicate: (renderable: any) => boolean): any
   return undefined
 }
 
+function findDescendants(root: any, predicate: (renderable: any) => boolean, found: any[] = []): any[] {
+  if (predicate(root)) found.push(root)
+  for (const child of root.getChildren?.() ?? []) findDescendants(child, predicate, found)
+  return found
+}
+
 describe("OpenTUI application", () => {
   test("stream status becomes explicitly stale after silence and resumes on a fresh update", () => {
     const started = 1_000
     expect(streamProgressStatus({ label: "Model is thinking", updatedAt: started }, started + 14_999)).toBe("Model is thinking")
     expect(streamProgressStatus({ label: "Model is thinking", updatedAt: started }, started + 15_000)).toBe("Waiting for stream · last update 15s ago")
     expect(streamProgressStatus({ label: "Receiving response", updatedAt: started + 15_000 }, started + 15_001)).toBe("Receiving response")
+  })
+
+  test("footer shows a right-aligned request estimate separately from capacity or operational budget", async () => {
+    for (const size of [{ width: 80, height: 24 }, { width: 120, height: 36 }]) {
+      const fake = fakeTransport()
+      const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="ctx-session" />, size)
+      openRenderers.push(setup)
+      await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+      act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", session_id: "ctx-session" } }))
+      await act(async () => { await setup.mockInput.typeText("estimate current request") })
+      act(() => setup.mockInput.pressEnter())
+      await setup.flush()
+      const prompt = fake.sent.find((item) => item.type === "prompt")!
+      act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: { session_id: "ctx-session" } }))
+      const emitContext = (ordinal: number, estimated: number, limit: number | null, operational: number, pending = true) => fake.emit({
+        version: 1, id: prompt.id, type: "context_usage",
+        payload: { turn_id: prompt.id, context_usage: {
+          session_id: "ctx-session", request_ordinal: ordinal, pending,
+          estimated_input_tokens: estimated, estimate_method: "token estimate", estimate_confidence: "low",
+          context_limit_tokens: limit, context_source: limit == null ? "unknown" : "official_catalog",
+          operational_input_budget_tokens: operational, operational_input_source: "operational_fallback",
+        } },
+      })
+      act(() => emitContext(2, 106_000, 128_000, 32_768))
+      let frame = await setup.waitForFrame((value) => value.includes("ctx ~106k / 128k"))
+      const line = frame.split("\n").find((value) => value.includes("ctx ~106k / 128k"))!
+      expect(line.indexOf("ctx ~106k / 128k")).toBeGreaterThan(size.width === 80 ? 45 : 85)
+      act(() => emitContext(3, 91_000, null, 32_768))
+      frame = await setup.waitForFrame((value) => value.includes("ctx ~91k / budget 33k"))
+      expect(frame).toContain("ctx ~91k / budget 33k")
+      act(() => emitContext(3, 91_000, null, 32_768, false))
+      await setup.flush()
+      // Late pending/older request telemetry must not roll the completed estimate back.
+      act(() => emitContext(3, 40_000, 128_000, 32_768, true))
+      act(() => emitContext(2, 106_000, 128_000, 32_768))
+      await setup.flush()
+      expect(setup.captureCharFrame()).toContain("ctx ~91k / budget 33k")
+      act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: { session_id: "ctx-session" } }))
+      act(() => fake.emit({ version: 1, type: "session", payload: { session_id: "next-session" } }))
+      await setup.flush()
+      expect(setup.captureCharFrame()).not.toContain("ctx ~")
+    }
   })
 
   test("shows provider-controlled effort when the selected provider does not expose reasoning effort", async () => {
@@ -76,11 +128,164 @@ describe("OpenTUI application", () => {
   test("transcript timeline ignores clock ticks unless a live tool duration is visible", () => {
     const onToggle = () => {}
     const expandedToolGroups = new Set<string>()
-    const staticTimeline = { groups: [], clock: 1, hasLiveTool: false, expandedToolGroups, onToggle }
+    const staticTimeline = { groups: [], clock: 1, hasLiveTool: false, expandedToolGroups, onToggle, workspace: "/tmp/pk" }
     expect(transcriptTimelineShouldUpdate(staticTimeline, { ...staticTimeline, clock: 2 })).toBe(false)
     const liveTimeline = { ...staticTimeline, hasLiveTool: true }
     expect(transcriptTimelineShouldUpdate(liveTimeline, { ...liveTimeline, clock: 2 })).toBe(true)
     expect(transcriptTimelineShouldUpdate(staticTimeline, { ...staticTimeline, expandedToolGroups: new Set<string>() })).toBe(true)
+  })
+
+  test("extracts local Markdown image links without touching code or network images", () => {
+    const source = "Before [View the PNG](sandbox:/private/tmp/generated.png) and ![Mint](./art/mint.png) after.\n\n`[literal](sandbox:/private/tmp/code.png)`\n\n```md\n![example](sandbox:/private/tmp/fenced.png)\n```\n\n[Remote](https://example.test/image.png)"
+    expect(splitTranscriptMarkdownImages(source)).toEqual([
+      { kind: "markdown", text: "Before " },
+      { kind: "image", source: "sandbox:/private/tmp/generated.png", alt: "View the PNG" },
+      { kind: "markdown", text: " and " },
+      { kind: "image", source: "./art/mint.png", alt: "Mint" },
+      { kind: "markdown", text: " after.\n\n`[literal](sandbox:/private/tmp/code.png)`\n\n```md\n![example](sandbox:/private/tmp/fenced.png)\n```\n\n[Remote](https://example.test/image.png)" },
+    ])
+  })
+
+  test("deduplicates local preview targets and caps previews per assistant entry", () => {
+    expect(splitTranscriptMarkdownImages("[a](./a.png) [again](./a.png) ![b](./b.png) ![c](./c.png)")).toEqual([
+      { kind: "image", source: "./a.png", alt: "a" },
+      { kind: "markdown", text: " " },
+      { kind: "omitted", source: "./a.png", alt: "again" },
+      { kind: "markdown", text: " " },
+      { kind: "image", source: "./b.png", alt: "b" },
+      { kind: "markdown", text: " " },
+      { kind: "omitted", source: "./c.png", alt: "c" },
+    ])
+  })
+
+  test.each([{ width: 80, height: 24 }, { width: 35, height: 24 }])("previews a restored ImageGen result at $width columns without an assistant link", async ({ width, height }) => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "pk-inline-chat-"))
+    try {
+      const imagePath = path.join(workspace, "generated.png")
+      await writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==", "base64"))
+      const fake = fakeTransport()
+      const sessionID = "ef2481e300a52dea2e9a1bc875d5d3c9"
+      const setup = await testRender(<PkApp transport={fake.transport} workspace={workspace} initialSession={sessionID} />, { width, height })
+      openRenderers.push(setup)
+      await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+      act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", workspace, session_id: sessionID } }))
+      act(() => fake.emit({ version: 1, type: "history", payload: {
+        session_id: sessionID,
+        entries: [
+          { role: "tool", name: "ImageGen", state: "completed", tool_call_id: "imagegen-call", text: "", sequence: 7, generated_images: [{ path: "generated.png", width: 1, height: 1, mime: "image/png" }] },
+          { role: "assistant", text: "Bitcoin response. No image link in this final answer.", sequence: 8 },
+        ],
+        has_earlier: false,
+      } }))
+      const frame = await setup.waitForFrame((value) => value.includes("Preview · generated.png") && value.includes("Bitcoin response."))
+      expect(frame).toContain("Preview · generated.png")
+      expect(frame).toContain("Bitcoin response.")
+      const safePath = await resolveLocalImageSource(`sandbox:${imagePath}`, workspace)
+      expect(safePath).toBe(await realpath(imagePath))
+      await setup.waitForFrame(() => Boolean(findDescendant(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable && renderable.source instanceof NativeImage)))
+      const image = findDescendant(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable)
+      expect(image).toBeDefined()
+      await act(async () => { await image.loadPromise })
+      expect(image.source).toBeInstanceOf(NativeImage)
+      expect(image.image?.width).toBe(1)
+      expect(image.image?.height).toBe(1)
+      expect(image.width).toBeLessThanOrEqual(width - 12)
+      expect(image.protocol).toBe("auto")
+      expect(fake.sent.some((item) => item.type === "prompt" || item.type === "task_create")).toBe(false)
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("deduplicates a restored ImageGen preview against a later assistant image link", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "pk-inline-dedupe-"))
+    try {
+      const imagePath = path.join(workspace, "generated.png")
+      await writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==", "base64"))
+      const fake = fakeTransport()
+      const sessionID = "imagegen-dedupe-session"
+      const setup = await testRender(<PkApp transport={fake.transport} workspace={workspace} initialSession={sessionID} />, { width: 100, height: 32 })
+      openRenderers.push(setup)
+      await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+      act(() => fake.emit({ version: 1, type: "ready", payload: { session_id: sessionID, workspace } }))
+      act(() => fake.emit({ version: 1, type: "history", payload: {
+        session_id: sessionID,
+        entries: [
+          { role: "tool", name: "ImageGen", state: "completed", tool_call_id: "imagegen-call", text: "", sequence: 7, generated_images: [{ path: "generated.png", width: 1, height: 1, mime: "image/png" }] },
+          { role: "assistant", text: `[View the PNG](sandbox:${imagePath})`, sequence: 8 },
+        ],
+        has_earlier: false,
+      } }))
+      await setup.waitForFrame((frame) => frame.includes("Preview · generated.png"))
+      const linkedFrame = await setup.waitForFrame((frame) => frame.includes("Open original"))
+      await setup.waitForFrame(() => findDescendants(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable).length === 1)
+      expect(findDescendants(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable)).toHaveLength(1)
+      expect(linkedFrame).toContain("Open original")
+      expect(fake.sent.some((item) => item.type === "prompt" || item.type === "task_create")).toBe(false)
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps the completed ImageGen preview mounted when the assistant later links to it", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "pk-inline-live-image-"))
+    try {
+      const imagePath = path.join(workspace, "generated.png")
+      await writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==", "base64"))
+      const fake = fakeTransport()
+      const setup = await testRender(<PkApp transport={fake.transport} workspace={workspace} />, { width: 100, height: 36 })
+      openRenderers.push(setup)
+      await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+      act(() => fake.emit({ version: 1, type: "ready", payload: { workspace, session_id: "live-image-session" } }))
+      act(() => fake.emit({ version: 1, id: "prompt-image", type: "tool_call", payload: {
+        call_id: "imagegen-live", name: "ImageGen", state: "completed", generated_images: [{ path: "generated.png", width: 1, height: 1, mime: "image/png" }],
+      } }))
+      await setup.waitForFrame((frame) => frame.includes("ImageGen output · generated.png") && frame.includes("Open original"))
+      const firstPreview = findDescendant(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable)
+      expect(firstPreview).toBeDefined()
+      act(() => fake.emit({ version: 1, id: "prompt-image", type: "assistant", payload: { text: `[View the PNG](sandbox:${imagePath})` } }))
+      const linkedFrame = await setup.waitForFrame((frame) => frame.includes("Image · generated.png"))
+      expect(linkedFrame).toContain("Image · generated.png")
+      const previews = findDescendants(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable)
+      expect(previews).toHaveLength(1)
+      expect(previews[0]).toBe(firstPreview)
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps previews for the latest four unique generated images and links to older ones", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "pk-inline-image-cap-"))
+    try {
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==", "base64")
+      const names = ["old.png", "second.png", "third.png", "fourth.png", "latest.png"]
+      for (const name of names) await writeFile(path.join(workspace, name), png)
+      const fake = fakeTransport()
+      const sessionID = "imagegen-latest-four-session"
+      const setup = await testRender(<PkApp transport={fake.transport} workspace={workspace} initialSession={sessionID} />, { width: 120, height: 40 })
+      openRenderers.push(setup)
+      await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+      act(() => fake.emit({ version: 1, type: "ready", payload: { workspace, session_id: sessionID } }))
+      act(() => fake.emit({ version: 1, type: "history", payload: {
+        session_id: sessionID,
+        entries: names.map((name, index) => ({
+          role: "tool", name: "ImageGen", state: "completed", tool_call_id: `imagegen-${index}`, text: "", sequence: index + 1,
+          generated_images: [{ path: name, width: 1, height: 1, mime: "image/png" }],
+        })),
+        has_earlier: false,
+      } }))
+      await setup.waitForFrame((frame) => frame.includes("ImageGen output · latest.png"))
+      await setup.waitForFrame(() => findDescendants(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable).length === 4)
+      const frame = setup.captureCharFrame()
+      expect(frame).toContain("ImageGen output · latest.png")
+      expect(findDescendants(setup.renderer.root, (renderable) => renderable instanceof ImageRenderable)).toHaveLength(4)
+      const hasRenderedText = (text: string) => Boolean(findDescendant(setup.renderer.root, (renderable) => renderable.content?.chunks?.some((chunk: { text?: string }) => chunk.text?.includes(text))))
+      expect(hasRenderedText("ImageGen output · old.png")).toBe(true)
+      await setup.waitForFrame(() => hasRenderedText("Image · old.png"))
+      expect(hasRenderedText("Image · old.png")).toBe(true)
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
   })
 
   test.each([{ width: 80, height: 24 }, { width: 120, height: 36 }])("renders a usable shell at $width × $height", async ({ width, height }) => {
