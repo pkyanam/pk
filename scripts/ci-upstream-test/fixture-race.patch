@@ -1,0 +1,33 @@
+--- a/cmd/internal/agentrunner/args_test.go
++++ b/cmd/internal/agentrunner/args_test.go
+@@ -9,6 +9,7 @@
+ 	"io"
+ 	"slices"
+ 	"strings"
++	"sync/atomic"
+ 	"testing"
+ 	"testing/iotest"
+ 
+@@ -35,9 +36,9 @@
+ 		{name: "JSON text as prompt", args: []string{"-p", `{"messages":[]}`}, want: []string{`{"messages":[]}`}},
+ 	} {
+ 		t.Run(test.name, func(t *testing.T) {
+-			called := false
++			var called atomic.Bool
+ 			client := &fakeClient{respond: func(_ context.Context, request llm.Request) (llm.Response, error) {
+-				called = true
++				called.Store(true)
+ 				var messages []string
+ 				for _, item := range request.Input {
+ 					if item.Type == llm.ItemMessage {
+@@ -64,8 +65,8 @@
+ 				}
+ 				return ""
+ 			}, func() []string { return nil }, input, &stdout, &stderr, testConfig(client))
+-			if code != 0 || !called || !client.closed {
+-				t.Fatalf("exit = %d, called = %v, closed = %v, stderr = %s", code, called, client.closed, stderr.String())
++			if code != 0 || !called.Load() || !client.closed {
++				t.Fatalf("exit = %d, called = %v, closed = %v, stderr = %s", code, called.Load(), client.closed, stderr.String())
+ 			}
+ 		})
+ 	}

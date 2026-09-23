@@ -110,11 +110,27 @@ func TestRPCUpdateCancelAndBusyGuard(t *testing.T) {
 		t.Fatal("blocking update did not start")
 	}
 	server.handle(rpcMessage{Version: 1, ID: "cancel-release", Type: "update_cancel"}, make(chan turnDone, 1))
-	if event := readRPCEvent(t, sink); event.Type != "update_cancel_requested" {
-		t.Fatalf("cancel event=%s", event.Type)
-	}
-	if event := readRPCEvent(t, sink); event.Type != "update_finished" || event.Payload.(map[string]any)["success"] != false {
-		t.Fatalf("canceled update finish=%+v", event)
+	// Cancellation wakes the worker before the request acknowledgement is
+	// emitted, so completion and acknowledgement may arrive in either order.
+	seen := make(map[string]bool)
+	for range 2 {
+		event := readRPCEvent(t, sink)
+		if seen[event.Type] {
+			t.Fatalf("duplicate cancel event: %+v", event)
+		}
+		seen[event.Type] = true
+		switch event.Type {
+		case "update_cancel_requested":
+			if event.ID != "cancel-release" {
+				t.Fatalf("cancel acknowledgement=%+v", event)
+			}
+		case "update_finished":
+			if event.ID != "update-cancel" || event.Payload.(map[string]any)["success"] != false {
+				t.Fatalf("canceled update finish=%+v", event)
+			}
+		default:
+			t.Fatalf("unexpected cancel event=%+v", event)
+		}
 	}
 }
 
