@@ -1,6 +1,6 @@
 # Web search
 
-In source revisions containing this integration, `TINYFISH_API_KEY` enables two model tools: `WebSearch` (ranked titles, snippets, and URLs) and `WebFetch` (clean text from selected HTTP(S) URLs). The tools use TinyFish's Search and Fetch REST endpoints, which TinyFish says do not consume wallet balance. They still require a TinyFish account/API key; the Monid page's no-key headline does not match its own skill/API docs. pk does not call paid Monid catalog endpoints. This integration is not in installed release `eef6c46` yet.
+`TINYFISH_API_KEY` enables two model tools: `WebSearch` (ranked titles, snippets, and URLs) and `WebFetch` (clean text from selected HTTP(S) URLs). The tools use TinyFish's Search and Fetch REST endpoints, which TinyFish says do not consume wallet balance. They still require a TinyFish account/API key; the Monid page's no-key headline does not match its own skill/API docs. pk does not call paid Monid catalog endpoints. The integration is included in installed releases from `769d1e2` onward. Authenticated live validation remains pending.
 
 Create a TinyFish API key, then export it before starting pk:
 
