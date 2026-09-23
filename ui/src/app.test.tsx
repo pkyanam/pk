@@ -44,6 +44,15 @@ function pasteIntoRenderer(setup: Awaited<ReturnType<typeof testRender>>, text: 
   ;(setup.renderer.stdin as any).emit("data", Buffer.from(`\x1b[200~${text}\x1b[201~`))
 }
 
+function findDescendant(root: any, predicate: (renderable: any) => boolean): any | undefined {
+  if (predicate(root)) return root
+  for (const child of root.getChildren?.() ?? []) {
+    const match = findDescendant(child, predicate)
+    if (match) return match
+  }
+  return undefined
+}
+
 describe("OpenTUI application", () => {
   test("transcript timeline ignores clock ticks unless a live tool duration is visible", () => {
     const onToggle = () => {}
@@ -1638,7 +1647,7 @@ describe("OpenTUI application", () => {
 
   test("renders bold currency spans without dropping their delimiters or text", async () => {
     const fake = fakeTransport()
-    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 300, height: 36 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
     const text = "Bitcoin (BTC) is **about $84,094 USD** right now, according to CoinDesk’s live price page. CoinMarketCap showed **$84,190**, so prices vary slightly by source and update time.\n\n[CoinDesk](https://www.coindesk.com/price/bitcoin) · [CoinMarketCap](https://coinmarketcap.com/currencies/bitcoin/)"
@@ -1647,6 +1656,18 @@ describe("OpenTUI application", () => {
     expect(parsed.highlights?.some(([, , scope]) => scope === "markup.strong")).toBe(true)
     expect(parsed.highlights?.some(([, , scope]) => scope === "markup.link.label")).toBe(true)
     act(() => fake.emit({ version: 1, id: "currency-markdown", type: "assistant", payload: { text } }))
+    await setup.waitForFrame((frame) => frame.includes("Bitcoin (BTC) is") && frame.includes("CoinMarketCap"))
+    const findMarkdownBlock = () => findDescendant(setup.renderer.root, (renderable) => /^markdown-\d+-block-0$/.test(renderable.id ?? ""))
+    let markdownBlock = findMarkdownBlock()
+    const deadline = Date.now() + 1000
+    while (!markdownBlock && Date.now() < deadline) {
+      await setup.flush()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      markdownBlock = findMarkdownBlock()
+    }
+    expect(markdownBlock).toBeDefined()
+    await markdownBlock.highlightingDone
+    await setup.flush()
     const frame = await setup.waitForFrame((value) => value.includes("$84,094 USD") && value.includes("$84,190"))
     expect(frame).toContain("Bitcoin (BTC) is about")
     expect(frame).toContain("right now, according to CoinDesk’s live price page.")
@@ -1654,8 +1675,18 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("so prices vary slightly by source and update time.")
     expect(frame).toContain("CoinDesk")
     expect(frame).toContain("CoinMarketCap")
-    expect(frame).not.toContain("**about $84,094 USD**")
-    expect(frame).not.toContain("**$84,190**")
+    const row = frame.split("\n").findIndex((line) => line.includes("Bitcoin (BTC) is"))
+    const line = frame.split("\n")[row]!
+    const start = line.indexOf("Bitcoin (BTC)")
+    const end = line.indexOf("update time.") + "update time.".length - 1
+    await act(async () => {
+      await setup.mockMouse.pressDown(start, row)
+      await setup.mockMouse.moveTo(end, row)
+      await setup.mockMouse.release(end, row)
+    })
+    await setup.flush()
+    const copied = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)
+    expect(copied?.payload?.text).toBe(line.slice(start, end + 1))
   })
 
   test("keeps live activity visible through tool and model gaps until turn_finished", async () => {
@@ -1774,7 +1805,7 @@ describe("OpenTUI application", () => {
     act(() => fake.emit({ version: 1, id: update!.id, type: "update_started", payload: { source_path: "/tmp/pk checkout" } }))
     act(() => fake.emit({ version: 1, id: update!.id, type: "update_progress", payload: { stage: "build", text: "Building UI" } }))
     await setup.flush()
-    expect(setup.captureCharFrame()).toContain("Building update · Building UI")
+    expect(setup.captureCharFrame()).toContain("Updating pk · Building UI")
     await act(async () => { await setup.mockInput.typeText("keep this draft") })
     act(() => setup.mockInput.pressEnter())
     await setup.flush()
@@ -1837,12 +1868,36 @@ describe("OpenTUI application", () => {
     await act(async () => setup.mockMouse.release(start + "Copy this βeta".length, row))
     await setup.flush()
     const copy = fake.sent.find((item) => item.type === "clipboard_write")
-    expect(copy?.payload?.text).toBe("Copy this βeta ")
+    expect(copy?.payload?.text).toBe("Copy this βeta")
     expect(setup.captureCharFrame()).toContain("Copying…")
     act(() => fake.emit({ version: 1, id: copy!.id, type: "clipboard_written", payload: { bytes: 15 } }))
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("Copied to clipboard")
     expect(setup.captureCharFrame()).toContain("Copy this βeta text")
+  })
+
+  test("copies exact partial wrapped screen text including Unicode and literal Markdown markers", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    const text = "Start: pick up here; Unicode 😀 makes a wide cell, then bold **visible words** and enough extra words to force this assistant paragraph to wrap over several screen rows before its ending; inline code `**stars**` stays literal at the tail."
+    act(() => fake.emit({ version: 1, id: "wrapped-copy", type: "assistant", payload: { text } }))
+    const frame = await setup.waitForFrame((value) => value.includes("**stars**"))
+    const lines = frame.split("\n")
+    const firstRow = lines.findIndex((line) => line.includes("pick up here"))
+    const lastRow = lines.findIndex((line) => line.includes("**stars**"))
+    expect(lastRow).toBeGreaterThan(firstRow)
+    const startCell = Bun.stringWidth(lines[firstRow]!.slice(0, lines[firstRow]!.indexOf("pick")))
+    const endCell = Bun.stringWidth(lines[lastRow]!.slice(0, lines[lastRow]!.indexOf("stars") + "stars".length)) - 1
+    await act(async () => {
+      await setup.mockMouse.pressDown(startCell, firstRow)
+      await setup.mockMouse.moveTo(endCell, lastRow)
+      await setup.mockMouse.release(endCell, lastRow)
+    })
+    await setup.flush()
+    const copied = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)?.payload?.text
+    expect(copied).toBe("pick up here; Unicode 😀 makes a wide cell, then bold visible words\nand enough extra words to force this assistant paragraph to wrap over\nseveral screen rows before its ending; inline code **stars")
   })
 
   test("only the latest clipboard selection can change copy feedback or trigger fallback", async () => {
@@ -1926,21 +1981,24 @@ describe("OpenTUI application", () => {
     const body = Array.from({ length: 18 }, (_, index) => `Transcript line ${index + 1} · keep this paragraph readable.`).join("\n\n")
     act(() => fake.emit({ version: 1, id: "long-copy", type: "assistant", payload: { text: body } }))
     const frame = await setup.waitForFrame((value) => value.includes("Transcript line 18"))
-    const firstLine = frame.split("\n").findIndex((line) => line.includes("Transcript line 18"))
-    const startColumn = frame.split("\n")[firstLine]!.indexOf("Transcript line 18")
-    const footerRow = frame.split("\n").findIndex((line) => line.includes("Ready") && line.includes("cache"))
+    const firstLine = frame.split("\n").findIndex((line) => line.includes("Transcript line 8"))
+    const startColumn = frame.split("\n")[firstLine]!.indexOf("Transcript line 8")
+    const composerRow = frame.split("\n").findIndex((line) => line.includes("Ask pk to inspect"))
+    expect(composerRow).toBeGreaterThan(firstLine)
     await act(async () => {
       await setup.mockMouse.pressDown(startColumn, firstLine)
-      await setup.mockMouse.moveTo(80, footerRow)
-      await setup.mockMouse.release(80, footerRow)
+      await setup.mockMouse.moveTo(80, composerRow)
+      await setup.mockMouse.release(80, composerRow)
     })
     await setup.flush()
     const copy = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)
-    expect(copy?.payload?.text).toContain("Transcript line 7")
+    expect(copy?.payload?.text).toContain("Transcript line 8")
+    expect(copy?.payload?.text).toContain("Transcript line 18")
     expect(copy?.payload?.text).not.toContain("cache")
     expect(copy?.payload?.text).not.toContain("Ready")
     expect(copy?.payload?.text).not.toContain("Enter send")
     expect(copy?.payload?.text).not.toContain("Ask pk to inspect")
+    expect(copy?.payload?.text).not.toContain("new session")
   })
 
   test("composer text remains selectable and copyable when no transcript row is selected", async () => {
@@ -1959,7 +2017,7 @@ describe("OpenTUI application", () => {
     })
     await setup.flush()
     const copy = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)
-    expect(copy?.payload?.text).toBe("draft βeta ")
+    expect(copy?.payload?.text).toBe("draft βeta")
     expect(setup.captureCharFrame()).toContain("draft βeta text")
   })
 

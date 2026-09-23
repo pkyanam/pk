@@ -208,7 +208,38 @@ function preview(value: unknown, limit = 180): string {
   } catch { return "" }
 }
 
-function selectedCopyText(selection: any): string {
+function visibleTextInCellRange(spans: Array<{ text: string; width: number }>, startCell: number, endCell: number): string {
+  let column = 0
+  let output = ""
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  for (const span of spans) {
+    const spanEnd = column + span.width
+    const overlapStart = Math.max(column, startCell)
+    const overlapEnd = Math.min(spanEnd, endCell)
+    if (overlapStart < overlapEnd) {
+      let graphemeColumn = column
+      for (const part of segmenter.segment(span.text)) {
+        const width = Bun.stringWidth(part.segment)
+        const graphemeEnd = graphemeColumn + width
+        if (graphemeColumn < overlapEnd && graphemeEnd > overlapStart) output += part.segment
+        graphemeColumn = graphemeEnd
+      }
+      // Captured spans can include cell padding that has no character in text.
+      const representedWidth = graphemeColumn - column
+      const paddingStart = Math.max(overlapStart, column + representedWidth)
+      if (paddingStart < overlapEnd) output += " ".repeat(overlapEnd - paddingStart)
+    }
+    column = spanEnd
+    if (column >= endCell) break
+  }
+  return output
+}
+
+function selectedCopyText(
+  selection: any,
+  screenBuffer: { getSpanLines: () => Array<{ spans: Array<{ text: string; width: number }> }> } | undefined,
+  transcriptClip?: { x: number; y: number; width: number; height: number },
+): string {
   if (!selection) return ""
   const isWithin = (renderable: any, id: string) => {
     let node = renderable
@@ -223,18 +254,35 @@ function selectedCopyText(selection: any): string {
   const composer = selected.filter((item: any) => isWithin(item, "composer"))
   const scoped = transcript.length ? transcript : composer
   const lines = new Map<number, Array<{ x: number; text: string }>>()
-  for (const renderable of scoped) {
-    const text = renderable.getSelectedText()
-    if (!text) continue
-    text.split("\n").forEach((line: string, index: number) => {
-      const y = renderable.y + index
+  const anchor = selection.anchor
+  const focus = selection.focus
+  if (!anchor || !focus) return ""
+  const forward = focus.y > anchor.y || (focus.y === anchor.y && focus.x >= anchor.x)
+  const first = forward ? anchor : focus
+  const last = forward ? focus : anchor
+  const screenLines = screenBuffer?.getSpanLines()
+  if (!screenLines) return ""
+  for (const renderable of scoped as any[]) {
+    const clip = transcript.length ? transcriptClip : undefined
+    const top = Math.max(first.y, renderable.y, clip?.y ?? Number.NEGATIVE_INFINITY)
+    const bottom = Math.min(last.y + 1, renderable.y + renderable.height, clip ? clip.y + clip.height : Number.POSITIVE_INFINITY)
+    if (top >= bottom) continue
+    for (let y = top; y < bottom; y++) {
+      const row = screenLines?.[y]
+      if (!row) continue
+      const isSingleRow = first.y === last.y
+      const left = Math.max(renderable.x, clip?.x ?? Number.NEGATIVE_INFINITY, isSingleRow || y === first.y ? first.x : renderable.x)
+      const right = Math.min(renderable.x + renderable.width, clip ? clip.x + clip.width : Number.POSITIVE_INFINITY, isSingleRow || y === last.y ? last.x + 1 : renderable.x + renderable.width)
+      if (left >= right) continue
+      const text = visibleTextInCellRange(row.spans, left, right)
+      if (!text) continue
       const segments = lines.get(y) ?? []
-      segments.push({ x: renderable.x, text: line })
+      segments.push({ x: left, text })
       lines.set(y, segments)
-    })
+    }
   }
   return [...lines.entries()].sort(([a], [b]) => a - b)
-    .map(([, segments]) => segments.sort((a, b) => a.x - b.x).map((item) => item.text).join(""))
+    .map(([, segments]) => segments.sort((a, b) => a.x - b.x).map((item) => item.text).join("").trimEnd())
     .join("\n")
 }
 
@@ -573,12 +621,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     if (composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) textarea.current?.focus()
   }
 
+  const selectionCopyText = (selection: any) => {
+    const transcript = (renderer.root as any).findDescendantById("transcript")
+    const clip = transcript ? { x: transcript.x, y: transcript.y, width: transcript.width, height: transcript.height } : undefined
+    return selectedCopyText(selection, renderer.currentRenderBuffer, clip)
+  }
+
   useSelectionHandler((selection) => {
     if (selection.isDragging) return
     // OpenTUI's global selection can include renderables below the scrollbox
     // viewport. Prefer transcript text whenever the drag touched the transcript;
     // composer selections still work when they are the only selected region.
-    const selected = selectedCopyText(selection)
+    const selected = selectionCopyText(selection)
     if (!selected.trim()) {
       copiedSelection.current = ""
       return
@@ -2471,7 +2525,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if ((commandModifier && key.name.toLowerCase() === "c") || (key.ctrl && key.name.toLowerCase() === "y")) {
-      const selection = selectedCopyText(renderer.getSelection())
+      const selection = selectionCopyText(renderer.getSelection())
       if (selection) {
         key.preventDefault()
         copyToClipboard(selection)
@@ -2708,7 +2762,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const activityLabel = question
     ? "Waiting for your answer"
     : maintenance
-      ? `${maintenance.kind === "update" ? "Building update" : "Rolling back"} · ${maintenance.progress}`
+      ? `${maintenance.kind === "update" ? "Updating pk" : "Rolling back"} · ${maintenance.progress}`
       : reloadPending
         ? "Saving session for reload"
     : busy
@@ -2983,7 +3037,7 @@ const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { en
     <text fg={isUser ? palette.blue : palette.accent} content={isUser ? `you${delivery ? ` · ${delivery}` : ""}` : entry.speaker ?? "pk"} />
     {entry.text && (isUser || entry.provisional || !markdown
       ? <text fg={palette.text} content={entry.text} />
-      : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />)}
+      : <markdown content={entry.text} syntaxStyle={markdownStyle} fg={palette.text} conceal internalBlockMode="top-level" style={{ width: "100%", flexGrow: 1, minHeight: 1, flexShrink: 0 }} />)}
     {isUser && entry.historyAttachments?.length ? <box style={{ flexDirection: "row", gap: 1, flexWrap: "wrap", paddingTop: entry.text ? 1 : 0 }}>
       {entry.historyAttachments.slice(0, 8).map((attachment, index) => {
         const maxName = renderer.width < 90 ? 18 : 32
