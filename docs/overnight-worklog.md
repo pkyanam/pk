@@ -622,3 +622,10 @@ gates or imply that every backlog item is complete.
 ### 08:21 EDT — Git-awareness installment installed
 
 - Managed GitHub updater activated clean 2da4bc0 as 20260923T122106.062697000Z-9553ed49507a-fd890b40 after its validation gates. pk version confirms the source revision. Existing running sessions were not interrupted. Relaunch/reload and start a fresh session to receive the workspace advisory; rollback remains available.
+
+### 08:23 EDT — native input recheck
+
+- Opened a separate Cmux workspace, leaving the user workspace untouched, and launched installed 2da4bc0. Confirmed mint ASCII wordmark and compact header. In /mcp Add, Right selected remote HTTP and Enter focused Server ID with the matching next-field hint.
+- Escape canceled the form and then the manager. Physical x, Shift+Enter, y appeared as two composer lines without submitting a prompt. No provider request or MCP configuration write occurred.
+- Renderer audit exercised long-gap typing/copy and cancel/second-prompt paths without finding the original freeze. Additional focused-form/turn-completion regression is retained; original native freeze remains undiagnosed.
+- The expanded keyboard-only form regression passes (six assertions): field sentinel stays out of chat, form and manager cancel, composer regains focus, and two prompt payloads remain correct across turn completion. Initial failures were stale-frame assertions and the renderer’s 20ms lone-Escape parsing delay; no application defect was established. One React act warning remains in the test output.

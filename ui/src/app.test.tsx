@@ -2016,6 +2016,48 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
   })
 
+  test("closing a focused MCP form restores composer typing across a completed turn", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "modal-focus-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/mcp") })
+    act(() => setup.mockInput.pressEnter())
+    const list = fake.sent.find((item) => item.type === "mcp_list")!
+    act(() => fake.emit({ version: 1, id: list.id, type: "mcp_catalog", payload: { servers: [], tools: [] } }))
+    await setup.flush()
+    await setup.waitForFrame((frame) => frame.includes("MCP connections"))
+    await act(async () => setup.mockInput.pressKey("a"))
+    await setup.waitForFrame((frame) => frame.includes("Executable path"))
+    act(() => setup.mockInput.pressEnter()) // focus Server ID
+    await setup.waitForFrame((frame) => frame.includes("› Server ID"))
+    await setup.flush()
+    await act(async () => { await setup.mockInput.typeText("modal-only-sentinel") })
+    await setup.waitForFrame((frame) => frame.includes("modal-only-sentinel"))
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+    await act(async () => { setup.mockInput.pressEscape(); await new Promise((resolve) => setTimeout(resolve, 30)) }) // cancel the form after the terminal's lone-Esc disambiguation window
+    await setup.waitForFrame((frame) => frame.includes("Servers · 0 [1]"))
+    await act(async () => { setup.mockInput.pressEscape(); await new Promise((resolve) => setTimeout(resolve, 30)) })
+    await setup.waitForFrame((frame) => !frame.includes("MCP connections"))
+    expect((setup.renderer.root as any).findDescendantById("composer").focused).toBe(true)
+
+    await act(async () => { await setup.mockInput.typeText("first after modal") })
+    act(() => setup.mockInput.pressEnter())
+    const first = fake.sent.filter((item) => item.type === "prompt").at(-1)!
+    expect(first.payload?.text).toBe("first after modal")
+    act(() => fake.emit({ version: 1, id: first.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: first.id, type: "assistant", payload: { text: "finished" } }))
+    act(() => fake.emit({ version: 1, id: first.id, type: "turn_finished", payload: { session_id: "modal-focus-session" } }))
+    await setup.flush()
+    expect((setup.renderer.root as any).findDescendantById("composer").focused).toBe(true)
+
+    await act(async () => { await setup.mockInput.typeText("second after turn") })
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("second after turn")
+    act(() => setup.mockInput.pressEnter())
+    expect(fake.sent.filter((item) => item.type === "prompt").at(-1)?.payload?.text).toBe("second after turn")
+  })
+
   test("file-looking paste goes to a focused MCP field instead of the attachment queue", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
