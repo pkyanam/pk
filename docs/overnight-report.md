@@ -1,6 +1,6 @@
 # pk overnight checkpoint — September 23, 2026
 
-Draft checkpoint; the morning report will update pending items below.
+Morning delivery checkpoint. The requested feature set is substantially implemented, but not every requested workflow is complete or independently verified. The ambition to outperform other harnesses remains an open goal, not an established result.
 
 ## Run it
 
@@ -35,6 +35,16 @@ The [request-cost analysis](research/context-cost-attribution.md) separates obse
 Read [benchmark findings](benchmark-findings.md), [prompt overhead](research/prompt-overhead.md), and the [work log](overnight-worklog.md) for measurements and reproducibility details. Synthetic allocation improvements are separate from model-token savings.
 
 `/usage` passed the installed localhost-provider restart/attach smoke and native Cmux rendering check. The earlier complete terminal freeze has not been reliably reproduced. Native drag/drop remains unverified; Finder file-path paste and Preview pixel paste were verified. Scanned PDF page rendering passed a real local Poppler smoke and a bounded Luna/low vision check. Cloudflare account OAuth and a real external ACP editor have not been exercised.
+
+## Remaining work
+
+- Establish cost per successful task and quality gains with matched, counterbalanced benchmarks; current pilots do not meet the cost target.
+- Reproduce and diagnose the original complete-terminal freeze, and finish native drag/drop validation. Specific input/focus regressions are fixed, but they do not prove every freeze resolved.
+- Validate Cloudflare account OAuth, a real external ACP editor, and additional live OpenAI-compatible providers. Current local fixtures and anonymous Cloudflare search do not cover those paths.
+- Extend plugin hooks beyond observation if required; prompt/tool transforms remain unsupported. Child file claims remain advisory, not enforced sandboxing.
+- PDF intake uses bounded extraction/previews; native PDF upload and OCR remain unsupported.
+
+The [complete checklist](project-checklist.md) retains the finer-grained requests and evidence.
 
 ## Launch material
 
