@@ -12,13 +12,15 @@ type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number
 type StreamProgress = { outerId: string; requestId: string; label: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type SkillOption = { name: string; description: string; path: string; bundled?: boolean; saved?: boolean }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
 type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string }
 type MCPToolOption = { server_id: string; server_tool_name: string; name: string; description: string; input_schema?: Record<string, unknown> }
 type ModelToolOption = { name: string; description: string; source?: string }
+type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
+type ProviderModelOption = { id: string; object?: string; owned_by?: string }
 
 const models: Model[] = [
   { id: "gpt-6-luna", label: "Luna · fast" },
@@ -35,6 +37,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
   { name: "/mcp", description: "List, add, or remove MCP servers · configuration only changes new sessions", action: "mcp" },
   { name: "/tools", description: "Inspect the tools available to the active model session", action: "tools" },
+  { name: "/provider", description: "List providers, inspect models, or select one for a new session", action: "provider" },
   { name: "/update", description: "Fetch and install the latest pk release · or build a local checkout", action: "update" },
   { name: "/rollback", description: "Restore the previous managed pk release", action: "rollback" },
   { name: "/reload", description: "Restart pk and resume this session", action: "reload" },
@@ -77,6 +80,19 @@ function shortTime(milliseconds: number) {
 
 function shortPath(path: string, limit: number) {
   return path.length <= limit ? path : `…${path.slice(-(limit - 1))}`
+}
+
+function safeProviderURL(value: string) {
+  try {
+    const url = new URL(value)
+    url.username = ""
+    url.password = ""
+    url.search = ""
+    url.hash = ""
+    return url.toString().replace(/\/$/, "")
+  } catch {
+    return value.replace(/\?.*$/, "").replace(/(https?:\/\/)[^/@]+@/i, "$1")
+  }
 }
 
 function preview(value: unknown, limit = 180): string {
@@ -222,7 +238,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | "providers" | "provider_models" | null>(null)
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
@@ -237,6 +253,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [mcpServers, setMcpServers] = useState<MCPServerOption[]>([])
   const [mcpTools, setMcpTools] = useState<MCPToolOption[]>([])
   const [modelTools, setModelTools] = useState<ModelToolOption[]>([])
+  const [providers, setProviders] = useState<ProviderOption[]>([])
+  const [providerModels, setProviderModels] = useState<ProviderModelOption[]>([])
+  const [providerModelsLoading, setProviderModelsLoading] = useState(false)
+  const [providerID, setProviderID] = useState("native")
+  const sessionHasPrompt = useRef(false)
+  const childSequences = useRef(new Map<string, number>())
   const [mcpSavedTools, setMcpSavedTools] = useState(false)
   const [modelToolsSaved, setModelToolsSaved] = useState(false)
   const [maintenance, setMaintenance] = useState<Maintenance | null>(null)
@@ -532,11 +554,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setSteeringEnabled(steeringNegotiated.current)
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
+        if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
         if (data.workspace) setMessage(String(data.workspace))
         setEntries((current) => current.filter((entry) => entry.text !== "Starting a new session…"))
         break
       case "session":
         if (data.session_id) setSessionId(String(data.session_id))
+        if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
         break
       case "history": {
         const restored = Array.isArray(data.entries)
@@ -548,6 +572,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           : []
         const notices: Entry[] = data.truncated ? [{ id: entryId.current++, role: "system", text: "Showing recent conversation history; earlier messages were omitted." }] : []
         setEntries([...notices, ...restored].slice(-300))
+        sessionHasPrompt.current = restored.some((entry) => entry.role === "user")
         if (data.session_id) setSessionId(String(data.session_id))
         break
       }
@@ -580,6 +605,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         enterPhase(activeToolIds.current.size ? "tools" : "model")
         break
       case "turn_started":
+        sessionHasPrompt.current = true
         setBusy(true)
         setActivityStartedAt((current) => current ?? Date.now())
         activeToolIds.current.clear()
@@ -698,6 +724,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.session_id) setSessionId(String(data.session_id))
         if (data.model) setModel(String(data.model))
         if (data.effort) setEffort(String(data.effort))
+        if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
         if (data.usage) setUsage({ cachedInput: data.usage.cached_input_tokens, available: data.usage.cached_input_tokens_available === true })
         break
       case "usage":
@@ -761,6 +788,81 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setSelector("mcp")
         if (event.type === "mcp_updated" && data.next_session_only) addEntry("system", "MCP configuration saved · applies to new sessions. Use /new to start one.")
         if (!servers.length) addEntry("system", 'No MCP servers configured. Use /mcp add --id ID --command PATH to add one.')
+        break
+      }
+      case "providers":
+      case "providers_updated": {
+        const available = Array.isArray(data.providers) ? data.providers.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
+          id: String(item.id), protocol: String(item.protocol ?? "unknown"), base_url: String(item.base_url ?? ""),
+          api_key_configured: item.api_key_configured === true,
+          api_key_env: typeof item.api_key_env === "string" ? item.api_key_env : undefined,
+          default_model: typeof item.default_model === "string" ? item.default_model : undefined,
+          default_effort: typeof item.default_effort === "string" ? item.default_effort : undefined,
+          supports_reasoning_effort: item.supports_reasoning_effort === true, is_default: item.is_default === true,
+        })) : []
+        setProviders(available)
+        setSelectionIndex(providerID === "native" ? 0 : Math.max(0, available.findIndex((item) => item.id === providerID) + 1))
+        setSelector("providers")
+        if (event.type === "providers_updated" && data.next_session_only) addEntry("system", "Provider configuration saved · applies to new sessions. Use /new to start one.")
+        if (!available.length) addEntry("system", 'No custom providers configured. Use `pk provider add` in a shell, then /provider list.')
+        break
+      }
+      case "provider_models_started": {
+        setProviderModels([])
+        setProviderModelsLoading(true)
+        setSelector("provider_models")
+        break
+      }
+      case "provider_models": {
+        setProviderModelsLoading(false)
+        const available = Array.isArray(data.models) ? data.models.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
+          id: String(item.id), object: typeof item.object === "string" ? item.object : undefined, owned_by: typeof item.owned_by === "string" ? item.owned_by : undefined,
+        })) : []
+        setProviderModels(available)
+        setSelectionIndex(0)
+        setSelector("provider_models")
+        if (!available.length) addEntry("system", `No models were returned for provider ${String(data.provider_id ?? "")} .`)
+        break
+      }
+      case "provider_selected": {
+        setProviderID(String(data.provider_id ?? "native") || "native")
+        if (data.model) setModel(String(data.model))
+        if (data.effort) setEffort(String(data.effort))
+        addEntry("system", `Provider selected · ${String(data.provider_id || "Native Codex")} · applies to the next conversation.`)
+        break
+      }
+      case "subagent": {
+        const childID = String(data.child_id ?? "child")
+        const sequence = Number(data.sequence ?? 0)
+        const seen = childSequences.current.get(childID) ?? 0
+        if (sequence && sequence <= seen) break
+        if (sequence) childSequences.current.set(childID, sequence)
+        if (childSequences.current.size > 300) childSequences.current.delete(childSequences.current.keys().next().value!)
+        const subtype = String(data.type ?? "subagent")
+        if (subtype === "assistant") {
+          const phase = String(data.phase ?? "")
+          const text = typeof data.text === "string" ? data.text.trim() : ""
+          if (text && ["commentary", "final_answer", "final"].includes(phase)) addEntry("assistant", `Child ${childID} · ${text}`)
+        } else if (subtype === "tool_call") {
+          const name = String(data.name ?? "tool")
+          const state = String(data.state ?? "running")
+          const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes(state.toLowerCase())
+          const callId = `child:${childID}:${String(data.call_id ?? name)}`
+          setEntries((current) => {
+            const prior = current.find((entry) => entry.callId === callId)
+            const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId, toolName: `${childID} · ${name}`, toolState: state, commandPreview: state, text: "", detail: `Subagent tool ${state}` }
+            return (prior ? current.map((entry) => entry.callId === callId ? next : entry) : [...current, next]).slice(-300)
+          })
+        } else {
+          const state = String(data.state ?? "running")
+          const childEntryId = `subagent:${childID}`
+          const text = typeof data.text === "string" && data.text ? data.text.slice(0, 240) : ""
+          setEntries((current) => {
+            const prior = current.find((entry) => entry.callId === childEntryId)
+            const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId: childEntryId, toolName: `Subagent ${childID}`, toolState: state, commandPreview: state, text, detail: text || (state === "running" ? "Working in delegated task" : `Child task ${state}`) }
+            return (prior ? current.map((entry) => entry.callId === childEntryId ? next : entry) : [...current, next]).slice(-300)
+          })
+        }
         break
       }
       case "tool_catalog": {
@@ -892,6 +994,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        if (data.command_type === "provider_models" || data.request_type === "provider_models") setProviderModelsLoading(false)
         if (event.id && pendingClipboardWrites.current.has(event.id) && (data.command_type === "clipboard_write" || data.request_type === "clipboard_write")) {
           const text = pendingClipboardWrites.current.get(event.id)!
           pendingClipboardWrites.current.delete(event.id)
@@ -1170,6 +1273,43 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "tools": transport.send("tools" as any); break
+      case "provider": {
+        const [operation, ...rest] = args
+        const target = rest.join(" ")
+        if (!operation || operation === "list") transport.send("providers_list" as any)
+        else if (operation === "models" && target) transport.send("provider_models" as any, { provider_id: target })
+        else if (operation === "use" && target) {
+          if (busy || turnActive.current || sessionHasPrompt.current) addEntry("system", "Provider is fixed after the first prompt. Use /new before switching providers.")
+          else transport.send("provider_select" as any, { provider_id: target === "native" ? "" : target })
+        } else if (operation === "default" && target) {
+          transport.send("provider_default" as any, { provider_id: target === "native" ? "" : target })
+        } else if (operation === "remove" && target) {
+          transport.send("provider_remove" as any, { id: target })
+        } else if (operation === "add") {
+          const provider: { id?: string; protocol?: string; base_url?: string; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort?: boolean } = {}
+          let invalid = ""
+          for (let index = 0; index < rest.length; index++) {
+            const option = rest[index]!
+            if (option === "--reasoning-effort") { provider.supports_reasoning_effort = true; continue }
+            const value = rest[++index]
+            if (value === undefined) { invalid = `Missing value after ${option}.`; break }
+            if (option === "--id") provider.id = value
+            else if (option === "--protocol") provider.protocol = value
+            else if (option === "--base-url") provider.base_url = value
+            else if (option === "--api-key-env") provider.api_key_env = value
+            else if (option === "--model") provider.default_model = value
+            else if (option === "--effort") provider.default_effort = value
+            else { invalid = `Unknown provider option: ${option}.`; break }
+          }
+          if (!provider.id || !provider.protocol || !provider.base_url) invalid ||= 'Usage: /provider add --id ID --protocol responses|chat_completions --base-url URL [--api-key-env ENV] [--model ID] [--effort low|medium|high|xhigh|max] [--reasoning-effort]'
+          if (provider.protocol && !["responses", "chat_completions"].includes(provider.protocol)) invalid ||= "Protocol must be responses or chat_completions."
+          if (provider.default_effort && !efforts.includes(provider.default_effort)) invalid ||= `Unsupported effort ${provider.default_effort}. Choose ${efforts.join(", ")}.`
+          if (provider.api_key_env && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(provider.api_key_env)) invalid ||= "API key reference must be an environment variable name, such as OPENAI_API_KEY."
+          if (invalid) addEntry("system", invalid)
+          else transport.send("provider_add" as any, provider as Record<string, unknown>)
+        } else addEntry("system", 'Usage: /provider [list] · /provider models ID · /provider use ID|native · /provider default ID|native · /provider add --id ID --protocol responses|chat_completions --base-url URL [--api-key-env ENV] [--model ID] · /provider remove ID')
+        break
+      }
       case "plugin": {
         const operation = (args[0] ?? "").toLowerCase()
         const target = args.slice(1).join(" ")
@@ -1223,6 +1363,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (busy) { addEntry("system", "Wait for the active turn to finish before starting a new session."); break }
         transport.send("new")
         setEntries([])
+        sessionHasPrompt.current = false
         setSessionId("")
         break
       case "attach":
@@ -1293,7 +1434,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /tools · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · selecting transcript text copies it when OSC 52 is supported · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }
@@ -1345,6 +1486,19 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     } else if (selector === "mcp") {
       const server = mcpServers[index]
       if (server) addEntry("system", `MCP ${server.id} · ${server.command} · ${server.arguments_count} args · environment keys: ${server.environment_keys.join(", ") || "none"} · ${server.working_directory || "default working directory"}. Use /mcp remove ${server.id} to remove it; changes apply to new sessions.`)
+    } else if (selector === "providers") {
+      const provider = index === 0 ? null : providers[index - 1]
+      const id = provider?.id ?? "native"
+      if (busy || turnActive.current || sessionHasPrompt.current) {
+        addEntry("system", "Provider is fixed after the first prompt. Use /new before switching providers.")
+      } else {
+        transport.send("provider_select" as any, { provider_id: id === "native" ? "" : id })
+        setSelector(null)
+        textarea.current?.focus()
+      }
+    } else if (selector === "provider_models") {
+      const item = providerModels[index]
+      if (item) addEntry("system", `Model · ${item.id}${item.owned_by ? ` · ${item.owned_by}` : ""}${item.object ? ` · ${item.object}` : ""}`)
     } else if (selector === "tools") {
       const tool = modelTools[index]
       if (tool) addEntry("system", `${tool.name}${tool.source ? ` · ${tool.source}` : ""}${tool.description ? ` · ${tool.description}` : ""}`)
@@ -1426,7 +1580,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : modelTools.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : modelTools.length
       if (isEscape) { setSelector(null); textarea.current?.focus(); return }
       if (key.name === "up") { setSelectionIndex((index) => (index - 1 + count) % count); return }
       if (key.name === "down") { setSelectionIndex((index) => (index + 1) % count); return }
@@ -1512,7 +1666,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   })
 
   const selectedOptions = selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
-    : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
+    : selector === "providers" ? [{ label: "Native Codex", value: "native", description: "Built-in Codex provider", state: providerID === "native" ? "selected" : "" }, ...providers.map((item) => ({ label: item.id, value: item.id, description: `${item.protocol} · ${safeProviderURL(item.base_url)} · key ${item.api_key_configured ? (item.api_key_env ? `env ${item.api_key_env}` : "configured") : "missing"}${item.default_model ? ` · ${item.default_model}` : ""}`, state: item.is_default ? "default" : item.id === providerID ? "selected" : "" }))]
+      : selector === "provider_models" ? providerModels.map((item) => ({ label: item.id, value: item.id, description: [item.object, item.owned_by].filter(Boolean).join(" · "), state: "model" }))
+      : selector === "effort" ? efforts.map((item) => ({ label: `${item[0]!.toUpperCase()}${item.slice(1)} reasoning`, value: item, description: "", state: item === effort ? "current" : "" }))
       : selector === "tasks" ? tasks.map((task: any) => ({ label: task.title || task.prompt || task.session_id || task.task_id, value: task.session_id || task.task_id, description: `${task.kind ?? "task"} · ${task.status ?? task.updated_at ?? "saved"}`, state: "" }))
         : selector === "skills" ? skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
         : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
@@ -1520,7 +1676,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
   const selectorPageSize = selector === "skills"
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
-    : selector === "plugins" || selector === "mcp" || selector === "tools" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
+    : selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
   const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
   const filteredCommands = slashCommands.filter((item) => item.name.startsWith(draft.trim().split(/\s/)[0] || "/"))
   const slashWindowStart = Math.max(0, Math.min(slashIndex - 5, filteredCommands.length - 6))
@@ -1599,25 +1755,27 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : "Model-visible tools"} />
+      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : "Model-visible tools"} />
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
+        {selector === "providers" && <text fg={palette.dim} content="Enter selects for this session · /provider use ID persists only through pk provider use ID" />}
+        {selector === "provider_models" && <text fg={palette.dim} content={providerModelsLoading ? "Contacting provider model catalog…" : "Model discovery is read-only · use /provider use ID before the first prompt"} />}
         {selector === "tools" && <text fg={palette.dim} content={modelToolsSaved ? "Saved snapshot for this session" : "Current available tool registry"} />}
         <box style={{ height: 1 }} />
-        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? "No model tools available" : "Nothing to show"} />}
+        {selectedOptions.length === 0 && <text fg={palette.muted} content={selector === "skills" ? "No skills available" : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? "No model tools available" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : "Nothing to show"} />}
         {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
           const index = selectorWindowStart + localIndex
           return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
             <box style={{ flexDirection: "row", gap: 1, height: 1 }}>
               <text fg={index === selectionIndex ? palette.accent : palette.muted} content={index === selectionIndex ? "›" : " "} />
               <text fg={index === selectionIndex ? palette.text : palette.muted} content={option.label} />
-              <text fg={(selector === "plugins" && option.state === "enabled") || (selector === "mcp" && option.state === "configured") ? palette.accent : palette.dim} content={option.state} />
+              <text fg={(selector === "plugins" && option.state === "enabled") || (selector === "mcp" && option.state === "configured") || ((selector === "providers") && (option.state === "default" || option.state === "selected")) ? palette.accent : palette.dim} content={option.state} />
             </box>
             {option.description && <text fg={palette.dim} content={option.description} />}
           </box>
         })}
         <box style={{ height: 1 }} />
-        <text fg={palette.dim} content={selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        <text fg={palette.dim} content={selector === "skills" ? "↑↓ move · Enter insert instruction · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
