@@ -7,12 +7,14 @@ uses UTF-8, newline-delimited JSON-RPC 2.0 messages. ACP responses and
 Start it as a child process of an ACP client:
 
 ```sh
-pk acp [--model MODEL] [--effort EFFORT]
+pk acp [--provider ID|native] [--model MODEL] [--effort EFFORT]
 ```
 
-The defaults come from `pk config` (`gpt-6-luna`, `medium`). Credentials are
-read from pk's normal login state; log in with `pk login` before starting the
-client. Each ACP session uses the client-supplied absolute `cwd` as its working
+Provider selection follows `pk run`: use the configured default provider,
+select one with `--provider ID`, or use `--provider native` for Codex login.
+Provider model and effort defaults take precedence over `pk config`; explicit
+`--model` and `--effort` flags override them. Native credentials come from
+`pk login`; compatible endpoints use their saved provider configuration. Each ACP session uses the client-supplied absolute `cwd` as its working
 directory. The first prompt creates a durable pk runner session, and subsequent
 prompts in that ACP session continue that same runner session.
 
@@ -50,7 +52,10 @@ To check stdio interoperability without credentials or a model call, run
 `scripts/acp-sdk-smoke/run.sh`. It installs the official
 `@agentclientprotocol/sdk` pinned at 1.5.0 into a temporary directory, builds a
 fake local ACP agent using a fixed assistant response, and exercises initialize,
-session creation, prompt updates, and the `end_turn` response. The script uses a
+session creation, prompt updates, and the `end_turn` response. It also builds
+the actual pk CLI and drives two turns through a loopback Chat Completions
+provider, checking model selection, tool declarations, and retained history.
+All model responses in this smoke are synthetic; no remote model is called. The script uses a
 temporary private home and removes its temporary files on exit. It verifies the
 wire exchange with the SDK; it does not claim compatibility testing with a
 specific ACP editor.

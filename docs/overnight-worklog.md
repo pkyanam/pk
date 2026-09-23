@@ -634,3 +634,9 @@ gates or imply that every backlog item is complete.
 
 - Fixed real RPC /update dispatch passing the command name into a flags-only handler. New regression failed with unexpected arguments before the fix and now reaches source validation. CLI update emits readable stage progress to stderr and the current stage on failure; post-build UI validation is now labeled accurately.
 - Affected updater and CLI/RPC race tests pass. Managed updater activated clean be4bf3a as 20260923T123657.052406000Z-5aad47beba25-33d3a5aa after its full validation gates. Installed binary smoke verified CLI progress and actual RPC dispatch against an isolated invalid source; no secondary installation or network access was needed for that smoke. Existing running user sessions were not interrupted.
+
+### ACP configured-provider integration
+
+- ACP now uses the configured provider or explicit `--provider ID|native`, with provider model/effort defaults and explicit flag overrides. Provider identity is persisted with the session.
+- Official SDK 1.5.0 smoke now drives the real CLI against a local Chat Completions fixture for two turns, checking model, tool declarations and retained history. It passed without a remote model request; actual editor integration remains unverified.
+- The neighboring RPC command dispatch audit found no further argument mismatches. MCP form checks pass (nine tests, 53 assertions).

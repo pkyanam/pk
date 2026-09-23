@@ -31,10 +31,19 @@ import (
 
 // runACPCommand serves ACP v1 over stdio.
 func runACPCommand(ctx context.Context, args []string, input io.Reader, output, diagnostics io.Writer) int {
-	return runACPCommandWithAdapter(ctx, args, input, output, diagnostics, func(ctx context.Context) (*codexAdapter, error) { return prepareAdapter(ctx, false, "") })
+	return runACPCommandWithRunnerAdapter(ctx, args, input, output, diagnostics, func(ctx context.Context, options *runner.Options) (llm.Adapter, error) {
+		adapter, _, err := prepareCLIAdapter(ctx, options, false, "")
+		return adapter, err
+	})
 }
 
 func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reader, output, diagnostics io.Writer, prepare func(context.Context) (*codexAdapter, error)) int {
+	return runACPCommandWithRunnerAdapter(ctx, args, input, output, diagnostics, func(ctx context.Context, _ *runner.Options) (llm.Adapter, error) {
+		return prepare(ctx)
+	})
+}
+
+func runACPCommandWithRunnerAdapter(ctx context.Context, args []string, input io.Reader, output, diagnostics io.Writer, prepare func(context.Context, *runner.Options) (llm.Adapter, error)) int {
 	defaults, err := config.Load(filepathJoin(pkHome(), "config.json"))
 	if err != nil {
 		fmt.Fprintf(diagnostics, "pk acp: load config: %v\n", err)
@@ -44,6 +53,7 @@ func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reade
 	flags.SetOutput(diagnostics)
 	model := flags.String("model", defaults.Model, "model ID")
 	effort := flags.String("effort", defaults.Effort, "reasoning effort")
+	providerChoice := flags.String("provider", "", "provider ID or native (default configured provider)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -58,8 +68,24 @@ func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reade
 		fmt.Fprintf(diagnostics, "pk acp: unsupported reasoning effort %q\n", *effort)
 		return 2
 	}
+	provider, err := resolveCLIProvider(*providerChoice, false)
+	if err != nil {
+		fmt.Fprintf(diagnostics, "pk acp: select model provider: %v\n", err)
+		return 2
+	}
+	modelSet, effortSet := false, false
+	flags.Visit(func(item *flag.Flag) {
+		switch item.Name {
+		case "model":
+			modelSet = true
+		case "effort":
+			effortSet = true
+		}
+	})
+	selected := runner.Options{Model: *model, Effort: *effort}
+	applyProviderDefaults(&selected, provider, modelSet, effortSet)
 	sessionDir := filepathJoin(pkHome(), "sessions")
-	server, err := acp.NewServer(input, output, acp.Config{Model: *model, Effort: *effort,
+	server, err := acp.NewServer(input, output, acp.Config{Model: selected.Model, Effort: selected.Effort,
 		NewSession: func(sessionCtx context.Context, id, _ string) error {
 			store, err := localfile.New(sessionDir)
 			if err != nil {
@@ -72,13 +98,15 @@ func runACPCommandWithAdapter(ctx context.Context, args []string, input io.Reade
 			return replayACPSession(sessionCtx, sessionDir, id, workspace, emit)
 		},
 		Run: func(turnCtx context.Context, turn acp.Turn, emit func(acp.Update) error) (acp.TurnResult, error) {
-			client, err := prepare(turnCtx)
+			options := runner.Options{Prompt: turn.Prompt, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, ProviderID: selected.ProviderID, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Output: &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}, Diagnostics: diagnostics, JSONL: true}
+			client, err := prepare(turnCtx, &options)
 			if err != nil {
 				return acp.TurnResult{}, err
 			}
-			defer client.Close()
-			writer := &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}
-			options := runner.Options{Prompt: turn.Prompt, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Adapter: client, Output: writer, Diagnostics: diagnostics, JSONL: true}
+			if closer, ok := client.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
+			options.Adapter = client
 			var sessionID string
 			options.OnSession = func(id string) { sessionID = id }
 			result, err := runner.Run(turnCtx, options)

@@ -2,6 +2,7 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$repo_root"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/pk-acp-sdk-smoke.XXXXXX")
 cleanup() {
   python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "$tmp"
@@ -14,3 +15,7 @@ go build -o "$tmp/fake-agent" "$repo_root/scripts/acp-sdk-smoke/fake-agent.go"
 node "$repo_root/scripts/acp-sdk-smoke/client.mjs" \
   "$tmp/client/node_modules/@agentclientprotocol/sdk/dist/acp.js" \
   "$tmp/fake-agent" "$tmp/private-home"
+go build -o "$tmp/pk" "$repo_root/cmd/pk"
+node "$repo_root/scripts/acp-sdk-smoke/real-client.mjs" \
+  "$tmp/client/node_modules/@agentclientprotocol/sdk/dist/acp.js" \
+  "$tmp/pk" "$tmp/private-home"
