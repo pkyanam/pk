@@ -261,6 +261,10 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if err := os.WriteFile(contextUsage, []byte(`{"version":1,"record":{"available":true,"total_bytes":123}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	checkpoint := contextCheckpointPath(sessionDir, id)
+	if err := os.WriteFile(checkpoint, []byte(`{"version":1,"summary":"preserved task constraints"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	pageDir := attachments.PromptPDFPageDir(sessionDir, id, "input-with-pdf")
 	if err := os.MkdirAll(pageDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -302,7 +306,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if len(result) != 1 || !result[0].OK {
 		t.Fatalf("archive result: %+v", result)
 	}
-	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, contextUsage, compactionPath, capture, pagePath} {
+	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, contextUsage, checkpoint, compactionPath, capture, pagePath} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Errorf("live artifact still exists at %s (err=%v)", path, err)
 		}
@@ -323,6 +327,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 		filepath.Join(sessionDir, id+".session.jsonl"): "session",
 		contextPath:    "stable",
 		contextUsage:   `"total_bytes":123`,
+		checkpoint:     "preserved task constraints",
 		compactionPath: "summary",
 		capture:        "complete output",
 		pagePath:       "rendered page",
@@ -375,6 +380,10 @@ func TestPurgeRequiresExplicitTrashIDAndDoesNotFollowSymlinks(t *testing.T) {
 	if _, err := createSession(t, sessionDir, "session-purge", "Purge fixture", "Answer"); err != nil {
 		t.Fatal(err)
 	}
+	checkpoint := contextCheckpointPath(sessionDir, "session-purge")
+	if err := os.WriteFile(checkpoint, []byte(`{"summary":"private conversation summary"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	record, err := presentation.NewRecord("Purge fixture", "Purge fixture\nfile note", []attachments.Attachment{{Path: "fixture.txt", Kind: attachments.Text}})
 	if err != nil {
 		t.Fatal(err)
@@ -396,6 +405,9 @@ func TestPurgeRequiresExplicitTrashIDAndDoesNotFollowSymlinks(t *testing.T) {
 	}
 	entryDir := filepath.Join(filepath.Dir(sessionDir), "trash", "sessions", archived[0].TrashID)
 	payload := filepath.Join(entryDir, "payload")
+	if _, err := os.Stat(filepath.Join(payload, filepath.Base(checkpoint))); err != nil {
+		t.Fatalf("checkpoint did not move to trash: %v", err)
+	}
 	sentinel := filepath.Join(t.TempDir(), "outside-sentinel")
 	if err := os.WriteFile(sentinel, []byte("preserve me"), 0o600); err != nil {
 		t.Fatal(err)
@@ -427,6 +439,9 @@ func TestPurgeRequiresExplicitTrashIDAndDoesNotFollowSymlinks(t *testing.T) {
 	}
 	if _, err := os.Stat(pagePath); !os.IsNotExist(err) {
 		t.Fatalf("rendered page remains after purge, err=%v", err)
+	}
+	if _, err := os.Stat(checkpoint); !os.IsNotExist(err) {
+		t.Fatalf("private checkpoint remains after purge, err=%v", err)
 	}
 	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve me" {
 		t.Fatalf("purge changed unrelated file: %q err=%v", got, err)
