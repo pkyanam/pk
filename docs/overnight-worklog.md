@@ -394,3 +394,10 @@ gates or imply that every backlog item is complete.
 - An isolated full Go race suite and vet passed at `cef44a1`.
 - Native Cmux validation opened the installed MCP manager successfully in a separate workspace. Rapid `/mcp` typing plus immediate Enter initially selected the model menu; a live-text command fix is committed with the welcome/plugin checkpoint. Desktop actions stopped when external user interaction closed the test workspace and returned to the user workspace; no capture started.
 - User requested the ASCII welcome and removal of top-header command links; `4b64e7e` restores a compact wordmark and plain pk header. Their MCP screenshot exposed contradictory Enter hints. Form keyboard/mouse improvements are being validated before the next install. Fresh `/new` welcome restoration and list arrow-key behavior also need explicit regressions.
+
+## 04:22 EDT — usability update installed
+
+- Installed clean public revision `0e6947c` as `20260923T082044.912526000Z-2e562af91f3a-66a2076d`; updater gates passed. `pk web status` confirms the configured `monid_cli` route with credentials hidden.
+- Header is plain pk; ASCII welcome appears on initial launch and after `/new` completes. MCP choices use arrows, Tab follows visual field order, and Enter saves only from focused Save; mouse actions ignore right-click. Both saved-session and MCP lists recognize real terminal arrow names. `/plugins` now has an Add plugin source-entry form followed by review and explicit install. Full UI suite passed 94 tests/429 assertions.
+- Installed PTY startup/catalog smoke passed after its ready-frame predicate was updated to the current composer/footer instead of the removed welcome sentence. The initial old predicate timed out despite the new ready screen being rendered; this was a test harness mismatch. Single startup measurement is diagnostic only.
+- The active development pass now covers longer RPC interaction reliability, remaining selector UX, honest launch copy, and a reproducible real demo fixture. No Cap capture has started; native desktop work remains deferred while the user is actively using Cmux.

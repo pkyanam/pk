@@ -70,7 +70,7 @@ def tui_first_frame(pk, env, cwd):
             except OSError:
                 break
             plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output)
-            if b"Ready when you are" in plain:
+            if b"Ready" in plain and b"Ask pk to" in plain and b"Enter send" in plain:
                 return (time.perf_counter() - started) * 1000
         excerpt = bytes(output[-600:]).decode("utf-8", errors="replace")
         raise RuntimeError(f"OpenTUI did not render its ready frame; output tail: {excerpt!r}")
