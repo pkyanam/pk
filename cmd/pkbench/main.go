@@ -127,6 +127,7 @@ func run(args []string) int {
 	outputCapExperiment := flags.Bool("output-cap-ablation", false, "run the paired current-vs-4K-default Bash policy experiment only")
 	toolSchemaExperiment := flags.Bool("tool-schema-ablation", false, "run the paired current-vs-compact tool-description experiment only")
 	replayCompactionExperiment := flags.Bool("replay-compaction-ablation", false, "run the paired current-vs-captured-output context replay experiment only")
+	replayTasks := flags.String("replay-tasks", "", "comma-separated replay-ablation fixtures (default: routematch,eventmerge)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -141,6 +142,10 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "choose at most one benchmark ablation")
 		return 2
 	}
+	if *replayTasks != "" && !*replayCompactionExperiment {
+		fmt.Fprintln(os.Stderr, "-replay-tasks requires -replay-compaction-ablation")
+		return 2
+	}
 	if *outputCapExperiment {
 		return runOutputCapExperiment(*repo, *out, *repetitions, *timeout)
 	}
@@ -148,7 +153,7 @@ func run(args []string) int {
 		return runToolSchemaExperiment(*repo, *out, *repetitions, *timeout)
 	}
 	if *replayCompactionExperiment {
-		return runReplayCompactionExperiment(*repo, *out, *repetitions, *timeout)
+		return runReplayCompactionExperiment(*repo, *out, *repetitions, *timeout, *replayTasks)
 	}
 	if flags.NArg() != 0 || *repetitions < 1 || *repetitions > 2 || *timeout <= 0 {
 		fmt.Fprintln(os.Stderr, "usage: pkbench [-repo DIR] [-out DIR] [-repetitions 1|2] [-timeout 90s] [-unreal=true]")

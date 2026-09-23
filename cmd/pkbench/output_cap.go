@@ -44,6 +44,21 @@ var replayCompactionTasks = []task{
 	},
 }
 
+var replayTaskSelection = map[string]task{
+	"routematch": replayCompactionTasks[0],
+	"eventmerge": replayCompactionTasks[1],
+	"clamp": {
+		name:                 "clamp",
+		implementationPrompt: "This workspace is a self-contained Git fixture. Implement ClampInt in clamp.go to clamp inclusively between lower and upper; if the bounds are reversed, swap them. Preserve the input value when it is in range. Do not run tests during this implementation phase.",
+		verificationPrompt:   "Resume this clamp task. Run go test -v ./... and fix the implementation if any test fails.",
+	},
+	"webhook": {
+		name:                 "webhook",
+		implementationPrompt: "This workspace is a self-contained Git fixture. Implement the signed, idempotent HTTP webhook receiver in event.go, signature.go, memory_store.go, and handler.go. Validate a nonblank event ID and type plus exactly one JSON object payload. Verify HMAC-SHA256 against the exact raw request body, accepting the lowercase hex digest with or without a sha256= prefix and comparing it in constant time. Accept POST only; limit bodies to MaxBodyBytes; reject malformed, trailing, or unknown JSON fields. Return 401 for an invalid signature, 400 for invalid event input, 413 for oversized bodies, and 503 when configuration or storage is unavailable. Atomically store only the first event for each ID, respect canceled contexts, and defensively copy payload bytes on store and read. Return JSON {\"accepted\":true,\"duplicate\":false} with 202 for first delivery and {\"accepted\":true,\"duplicate\":true} with 200 for duplicates. Do not expose storage errors. Do not run tests during this implementation phase.",
+		verificationPrompt:   "Resume this webhook task. Run go test -v ./... and fix the implementation until all tests pass. Do not weaken or remove the benchmark tests.",
+	},
+}
+
 type pairedPolicy struct {
 	resultPrefix     string
 	name             string
@@ -69,12 +84,44 @@ func runToolSchemaExperiment(repo, out string, repetitions int, phaseTimeout tim
 	})
 }
 
-func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeout time.Duration) int {
+func runReplayCompactionExperiment(repo, out string, repetitions int, phaseTimeout time.Duration, selection string) int {
+	tasks, err := selectReplayTasks(selection)
+	if err != nil {
+		return fail(err)
+	}
 	return runPairedPolicyExperiment(repo, out, repetitions, phaseTimeout, pairedPolicy{
 		resultPrefix: "replay-compaction", name: "Large Bash result context replay: current vs compact captured result",
 		currentMode: "replay-compaction-current", treatmentEngine: "pk-compact-replayed-output", treatmentMode: "compact-replayed-shell-output",
-		replayCompaction: true, tasks: replayCompactionTasks,
+		replayCompaction: true, tasks: tasks,
 	})
+}
+
+func selectReplayTasks(selection string) ([]task, error) {
+	if strings.TrimSpace(selection) == "" {
+		return append([]task(nil), replayCompactionTasks...), nil
+	}
+	parts := strings.Split(selection, ",")
+	selected := make([]task, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, fmt.Errorf("replay task selection contains an empty name")
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("replay task %q was selected more than once", name)
+		}
+		current, ok := replayTaskSelection[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown replay task %q (available: clamp, eventmerge, routematch, webhook)", name)
+		}
+		selected = append(selected, current)
+		seen[name] = struct{}{}
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("replay task selection must include at least one fixture")
+	}
+	return selected, nil
 }
 
 func runPairedPolicyExperiment(repo, out string, repetitions int, phaseTimeout time.Duration, policy pairedPolicy) int {

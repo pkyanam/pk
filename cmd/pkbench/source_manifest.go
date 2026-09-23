@@ -27,9 +27,8 @@ type sourceManifest struct {
 
 func writeSourceManifest(repo, output string) (sourceManifest, error) {
 	manifest := sourceManifest{PKRevision: gitRevision(context.Background(), repo)}
-	roots := []string{"cmd/pk", "cmd/pkbench", "internal/runner", "internal/auth", "benchmarks/tasks/clamp", "benchmarks/tasks/noisyrepo", "benchmarks/tasks/routematch", "benchmarks/tasks/eventmerge", "benchmarks/experiments", "go.mod", "go.sum"}
 	var paths []string
-	for _, root := range roots {
+	for _, root := range benchmarkSourceRoots() {
 		path := filepath.Join(repo, root)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -74,7 +73,7 @@ func writeSourceManifest(repo, output string) (sourceManifest, error) {
 		_, _ = fmt.Fprintf(hash, "%s\x00%s\n", filepath.ToSlash(rel), digestHex)
 	}
 	manifest.TreeSHA256 = hex.EncodeToString(hash.Sum(nil))
-	diffArgs := append([]string{"diff", "--binary", "HEAD", "--"}, roots...)
+	diffArgs := append([]string{"diff", "--binary", "HEAD", "--"}, benchmarkSourceRoots()...)
 	diff := exec.Command("git", diffArgs...)
 	diff.Dir = repo
 	diffData, err := diff.Output()
@@ -94,6 +93,10 @@ func writeSourceManifest(repo, output string) (sourceManifest, error) {
 		return sourceManifest{}, err
 	}
 	return manifest, nil
+}
+
+func benchmarkSourceRoots() []string {
+	return []string{"cmd/pk", "cmd/pkbench", "internal", "skills", "benchmarks/tasks", "benchmarks/experiments", "go.mod", "go.sum"}
 }
 
 func writeSourceSnapshot(repo, output string, manifest sourceManifest) error {
