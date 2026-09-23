@@ -156,10 +156,10 @@ Subagent checkpoint update: task-only mode and bounded FIFO queue are installed 
 
 - [ ] Replace the brief launch transition with a solid, continuously animated ASCII pk wordmark. Use fluid-like evolving motion while keeping letters readable, bounded CPU/render work, reduced-motion support, and no animation overhead when hidden. Requested after the context-engine implementation; not yet delivered.
 - [~] Check capability self-description overhead: the reported session loaded `pk` and ran two shell commands for a capabilities question. Prefer the active tool registry and concise bundled guidance when sufficient. The bundled skill is now 281 words and directs basic capability answers to the active registry. The saved answer was complete; the excerpt loss was reproduced in cross-scroll copying. Live model behavior remains to be evaluated.
-- [~] Fix selection-release and Ctrl+Y copying dropping wrapped lines and Markdown list fragments. Cross-scroll regression now preserves all five reported bullets, the final paragraph, reverse selection, and Ctrl+Y; partial selection/code tests pass. Final release verification and native terminal retest remain.
+- [~] Fix selection-release and Ctrl+Y copying dropping wrapped lines and Markdown list fragments. Cross-scroll regression now preserves all five reported bullets, the final paragraph, reverse selection, and Ctrl+Y; partial selection/code tests pass. Published in v0.1.7 after both platform release gates and isolated startup verification; native terminal copy retest remains.
 - [ ] Evaluate dedicated WriteFile/EditFile or patch tools against Bash on matched editing tasks; measure schema overhead, total tokens, correctness and recovery before selecting a default.
 
 ## Final bounded handoff (requested pause)
 
-- [~] Release direct Cloudflare Workers AI setup through `/provider` and `/providers`: account ID, masked API token, model discovery, streaming and function-call continuation. Local fixtures only; live account validation remains.
-- [~] Publish the final tested checkpoint, retain rollback instructions, then pause Codex work and the goal. See [handoff](HANDOFF.md). Remaining backlog is not silently marked complete.
+- [x] Release direct Cloudflare Workers AI setup through `/provider` and `/providers`: account ID, masked API token, model discovery, streaming and function-call continuation. Local fixtures only; live account validation remains.
+- [x] Publish the final tested checkpoint (v0.1.7), retain rollback instructions, then pause Codex work and the goal. See [handoff](HANDOFF.md). Remaining backlog is not silently marked complete.

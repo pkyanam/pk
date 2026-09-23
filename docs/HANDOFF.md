@@ -39,7 +39,7 @@ The dated [work log](overnight-worklog.md) contains the detailed history.
 
 ## Release checkpoint
 
-The final handoff installment targets **v0.1.7**. Its immutable tag is the source
+The final handoff installment is published as **v0.1.7** (`24240a5`). Its immutable tag is the source
 recovery checkpoint: `git switch --detach v0.1.7` inspects it without rewriting your
 working branch. Create a new branch before making further changes.
 
@@ -47,5 +47,5 @@ See the [release page](https://github.com/pkyanam/pk/releases/tag/v0.1.7) for pu
 status and checksummed platform archives. The dated work log records final checks.
 Do not equate a source checkpoint with the version currently installed on your Mac.
 
-Codex development is to pause after publication at the owner's request. The overnight
+Codex development is paused after publication at the owner's request. The overnight
 automation remains paused. Continue with pk when ready; unfinished backlog remains open.
