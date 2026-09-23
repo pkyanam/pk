@@ -160,7 +160,7 @@ func (m Manager) Discover(ctx context.Context, source string) ([]Candidate, erro
 		if len(matched) > 0 {
 			dirs = matched
 		} else if len(dirs) > maxCandidates {
-			return nil, fmt.Errorf("selected skill %q does not match a skill folder in %s/%s; reopen the specific skills.sh result or use its GitHub skill URL", s.wanted, s.owner, s.repo)
+			return nil, fmt.Errorf("selected skill %q does not match a folder name in large repository %s/%s; use a GitHub tree URL for its exact skill folder", s.wanted, s.owner, s.repo)
 		}
 	}
 	if len(dirs) > maxCandidates {
@@ -193,7 +193,7 @@ func (m Manager) Discover(ctx context.Context, source string) ([]Candidate, erro
 		// Candidate.Source must round-trip through parseSource during Install.
 		// The compact owner/repo@value syntax intentionally means a skill
 		// selector, so encode the ref in an explicit GitHub tree URL here.
-		baseURL := "https://github.com/" + s.owner + "/" + s.repo + "/tree/" + escapePath(ref)
+		baseURL := "https://github.com/" + s.owner + "/" + s.repo + "/tree/" + url.PathEscape(ref)
 		candidateURL := baseURL
 		if dir != "." {
 			candidateURL += "/" + escapePath(dir)
@@ -447,15 +447,30 @@ func parseSource(raw string) (sourceRef, error) {
 	}
 	switch strings.ToLower(u.Host) {
 	case "github.com":
-		p := strings.Split(strings.Trim(u.Path, "/"), "/")
+		p := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
 		if len(p) < 2 {
 			return sourceRef{}, errors.New("GitHub source URL must include owner and repository")
 		}
-		s := sourceRef{owner: p[0], repo: strings.TrimSuffix(p[1], ".git")}
+		owner, err := url.PathUnescape(p[0])
+		if err != nil {
+			return sourceRef{}, errors.New("invalid GitHub owner path")
+		}
+		repo, err := url.PathUnescape(p[1])
+		if err != nil {
+			return sourceRef{}, errors.New("invalid GitHub repository path")
+		}
+		s := sourceRef{owner: owner, repo: strings.TrimSuffix(repo, ".git")}
 		if len(p) >= 4 && p[2] == "tree" {
-			s.ref = p[3]
+			s.ref, err = url.PathUnescape(p[3])
+			if err != nil {
+				return sourceRef{}, errors.New("invalid Git ref path")
+			}
 			if len(p) > 4 {
-				s.wanted = path.Base(path.Join(p[4:]...))
+				last, err := url.PathUnescape(p[len(p)-1])
+				if err != nil {
+					return sourceRef{}, errors.New("invalid skill folder path")
+				}
+				s.wanted = path.Base(last)
 			}
 		}
 		return validateSource(s)

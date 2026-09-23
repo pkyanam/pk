@@ -24,7 +24,7 @@ func TestDiscoverAndInstallCopyDataWithoutExecutingScripts(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch {
 		case r.URL.Host == "api.github.com" && strings.HasSuffix(r.URL.Path, "/repo"):
-			return response(200, `{"default_branch":"main"}`), nil
+			return response(200, `{"default_branch":"feature/foo"}`), nil
 		case r.URL.Host == "api.github.com" && strings.Contains(r.URL.Path, "/git/trees/"):
 			return response(200, `{"tree":[{"path":"skills/review/SKILL.md","type":"blob","mode":"100644"},{"path":"skills/review/example.txt","type":"blob","mode":"100644"},{"path":"skills/review/install.sh","type":"blob","mode":"100755"},{"path":"skills/review/link","type":"blob","mode":"120000"},{"path":"skills/review/../../escape","type":"blob","mode":"100644"}]}`), nil
 		case r.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(r.URL.Path, "SKILL.md"):
@@ -43,7 +43,7 @@ func TestDiscoverAndInstallCopyDataWithoutExecutingScripts(t *testing.T) {
 	if err != nil || len(candidates) != 1 || candidates[0].Name != "review" {
 		t.Fatalf("Discover() = %#v, %v", candidates, err)
 	}
-	if candidates[0].Source != "https://github.com/owner/repo/tree/main/skills/review" {
+	if candidates[0].Source != "https://github.com/owner/repo/tree/feature%2Ffoo/skills/review" {
 		t.Fatalf("candidate source does not preserve its ref in a round-trippable form: %q", candidates[0].Source)
 	}
 	// Exercise the real UI flow: install receives the source and path returned
@@ -52,7 +52,7 @@ func TestDiscoverAndInstallCopyDataWithoutExecutingScripts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installed.Source != "https://github.com/owner/repo/tree/main/skills/review" {
+	if installed.Source != "https://github.com/owner/repo/tree/feature%2Ffoo/skills/review" {
 		t.Fatalf("source = %q", installed.Source)
 	}
 	info, err := os.Stat(filepath.Join(installed.Path, "install.sh"))
@@ -94,6 +94,13 @@ func TestGitHubTreeSourceSelectsSkillPathAndRef(t *testing.T) {
 	}
 	if generated.owner != source.owner || generated.repo != source.repo || generated.ref != source.ref || generated.wanted != "" {
 		t.Fatalf("generated candidate source did not preserve repo/ref: %+v", generated)
+	}
+	branchURL, err := parseSource("https://github.com/owner/repo/tree/feature%2Ffoo/skills/review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branchURL.ref != "feature/foo" || branchURL.wanted != "review" {
+		t.Fatalf("encoded slash ref was not preserved: %+v", branchURL)
 	}
 }
 
@@ -165,9 +172,14 @@ func TestSkillSelectorNarrowsLargeRepositoryBeforeCandidateLimit(t *testing.T) {
 			return nil, nil
 		}
 	})}
-	candidates, err := (Manager{Client: client}).Discover(context.Background(), "https://skills.sh/owner/repo/skill-67")
+	manager := Manager{Client: client}
+	candidates, err := manager.Discover(context.Background(), "https://skills.sh/owner/repo/skill-67")
 	if err != nil || len(candidates) != 1 || candidates[0].Path != "skills/skill-67" {
 		t.Fatalf("narrowed candidates=%+v err=%v", candidates, err)
+	}
+	_, err = manager.Discover(context.Background(), "https://skills.sh/owner/repo/alias-not-a-folder")
+	if err == nil || !strings.Contains(err.Error(), "does not match a folder name in large repository") {
+		t.Fatalf("large-repository slug mismatch error = %v", err)
 	}
 }
 
