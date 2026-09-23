@@ -559,3 +559,8 @@ gates or imply that every backlog item is complete.
 
 - `Manager.Get` now reuses its first validated snapshot instead of decoding the log a third time. Cache eligibility is captured before Inspect and checked again after Items, so concurrent file changes cannot populate the cache using a newer baseline. Race tests pass. The 128 KiB cold fixture measured 1.53 ms and 1.42 MB per lookup in root verification versus 2.31 ms and 2.10 MB before; allocation count rose from 312 to 372.
 - A renderer regression reproduces loss of composer focus after a delayed response and transcript copy; the proposed fix restores focus only when no setup modal owns input. Root's native pre-fix check on a restored Cmux demo session accepted typing after copy, so this does not establish the original full freeze's cause. No provider request was made for that native check.
+
+### 07:24 EDT — copy focus and history lookup installed
+
+- Clean GitHub `b06e1ab` activated as `20260923T112302.648900000Z-ed0d042e12b6-5fe9c087` after complete Go/UI tests, typecheck and build. Sessionmanager race tests passed.
+- The delayed-response/copy regression failed twice without restoration and passed with it; a separate rendered-modal test preserves picker focus. Native Cmux reload restored the saved demo history, drag-selection reported a copy, and a subsequent physical `x` key appeared in the composer. The draft was cleared without sending a prompt. This verifies that path, not a general claim that all freezes are solved.

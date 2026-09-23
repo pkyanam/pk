@@ -4,7 +4,7 @@ Draft checkpoint; the morning report will update pending items below.
 
 ## Run it
 
-Run `pk` from your project directory. The installed release is `3a1e36c`; use `/reload` while idle or relaunch `pk`. Fresh-session reload works before sending a first prompt and preserves the workspace/model/effort/provider.
+Run `pk` from your project directory. The installed release is `b06e1ab`; use `/reload` while idle or relaunch `pk`. Fresh-session reload works before sending a first prompt and preserves the workspace/model/effort/provider.
 
 New installation:
 
