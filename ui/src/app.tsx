@@ -208,6 +208,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [selectionIndex, setSelectionIndex] = useState(0)
   const [clock, setClock] = useState(Date.now())
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
+  const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null)
   const [message, setMessage] = useState("")
   const [draft, setDraft] = useState("")
   const [slashIndex, setSlashIndex] = useState(0)
@@ -226,6 +227,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const preferenceErrors = useRef(new Map<string, () => void>())
   const pendingPromptFiles = useRef(new Map<string, string[]>())
   const pendingClipboardRequests = useRef(new Set<string>())
+  const activityPhase = useRef("idle")
+  const activeToolIds = useRef(new Set<string>())
+
+  const enterPhase = (phase: string) => {
+    if (activityPhase.current === phase) return
+    activityPhase.current = phase
+    setPhaseStartedAt(phase === "idle" ? null : Date.now())
+  }
 
   const updateFileQueue = (update: string[] | ((current: string[]) => string[])) => {
     const next = typeof update === "function" ? update(queuedFilesRef.current) : update
@@ -264,6 +273,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     }).filter(Boolean).join("\n") : ""
     const detail = preview(operation, 900)
     const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes(status.toLowerCase())
+    if (terminal) activeToolIds.current.delete(callId)
+    else activeToolIds.current.add(callId)
+    enterPhase(activeToolIds.current.size ? "tools" : "model")
     const error = preview(data.status?.error ?? data.error)
     const displayState = error ? "failed" : terminal ? status : status === "awaiting" ? "working" : status
     setEntries((current) => {
@@ -330,6 +342,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const text = String(data.text ?? "The agent needs an answer.")
         addEntry("system", `AskUser · ${text}`)
         setActivityStartedAt((current) => current ?? Date.now())
+        enterPhase(`question:${String(data.id ?? "pending")}`)
         setQuestion({ id: String(data.id ?? ""), text, choices, kind })
         setQuestionIndex(0)
         break
@@ -338,14 +351,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (question?.id === String(data.id ?? "")) {
           if (question.submittedAnswer) addEntry("user", `Answer · ${question.submittedAnswer}`)
           setQuestion(null)
+          enterPhase("model")
         }
         break
       case "question_cancelled":
         setQuestion((current) => current?.id === String(data.id ?? "") ? null : current)
+        enterPhase("model")
         break
       case "turn_started":
         setBusy(true)
         setActivityStartedAt((current) => current ?? Date.now())
+        activeToolIds.current.clear()
+        enterPhase("model")
         setTools([])
         turnActive.current = true
         break
@@ -396,6 +413,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "turn_finished":
         setBusy(false)
         setActivityStartedAt(null)
+        enterPhase("idle")
+        activeToolIds.current.clear()
         setTools([])
         waiting.current = false
         turnActive.current = false
@@ -436,13 +455,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (data.workspace) setMessage(String(data.workspace))
         setBusy(taskBusy)
         setActivityStartedAt((current) => taskBusy ? current ?? Date.now() : null)
+        enterPhase(taskBusy ? "model" : "idle")
         addEntry("system", `Following task ${String(data.task_id ?? data.id ?? "")}`)
         break
       }
       case "task_resumed":
         setActiveTaskId(String(data.task_id ?? data.id ?? ""))
         setBusy(true)
-        setActivityStartedAt(Date.now())
+        setActivityStartedAt((current) => current ?? Date.now())
+        enterPhase("model")
         addEntry("system", `Resumed task ${String(data.task_id ?? data.id ?? "")}`)
         break
       case "task_input_sent":
@@ -459,6 +480,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         addEntry("system", `Task ${String(data.status ?? "finished")}`)
         setActiveTaskId("")
         setActivityStartedAt(null)
+        enterPhase("idle")
         if (data.session_id) setSessionId(String(data.session_id))
         setBusy(false)
         waiting.current = false
@@ -468,6 +490,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         addEntry("system", `Detached from session ${sessionId || ""}`)
         setSessionId("")
         setBusy(false)
+        setActivityStartedAt(null)
+        enterPhase("idle")
         setTools([])
         void transport.close().finally(() => renderer.destroy())
         break
@@ -490,10 +514,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           promptCommandId.current = ""
           setBusy(false)
           setActivityStartedAt(null)
+          enterPhase("idle")
           setTools([])
         } else if (!turnActive.current && !activeTaskId && !waiting.current) {
           setBusy(false)
           setActivityStartedAt(null)
+          enterPhase("idle")
           setTools([])
         }
         break
@@ -506,6 +532,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setConnected(false)
         setBusy(false)
         setActivityStartedAt(null)
+        enterPhase("idle")
         setEntries((entries) => entries.map((entry) => entry.role === "tool" && !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase())
           ? { ...entry, toolState: "interrupted", text: entry.text || "Agent connection closed before this tool finished." }
           : entry))
@@ -614,6 +641,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     waiting.current = true
     setBusy(true)
     setActivityStartedAt(Date.now())
+    activeToolIds.current.clear()
+    enterPhase("model")
     const files = [...queuedFilesRef.current]
     const commandId = transport.send("prompt", { text: promptText, ...(files.length ? { files } : {}) }) ?? ""
     promptCommandId.current = commandId
@@ -901,14 +930,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     : busy
       ? tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model"
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
-  const activityTime = activityStartedAt === null ? "" : ` · ${shortTime(clock - activityStartedAt)}`
+  const phaseTime = phaseStartedAt === null ? "" : ` · ${shortTime(clock - phaseStartedAt)} phase`
+  const activityTime = activityStartedAt === null ? "" : ` · ${shortTime(clock - activityStartedAt)} total`
   const spinner = ["◒", "◐", "◓", "◑"][Math.floor(clock / 180) % 4]!
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
       <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
         <text fg={palette.text} content="pk  /  terminal agent" />
-        <text fg={busy ? palette.accent : palette.dim} content={`${busy ? spinner : ""} ${activityLabel}${activityTime}`} />
+        <text fg={busy ? palette.accent : palette.dim} content={`${busy ? spinner : ""} ${activityLabel}${phaseTime}${activityTime}`} />
       </box>
       {!sessionId && entries.length <= 1 && <box style={{ flexDirection: "column", marginTop: 1, marginBottom: 1, flexShrink: 0 }}>
         <ascii-font text="PK" font="block" color={palette.accent} />
