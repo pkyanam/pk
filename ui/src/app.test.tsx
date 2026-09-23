@@ -153,7 +153,7 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("Refresh · R")
     expect(frame).not.toContain("$")
     await act(async () => { for (let index = 0; index < 30; index++) setup.mockInput.pressKey("ARROW_DOWN") })
-    const scrolled = setup.captureCharFrame()
+    const scrolled = await setup.waitForFrame((value) => value.includes("Context window capacity · unavailable"))
     expect(scrolled).toContain("Context window capacity · unavailable")
     await act(async () => { await setup.mockInput.pressKeys(["ESCAPE"], 100) })
     const idle = await setup.waitForFrame((value) => !value.includes("Session token usage"))
