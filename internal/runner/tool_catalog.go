@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/pkyanam/pk/internal/filetools"
 )
 
 // PreviewToolCatalog builds the side-effect-free default registry preview used
@@ -28,6 +30,7 @@ func PreviewToolCatalog(ctx context.Context, options Options) ([]SavedToolSummar
 	if registry == nil {
 		return nil, nil, errors.New("tool registry factory returned nil")
 	}
+	registry = filetools.Decorator(options.Workspace)(registry)
 	if options.DecorateRegistry != nil {
 		registry = options.DecorateRegistry(registry)
 		if registry == nil {
@@ -56,7 +59,7 @@ func PreviewToolCatalog(ctx context.Context, options Options) ([]SavedToolSummar
 
 func toolCatalogSource(name string) string {
 	switch name {
-	case "Bash", "ViewImage", "SkillUse":
+	case "Bash", "ViewImage", "SkillUse", "WriteFile", "EditFile":
 		return "built-in"
 	case "AskUser":
 		return "interaction"

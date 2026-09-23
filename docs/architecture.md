@@ -49,7 +49,13 @@ call. See [durable task questions](task-questions.md) for recovery and lifecycle
 operation manager, tool registry, and model adapter. The `llm.Adapter` boundary isolates model
 requests. The upstream local operation manager executes durable Bash and image operations; pk also
 registers explicit remote-job handlers for supported extensions. The base tool registry exposes
-Bash, ViewImage, and SkillUse. Host setup may add AskUser in interactive or detached-task hosts, explicitly configured
+Bash, ViewImage, SkillUse, WriteFile, and EditFile. The dedicated file tools make atomic UTF-8
+changes within the workspace, reject symlink paths, and return concise results. EditFile requires
+an exact match and rejects ambiguous replacements unless explicitly asked to replace all.
+Files are limited to 2 MiB; parent directories must already exist. WriteFile requires
+`overwrite=true` to replace a file. EditFile optionally accepts `expected_sha256`; this
+is a stale-content check, not a lock against other processes. Bash remains available
+for broader filesystem operations. Host setup may add AskUser in interactive or detached-task hosts, explicitly configured
 extensions, MCP servers, image generation, and parent-managed subagent tools through registry
 decorators. These are opt-in integrations, not binaries discovered by scanning a workspace.
 

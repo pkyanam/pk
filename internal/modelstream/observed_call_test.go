@@ -3,6 +3,7 @@ package modelstream
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -103,5 +104,46 @@ func TestObservedCallOrdersPendingReasoningBeforeAssistantAndToolStart(t *testin
 				t.Fatalf("pending reasoning must precede %s: %+v", next.Kind, events)
 			}
 		})
+	}
+}
+
+func TestProviderReasoningDeltasRequireOptInAndAreBoundedTransientOutput(t *testing.T) {
+	var events []Event
+	ctx, produced := TrackOutput(WithObserver(WithProviderReasoning(context.Background(), true), func(event Event) {
+		events = append(events, event)
+	}))
+	call, err := BeginObservedCall(ctx, "provider-reasoning", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Emit(Event{Kind: EventProviderReasoningDelta, Text: strings.Repeat("x", maxProviderReasoningText+100)})
+	call.Finish(nil)
+
+	var reasoningText strings.Builder
+	for _, event := range events {
+		if event.Kind == EventProviderReasoningDelta {
+			reasoningText.WriteString(event.Text)
+		}
+	}
+	if reasoningText.Len() != maxProviderReasoningText {
+		t.Fatalf("forwarded reasoning bytes=%d, want limit %d", reasoningText.Len(), maxProviderReasoningText)
+	}
+	if produced() {
+		t.Fatal("provider reasoning counted as visible assistant output")
+	}
+
+	var suppressedEvents []Event
+	suppressed, err := BeginObservedCall(WithoutObserver(WithObserver(WithProviderReasoning(context.Background(), true), func(event Event) {
+		suppressedEvents = append(suppressedEvents, event)
+	})), "suppressed-reasoning", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suppressed.Emit(Event{Kind: EventProviderReasoningDelta, Text: "private"})
+	suppressed.Finish(nil)
+	for _, event := range suppressedEvents {
+		if event.Kind == EventProviderReasoningDelta {
+			t.Fatalf("suppressed reasoning reached observer: %+v", event)
+		}
 	}
 }

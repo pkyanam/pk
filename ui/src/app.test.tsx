@@ -3,7 +3,7 @@ import { destroyTreeSitterClient, getTreeSitterClient } from "@opentui/core"
 import { testRender } from "@opentui/react/test-utils"
 import { act } from "react"
 import type { ServerEvent } from "./protocol"
-import { PkApp, transcriptTimelineShouldUpdate } from "./app"
+import { PkApp, streamProgressStatus, transcriptTimelineShouldUpdate } from "./app"
 import { leadingPathFromPrompt, parsePastedPaths } from "./app"
 import type { PkTransport } from "./transport"
 
@@ -55,6 +55,24 @@ function findDescendant(root: any, predicate: (renderable: any) => boolean): any
 }
 
 describe("OpenTUI application", () => {
+  test("stream status becomes explicitly stale after silence and resumes on a fresh update", () => {
+    const started = 1_000
+    expect(streamProgressStatus({ label: "Model is thinking", updatedAt: started }, started + 14_999)).toBe("Model is thinking")
+    expect(streamProgressStatus({ label: "Model is thinking", updatedAt: started }, started + 15_000)).toBe("Waiting for stream · last update 15s ago")
+    expect(streamProgressStatus({ label: "Receiving response", updatedAt: started + 15_000 }, started + 15_001)).toBe("Receiving response")
+  })
+
+  test("shows provider-controlled effort when the selected provider does not expose reasoning effort", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { provider_id: "cloudflare-workers-ai", model: "@cf/meta/llama", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, type: "providers", payload: { providers: [{ id: "cloudflare-workers-ai", protocol: "cloudflare_workers_ai", supports_reasoning_effort: false }] } }))
+    const frame = await setup.waitForFrame((value) => value.includes("provider-controlled effort"))
+    expect(frame).not.toContain("cloudflare-workers-ai  ·  medium")
+  })
+
   test("transcript timeline ignores clock ticks unless a live tool duration is visible", () => {
     const onToggle = () => {}
     const expandedToolGroups = new Set<string>()
@@ -1843,6 +1861,52 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("fresh second")
     expect(frame.match(/Authoritative final/g)).toHaveLength(1)
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+  })
+
+  test("shows only negotiated external reasoning on Ctrl+O and clears it at turn end", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 28 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium", provider_reasoning_enabled: true } }))
+    await act(async () => { await setup.mockInput.typeText("explain carefully") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    expect(fake.starts[0]).toMatchObject({ providerReasoning: true })
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "model_progress", payload: {
+      request_id: "external-r1", attempt: 1, phase: "provider_reasoning_delta", text_delta: "Transient provider reasoning text",
+    } }))
+    let frame = await setup.waitForFrame((value) => value.includes("Model is thinking"))
+    expect(frame).not.toContain("Transient provider reasoning text")
+    act(() => setup.mockInput.pressKey("o", { ctrl: true }))
+    frame = await setup.waitForFrame((value) => value.includes("External provider reasoning · transient · not saved"))
+    expect(frame).toContain("Transient provider reasoning text")
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: {} }))
+    frame = await setup.waitForFrame((value) => value.includes("Ask pk to inspect") && !value.includes("External provider reasoning"))
+    expect(frame).not.toContain("Transient provider reasoning text")
+  })
+
+  test("ignores external reasoning deltas unless provider capability was negotiated", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 28 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("ordinary native turn") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: {} }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "model_progress", payload: {
+      request_id: "external-r1", attempt: 1, phase: "provider_reasoning_delta", text_delta: "must stay hidden",
+    } }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("must stay hidden")
+    act(() => setup.mockInput.pressKey("o", { ctrl: true }))
+    await setup.flush()
+    expect(setup.captureCharFrame()).not.toContain("External provider reasoning")
   })
 
   test("cleans streaming drafts on prompt failure and connection closure", async () => {

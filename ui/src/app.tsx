@@ -25,7 +25,8 @@ function appendTranscriptEntries(current: Entry[], incoming: Entry | Entry[]): E
 type ToolActivity = { id: string; name: string; state: string; startedAt: number; detail?: string }
 type StreamDraft = { outerId: string; requestId: string; attempt: number; itemId: string; entryId: number; text: string }
 type ActiveStreamAttempt = { outerId: string; requestId: string; attempt: number }
-type StreamProgress = { outerId: string; requestId: string; label: string }
+type StreamProgress = { outerId: string; requestId: string; label: string; updatedAt: number }
+type ProviderReasoning = { outerId: string; requestId: string; attempt: number; text: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; taskID?: string; dismissed?: boolean; answerRequestID?: string; answering?: boolean; submittedAnswer?: string }
 type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "plugin_commands" | "history" | "usage" | "compact" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
@@ -204,6 +205,23 @@ const markdownStyle = SyntaxStyle.fromStyles({
 function shortTime(milliseconds: number) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000))
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+const STREAM_STALE_AFTER_MS = 15_000
+const MAX_PROVIDER_REASONING_BYTES = 32 * 1024
+export function streamProgressStatus(progress: Pick<StreamProgress, "label" | "updatedAt"> | null, now: number) {
+  if (!progress) return null
+  const age = Math.max(0, now - progress.updatedAt)
+  return age >= STREAM_STALE_AFTER_MS ? `Waiting for stream · last update ${shortTime(age)} ago` : progress.label
+}
+
+function appendUTF8Bounded(current: string, next: string, maxBytes: number) {
+  const encoder = new TextEncoder()
+  const bytes = encoder.encode(current + next)
+  if (bytes.length <= maxBytes) return current + next
+  let end = maxBytes
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--
+  return new TextDecoder().decode(bytes.slice(0, end))
 }
 
 function shortPath(path: string, limit: number) {
@@ -629,6 +647,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null)
   const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null)
   const [streamProgress, setStreamProgressState] = useState<StreamProgress | null>(null)
+  const [providerReasoning, setProviderReasoning] = useState<ProviderReasoning | null>(null)
+  const [providerReasoningExpanded, setProviderReasoningExpanded] = useState(false)
+  const [providerReasoningEnabled, setProviderReasoningEnabled] = useState(false)
   const [message, setMessage] = useState("")
   const [draft, setDraft] = useState("")
   const [slashIndex, setSlashIndex] = useState(0)
@@ -749,6 +770,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const activeStreamAttempt = useRef<ActiveStreamAttempt | null>(null)
   const toolProgress = useRef(new Map<string, { name: string; bytes: number }>())
   const streamProgressRef = useRef<StreamProgress | null>(null)
+  const providerReasoningEnabledRef = useRef(false)
+  const providerReasoningRef = useRef<ProviderReasoning | null>(null)
+  const providerReasoningScroll = useRef<any>(null)
   const pendingQuestionId = useRef<string | null>(null)
 
   const cancelSessionUsageRequest = () => {
@@ -1148,9 +1172,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     pendingSteers.current.clear()
   }
 
-  const setStreamProgress = (next: StreamProgress | null) => {
-    streamProgressRef.current = next
-    setStreamProgressState(next)
+  const setStreamProgress = (next: Omit<StreamProgress, "updatedAt"> | null) => {
+    const updated = next ? { ...next, updatedAt: Date.now() } : null
+    streamProgressRef.current = updated
+    setStreamProgressState(updated)
+  }
+
+  const clearProviderReasoning = () => {
+    providerReasoningRef.current = null
+    setProviderReasoning(null)
+    setProviderReasoningExpanded(false)
   }
 
   const clearStreamDraft = (outerId?: string, requestId?: string, attempt?: number, keepProgress = false) => {
@@ -1184,6 +1215,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     if (active && (active.outerId !== outerId || active.requestId !== requestId || attempt > active.attempt)) {
       if (active.outerId === outerId) clearStreamDraft(outerId)
       else clearStreamDraft(active.outerId)
+      clearProviderReasoning()
       for (const key of toolProgress.current.keys()) {
         if (key.startsWith(`${active.requestId}:${active.attempt}:`)) toolProgress.current.delete(key)
       }
@@ -1205,6 +1237,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "reasoning_progress":
         label = "Model is thinking"
         phaseKey = `reasoning:${requestId}:${attempt}`
+        break
+      case "provider_reasoning_delta":
+        if (!providerReasoningEnabledRef.current) return
+        label = "Model is thinking"
+        phaseKey = `provider-reasoning:${requestId}:${attempt}`
         break
       case "assistant_delta":
         label = "Receiving response"
@@ -1250,6 +1287,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         label = "Model request failed"
         phaseKey = `request-failed:${requestId}:${attempt}`
         clearStreamDraft(outerId, requestId, attempt)
+        clearProviderReasoning()
         toolProgress.current.clear()
         break
       default:
@@ -1258,6 +1296,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
     setStreamProgress({ outerId, requestId, label })
     enterPhase(pendingQuestionId.current ? `question:${pendingQuestionId.current}` : phaseKey)
+
+    if (phase === "provider_reasoning_delta") {
+      if (typeof data.text_delta !== "string" || !data.text_delta) return
+      const previous = providerReasoningRef.current
+      const sameResponse = previous?.outerId === outerId && previous.requestId === requestId && previous.attempt === attempt
+      const text = appendUTF8Bounded(sameResponse ? previous.text : "", data.text_delta, MAX_PROVIDER_REASONING_BYTES)
+      const next = { outerId, requestId, attempt, text }
+      providerReasoningRef.current = next
+      setProviderReasoning(next)
+      setProviderReasoningExpanded((expanded) => sameResponse && expanded)
+      return
+    }
 
     if (phase === "response_completed" || phase === "response_incomplete") {
       clearStreamDraft(outerId, requestId, attempt, true)
@@ -1350,7 +1400,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   useEffect(() => { busyRef.current = busy }, [busy])
 
   useEffect(() => {
-    void transport.start({ workspace, model: "", effort: "", sessionId: initialSession, providerId: process.env.PK_PROVIDER || undefined, steering: true })
+    void transport.start({ workspace, model: "", effort: "", sessionId: initialSession, providerId: process.env.PK_PROVIDER || undefined, steering: true, providerReasoning: true })
   }, [transport, workspace, initialSession])
 
   const handleEvent = useRef<(event: ServerEvent) => void>(() => {})
@@ -1368,6 +1418,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         newSessionCommandID.current = ""
         if (Array.isArray(data.capabilities)) steeringNegotiated.current = data.capabilities.includes("steer")
         setSteeringEnabled(steeringNegotiated.current)
+        providerReasoningEnabledRef.current = data.provider_reasoning_enabled === true
+        setProviderReasoningEnabled(providerReasoningEnabledRef.current)
+        clearProviderReasoning()
         if (data.model) setModel(data.model)
         if (data.effort) setEffort(data.effort)
         if (typeof data.provider_id === "string") setProviderID(data.provider_id || "native")
@@ -1526,6 +1579,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         activeToolIds.current.clear()
         toolProgress.current.clear()
         enterPhase("model")
+        clearProviderReasoning()
         setTools([])
         turnActive.current = true
         break
@@ -1695,6 +1749,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       case "turn_finished":
         finishPendingSteers("The turn ended before this message was accepted.")
         clearStreamDraft()
+        clearProviderReasoning()
         toolProgress.current.clear()
         setBusy(false)
         setActivityStartedAt(null)
@@ -2116,6 +2171,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setProviderID(String(data.provider_id ?? "native") || "native")
         if (data.model) setModel(String(data.model))
         if (data.effort) setEffort(String(data.effort))
+        providerReasoningEnabledRef.current = data.provider_reasoning_enabled === true
+        setProviderReasoningEnabled(providerReasoningEnabledRef.current)
+        clearProviderReasoning()
         addEntry("system", `Provider selected · ${String(data.provider_id || "Native Codex")}${data.model ? ` · ${String(data.model)}` : ""} · ${data.persisted === true ? "saved for new sessions and relaunch" : "applies to this new session"}.`)
         break
       }
@@ -2483,6 +2541,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           || data.request_type === "prompt"
         if (isPromptError) {
           clearStreamDraft(event.id ? String(event.id) : undefined)
+          clearProviderReasoning()
           if (event.id) pendingPromptFiles.current.delete(event.id)
           waiting.current = false
           turnActive.current = false
@@ -2513,10 +2572,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         }
         finishPendingSteers("The connection closed before this message was accepted.")
         clearStreamDraft()
+        clearProviderReasoning()
         toolProgress.current.clear()
         setConnected(false)
         setSteeringEnabled(false)
         steeringNegotiated.current = false
+        providerReasoningEnabledRef.current = false
+        setProviderReasoningEnabled(false)
         setBusy(false)
         setActivityStartedAt(null)
         enterPhase("idle")
@@ -3372,6 +3434,26 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       }
       return
     }
+    if (providerReasoningExpanded) {
+      if ((key.ctrl && key.name.toLowerCase() === "o") || key.name === "escape" || key.name === "esc") {
+        key.preventDefault()
+        setProviderReasoningExpanded(false)
+        textarea.current?.focus()
+      } else if (key.name === "up") {
+        key.preventDefault()
+        providerReasoningScroll.current?.scrollBy(-1, "step")
+      } else if (key.name === "down") {
+        key.preventDefault()
+        providerReasoningScroll.current?.scrollBy(1, "step")
+      } else if (key.name === "pageup") {
+        key.preventDefault()
+        providerReasoningScroll.current?.scrollBy(-8, "step")
+      } else if (key.name === "pagedown") {
+        key.preventDefault()
+        providerReasoningScroll.current?.scrollBy(8, "step")
+      }
+      return
+    }
     const liveDraft = textarea.current?.plainText ?? draft
     const isEscape = key.name === "escape" || key.name === "esc"
     const isCtrlC = key.ctrl === true && key.name.toLowerCase() === "c"
@@ -3394,7 +3476,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (!question && !selector && key.ctrl && key.name === "o") {
-      toggleLastToolGroup()
+      if (providerReasoningEnabledRef.current && providerReasoningRef.current?.text) setProviderReasoningExpanded(true)
+      else toggleLastToolGroup()
       return
     }
     if (question?.taskID && question.dismissed) {
@@ -3728,7 +3811,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         : contextCompaction && pendingCompactRequest.current === contextCompaction.id
           ? `Compacting context · ${contextCompaction.phase}`
     : busy
-      ? streamProgress?.label ?? (tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : "Waiting for model")
+      ? tools.length ? `Running ${tools.length} tool${tools.length === 1 ? "" : "s"}` : streamProgressStatus(streamProgress, clock) ?? "Waiting for model"
       : connected ? "Ready" : everConnected ? "Connection closed" : "Starting"
   const phaseTime = phaseStartedAt === null || (!busy && !maintenance) ? "" : ` · ${shortTime(clock - phaseStartedAt)}`
   const activityTime = activityStartedAt !== null ? ` · ${shortTime(clock - activityStartedAt)} total` : maintenance ? ` · ${shortTime(clock - maintenance.startedAt)} total` : pluginCommandRun ? ` · ${shortTime(clock - pluginCommandRun.startedAt)} total` : ""
@@ -3779,7 +3862,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} onMouseDown={taskQuestionDismissed ? (event) => leftMouseDown(event, () => setQuestion((current) => current?.taskID ? { ...current, dismissed: false } : current)) : undefined} fg={releaseUpdateAvailable ? palette.amber : copyNotice ? palette.accent : palette.dim} content={`${copyNotice ? `${copyNotice}  ·  ` : ""}${activityActive ? `${spinner} ` : ""}${activityLabel}${phaseTime}${activityTime} · ${cacheLabel}${releaseUpdateAvailable ? " · Update ready · /reload" : ""}${transcriptOmitted ? " · earlier activity omitted" : historyHasEarlier ? " · /history older" : ""}`} />
         </box>
         <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, minHeight: 3, maxHeight: 5, flexShrink: 0 }}>
-          <textarea id="composer" ref={textarea} focused={composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen) && !taskQuestionDismissed} placeholder={question ? taskQuestionDismissed ? "Task is waiting for an answer · click status or press Enter to reopen" : "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
+          <textarea id="composer" ref={textarea} focused={composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen) && !taskQuestionDismissed && !providerReasoningExpanded} placeholder={question ? taskQuestionDismissed ? "Task is waiting for an answer · click status or press Enter to reopen" : "Type an answer, or choose an option above…" : "Ask pk to inspect, explain, or change this workspace…"} onContentChange={() => setDraft(textarea.current?.plainText ?? "")} onSubmit={sendPrompt} keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }, { name: "kpenter", action: "submit" }, { name: "kpenter", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]} />
         </box>
         {draft.startsWith("/") && filteredCommands.length > 0 && <box style={{ border: true, borderColor: palette.line, backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, marginTop: 1, flexDirection: "column" }}>
           {filteredCommands.slice(slashWindowStart, slashWindowStart + 6).map((item, localIndex) => <box key={item.name} onMouseOver={() => setSlashIndex(slashWindowStart + localIndex)} onMouseDown={(event) => leftMouseDown(event, () => {
@@ -3798,8 +3881,8 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           </box>)}
         </box>}
         <box style={{ flexDirection: "row", justifyContent: "space-between", height: 1 }}>
-      <text selectable={false} fg={palette.dim} content={`${question ? taskQuestionDismissed ? "Enter reopen question" : "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
-          <text selectable={false} fg={palette.muted} content={`${model}  ·  ${effort}`} />
+      <text selectable={false} fg={palette.dim} content={`${question ? taskQuestionDismissed ? "Enter reopen question" : "Enter answer" : activeTaskId || busy && steeringEnabled ? "Enter steer" : busy ? "Esc stop" : "Enter send"}  ·  ^J newline  ·  ^P menu  ·  ⌘V paste files  ·  ${providerReasoningEnabled && providerReasoning?.text ? "^O provider reasoning  ·  " : entries.some((entry) => entry.role === "tool") ? "^O tool details  ·  " : ""}^D detach`} />
+          <text selectable={false} fg={palette.muted} content={`${model}  ·  ${providerID !== "native" && providers.find((item) => item.id === providerID)?.supports_reasoning_effort === false ? "provider-controlled effort" : effort}`} />
         </box>
       </box>
       {selector && selector !== "provider_presets" && !mcpManagerOpen && <box onMouseScroll={selector === "provider_models" ? (event) => {
@@ -4001,6 +4084,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text fg={visibleQuestion.answering ? palette.dim : index === questionIndex ? palette.text : palette.muted} content={choice} />
         </box>)}
         <text fg={palette.dim} content={visibleQuestion.answering ? "Sending answer…" : visibleQuestion.taskID ? visibleQuestion.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc hide · /task cancel stops task" : "Type an answer · Enter submit · Esc hide · /task cancel stops task" : visibleQuestion.choices.length ? "↑↓ choose · Enter answer · type a custom answer · Esc cancel" : "Type an answer · Enter submit · Esc cancel"} />
+      </box>}
+      {providerReasoningExpanded && providerReasoningEnabled && providerReasoning?.text && <box style={{ position: "absolute", left: "10%", right: "10%", top: "12%", bottom: "12%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 1, flexDirection: "column", minHeight: 0 }}>
+        <text fg={palette.accent} content="External provider reasoning · transient · not saved" />
+        <scrollbox ref={providerReasoningScroll} style={{ flexGrow: 1, minHeight: 0, height: 0, paddingRight: 1 }}>
+          <text fg={palette.text} content={providerReasoning.text} />
+        </scrollbox>
+        <text fg={palette.dim} content="Ctrl+O or Esc hides · ↑↓ / PgUp PgDn scroll" />
       </box>}
       <WorkersAISetup
         open={workersAISetupOpen}

@@ -27,9 +27,9 @@ type Config struct {
 	MaxAttempts *int
 }
 
-// Event contains only safe UI progress: visible assistant text deltas and
-// tool-call metadata/counts. It never includes prompts, reasoning, or tool
-// argument contents.
+// Event contains transient UI progress: visible assistant text, tool metadata,
+// and (only when explicitly opted in) external-provider reasoning deltas. It
+// never includes prompts or tool argument contents.
 type Event struct {
 	RequestID string
 	Attempt   int
@@ -42,22 +42,42 @@ type Event struct {
 }
 
 const (
-	EventAttemptStarted        = "attempt_started"
-	EventAttemptFailed         = "attempt_failed"
-	EventRequestFailed         = "request_failed"
-	EventResponseStarted       = "response_started"
-	EventAssistantDelta        = "assistant_delta"
-	EventReasoningProgress     = "reasoning_progress"
-	EventToolCallStarted       = "tool_call_started"
-	EventToolArgumentsProgress = "tool_arguments_progress"
-	EventToolCallReady         = "tool_call_ready"
-	EventResponseCompleted     = "response_completed"
-	EventResponseIncomplete    = "response_incomplete"
-	EventResponseFailed        = "response_failed"
+	EventAttemptStarted         = "attempt_started"
+	EventAttemptFailed          = "attempt_failed"
+	EventRequestFailed          = "request_failed"
+	EventResponseStarted        = "response_started"
+	EventAssistantDelta         = "assistant_delta"
+	EventReasoningProgress      = "reasoning_progress"
+	EventProviderReasoningDelta = "provider_reasoning_delta"
+	EventToolCallStarted        = "tool_call_started"
+	EventToolArgumentsProgress  = "tool_arguments_progress"
+	EventToolCallReady          = "tool_call_ready"
+	EventResponseCompleted      = "response_completed"
+	EventResponseIncomplete     = "response_incomplete"
+	EventResponseFailed         = "response_failed"
 )
 
 type observerKey struct{}
 type callKey struct{}
+type providerReasoningKey struct{}
+
+const maxProviderReasoningText = 32 << 10
+
+// WithProviderReasoning opts this call context into receiving transient text
+// explicitly returned in an external provider's reasoning fields. The text is
+// never added to llm.Response or the session history by modelstream.
+func WithProviderReasoning(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, providerReasoningKey{}, enabled)
+}
+
+// ProviderReasoningEnabled reports whether external provider reasoning deltas
+// may be forwarded in this context. Internal/suppressed calls always return
+// false.
+func ProviderReasoningEnabled(ctx context.Context) bool {
+	enabled, _ := ctx.Value(providerReasoningKey{}).(bool)
+	config, _ := ctx.Value(observerKey{}).(observerConfig)
+	return enabled && !config.suppressed
+}
 
 type observerConfig struct {
 	callback   func(Event)
@@ -68,8 +88,9 @@ type observerConfig struct {
 // ObservedCall adapts streaming from providers that do not use the Responses
 // transport observer to the same bounded progress event path.
 type ObservedCall struct {
-	state *callState
-	once  sync.Once
+	state             *callState
+	providerReasoning bool
+	once              sync.Once
 }
 
 // BeginObservedCall starts an observed provider call. requestID may be empty,
@@ -89,7 +110,7 @@ func BeginObservedCall(ctx context.Context, id string, attempt int) (*ObservedCa
 	}
 	state := &callState{requestID: id, callback: config.callback, onOutput: config.onOutput}
 	state.attempt.Store(int32(attempt))
-	call := &ObservedCall{state: state}
+	call := &ObservedCall{state: state, providerReasoning: ProviderReasoningEnabled(ctx)}
 	state.emit(Event{Attempt: attempt, Kind: EventAttemptStarted})
 	return call, nil
 }
@@ -98,6 +119,9 @@ func BeginObservedCall(ctx context.Context, id string, attempt int) (*ObservedCa
 // output-tracking path. Request and attempt identifiers are set by the call.
 func (call *ObservedCall) Emit(event Event) {
 	if call == nil || call.state == nil {
+		return
+	}
+	if event.Kind == EventProviderReasoningDelta && !call.providerReasoning {
 		return
 	}
 	if event.Attempt == 0 {
@@ -123,21 +147,23 @@ func (call *ObservedCall) Finish(err error) {
 }
 
 type callState struct {
-	requestID             string
-	callback              func(Event)
-	onOutput              func()
-	attempt               atomic.Int32
-	deliveryMu            sync.Mutex
-	mu                    sync.Mutex
-	lastEmit              time.Time
-	flushTimer            *time.Timer
-	flushVersion          uint64
-	pending               strings.Builder
-	pendingID             string
-	draftUsed             int
-	pendingBytes          int
-	pendingReasoningBytes int
-	toolBytes             map[string]int
+	requestID                string
+	callback                 func(Event)
+	onOutput                 func()
+	attempt                  atomic.Int32
+	deliveryMu               sync.Mutex
+	mu                       sync.Mutex
+	lastEmit                 time.Time
+	flushTimer               *time.Timer
+	flushVersion             uint64
+	pending                  strings.Builder
+	pendingID                string
+	draftUsed                int
+	pendingBytes             int
+	pendingReasoningBytes    int
+	pendingProviderReasoning strings.Builder
+	providerReasoningUsed    int
+	toolBytes                map[string]int
 }
 
 func WithObserver(ctx context.Context, callback func(Event)) context.Context {

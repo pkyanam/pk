@@ -841,3 +841,11 @@ The user reported the provider model menu scrolling and resizing under pointer m
 The user also requested tokens/sec in this patch. Display latest-response average output TPS from provider-reported output tokens divided by model request duration, including provider wait and excluding tool execution. Do not estimate tokens from streamed characters. Missing usage must remain unavailable, not zero or a stale rate.
 
 Release candidate v0.1.10 was not published: Mac CI caught an existing scroll assertion reading before the next render (all picker/TPS tests passed). Changed that assertion to wait for its expected rendered frame; the focused usage tests pass. Releasing corrected candidate v0.1.11 rather than moving the existing tag.
+
+### Requested follow-up — file editing tools and long provider waits
+
+User reported GLM/Workers AI spending several minutes in the thinking state before eventually returning output, requested Ctrl+O provider reasoning details, and prioritized dedicated WriteFile/EditFile tools. Read-only session metadata showed a six-minute response gap but no stream timestamps; it cannot establish provider queueing versus reasoning versus transport delay. Implementation is isolated from the user's active source checkout in `/tmp/pk-filetools-followup`.
+
+New file tools use exact UTF-8 edits, bounded input/output sizes, atomic replacement, explicit overwrite control, optional expected SHA-256, preserved modes, workspace confinement, and symlink rejection. Per-path locks coordinate pk edits within a process; external editors can still race a final replacement, so this is not a filesystem transaction across processes. The normal, preview, and compaction registries are aligned. New-session instructions prefer file tools for focused edits.
+
+The TUI distinguishes stale stream activity after 15 seconds and can expand bounded external-provider reasoning text through Ctrl+O. Only explicit chat reasoning fields enter this opt-in transient path; no native Responses reasoning, session persistence, or model replay. Workers AI's unsupported effort control is labelled honestly. These changes improve visibility and tool ergonomics, not a claim of reduced upstream model latency.
