@@ -667,3 +667,10 @@ gates or imply that every backlog item is complete.
 ### 09:18 EDT — delegation accounting installed
 
 - Managed updater activated clean f483eee as 20260923T131805.235416000Z-25ff380ac87a-cd00bf4b after full validation/build gates. Existing running sessions were not interrupted. The flat dispatcher remains experiment-only; production still exposes the five established subagent controls.
+
+### 09:35 EDT — live delegation schema pilot
+
+- Pushed benchmark driver and tagged policy wiring in 53f2478. Tagged CLI and benchmark package tests passed; Luna agent's benchmark race suite passed. Verified generated sources are archived before fixture cleanup.
+- Ran one baseline-first paired Luna/low trial, bounded to 120 seconds per arm. Both arms completed two children with complete input/output accounting and passed both pristine holdouts.
+- Combined input: baseline 26,171, dispatcher 20,239; cached input: 9,216 vs 3,072; output: 1,573 vs 1,385; elapsed: 38.587 vs 29.649 seconds. Uncached input was slightly higher for dispatcher (17,167 vs 16,955), so no cost-saving claim or production promotion.
+- Results, source identity, sanitized traces and generated implementations: benchmarks/results/subagent-schema-pilot-20260923a/. Next evidence needed: reverse-order repetitions and lifecycle operations beyond start/wait.

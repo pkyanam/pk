@@ -41,3 +41,25 @@ tools / 4,004 schema bytes; dispatcher exposes five tools / 3,197 bytes. The fou
 non-subagent tools are unchanged. Both requests used synthetic local responses,
 so this establishes request composition, not live cost or quality. Reproduce
 with `python3 scripts/benchmark-capture-smoke.py`.
+
+## First live pilot
+
+At revision `53f2478`, one baseline-first paired run used Luna / low with two
+independent coding children per arm. Both arms completed both children, had
+complete parent/child input and output accounting, and passed pristine clamp
+and interval-merge holdouts. Generated implementations and sanitized traces are
+retained in [the result directory](../../benchmarks/results/subagent-schema-pilot-20260923a/summary.md).
+
+| Combined parent + children | Five tools | Dispatcher |
+|---|---:|---:|
+| Input tokens | 26,171 | 20,239 |
+| Cached input | 9,216 | 3,072 |
+| Uncached input | 16,955 | 17,167 |
+| Output tokens | 1,573 | 1,385 |
+| Responses | 13 | 12 |
+| Wall time | 38.587 s | 29.649 s |
+
+The dispatcher used fewer total input tokens, but slightly more uncached input.
+No dollar savings are established. This single ordered pilot is stochastic and
+does not isolate cache effects or cover steering/cancellation. Production keeps
+the existing controls pending broader, counterbalanced evidence.
