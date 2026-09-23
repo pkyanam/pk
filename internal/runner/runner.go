@@ -40,21 +40,25 @@ type Options struct {
 	Prompt string
 	// PromptID is a caller-owned stable ID for the initial prompt. It lets a
 	// task host retry a worker after a crash without appending the prompt twice.
-	PromptID     string
-	SessionID    string
-	SessionDir   string
-	Workspace    string
-	Model        string
-	Effort       string
-	SystemPrompt string
-	SkillsDirs   []string
-	JSONL        bool
-	ToolEvents   bool
-	Output       io.Writer
-	Diagnostics  io.Writer
-	OnSession    func(string)
-	Store        sessionstore.Store
-	Adapter      llm.Adapter
+	PromptID string
+	// BeforeInputPersist runs after the session and input IDs are known but
+	// before the initial external input is appended to the durable store.
+	// Callers may persist presentation-only metadata associated with those IDs.
+	BeforeInputPersist func(sessionID, inputID string) error
+	SessionID          string
+	SessionDir         string
+	Workspace          string
+	Model              string
+	Effort             string
+	SystemPrompt       string
+	SkillsDirs         []string
+	JSONL              bool
+	ToolEvents         bool
+	Output             io.Writer
+	Diagnostics        io.Writer
+	OnSession          func(string)
+	Store              sessionstore.Store
+	Adapter            llm.Adapter
 	// Inputs, when non-nil, keeps the coordinator alive and submits each prompt
 	// until the channel is closed. This is useful for task hosts that need to
 	// steer a running session without rebuilding its coordinator.
@@ -473,6 +477,13 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		stopRun()
 		<-done
 		return RunResult{}, fmt.Errorf("encode prompt: %w", err)
+	}
+	if options.BeforeInputPersist != nil {
+		if err := options.BeforeInputPersist(string(id), inputID); err != nil {
+			stopRun()
+			<-done
+			return RunResult{SessionID: string(id)}, fmt.Errorf("persist input metadata: %w", err)
+		}
 	}
 	if err := inputs.Submit(ctx, inbox.Input{ID: inbox.ID(inputID), Kind: inbox.InputExternal, Payload: payload}); err != nil {
 		stopRun()

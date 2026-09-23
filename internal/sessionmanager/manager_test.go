@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkyanam/pk/internal/attachments"
+	"github.com/pkyanam/pk/internal/presentation"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
@@ -50,6 +52,14 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if err := os.WriteFile(contextPath, []byte(`{"Version":1,"Workspace":"/workspace/example","SystemPrompt":"stable"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	presentationRecord, err := presentation.NewRecord("review report", "review report\nattached extracted text", []attachments.Attachment{{Path: "report.txt", Kind: attachments.Text, ContentType: "text/plain"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := presentation.Save(sessionDir, id, "input-with-file", presentationRecord); err != nil {
+		t.Fatal(err)
+	}
+	presentationPath := presentation.RecordPath(sessionDir, id, "input-with-file")
 	operationDir := filepath.Join(sessionDir, "operations")
 	compactionPath := filepath.Join(outputCompactionPath(operationDir, id), "decision.json")
 	if err := os.MkdirAll(filepath.Dir(compactionPath), 0o700); err != nil {
@@ -75,7 +85,7 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 	if len(result) != 1 || !result[0].OK {
 		t.Fatalf("archive result: %+v", result)
 	}
-	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), contextPath, compactionPath, capture} {
+	for _, path := range []string{filepath.Join(sessionDir, id+".session.jsonl"), presentationPath, contextPath, compactionPath, capture} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Errorf("live artifact still exists at %s (err=%v)", path, err)
 		}
@@ -109,6 +119,10 @@ func TestArchiveRestorePreservesSessionSnapshotAndCapturedOperation(t *testing.T
 			t.Errorf("restored %s = %q, %v; want containing %q", path, got, err, want)
 		}
 	}
+	restoredPresentation, err := presentation.Load(sessionDir, id, "input-with-file")
+	if err != nil || !restoredPresentation.Matches("review report\nattached extracted text") || len(restoredPresentation.Attachments) != 1 || restoredPresentation.Attachments[0].Name != "report.txt" {
+		t.Fatalf("restored attachment presentation=%+v err=%v", restoredPresentation, err)
+	}
 }
 
 func TestRestoreCollisionLeavesArchiveRecoverable(t *testing.T) {
@@ -140,6 +154,13 @@ func TestRestoreCollisionLeavesArchiveRecoverable(t *testing.T) {
 func TestPurgeRequiresExplicitTrashIDAndDoesNotFollowSymlinks(t *testing.T) {
 	manager, sessionDir := fixtureManager(t)
 	if _, err := createSession(t, sessionDir, "session-purge", "Purge fixture", "Answer"); err != nil {
+		t.Fatal(err)
+	}
+	record, err := presentation.NewRecord("Purge fixture", "Purge fixture\nfile note", []attachments.Attachment{{Path: "fixture.txt", Kind: attachments.Text}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := presentation.Save(sessionDir, "session-purge", "input-1", record); err != nil {
 		t.Fatal(err)
 	}
 	archived := manager.Archive(context.Background(), []string{"session-purge"}, nil)

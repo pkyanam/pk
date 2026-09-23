@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/pkyanam/pk/internal/presentation"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -257,6 +258,7 @@ func (m Manager) archiveOne(ctx context.Context, id string) Result {
 
 func (m Manager) artifacts(ctx context.Context, store *localfile.Store, sessionsDir, id string) ([]string, error) {
 	paths := []string{filepath.Join(sessionsDir, id+".session.jsonl")}
+	paths = append(paths, presentation.SessionDir(sessionsDir, id))
 	operationDir := filepath.Join(sessionsDir, "operations")
 	paths = append(paths, contextSnapshotPath(sessionsDir, id))
 	paths = append(paths, outputCompactionPath(operationDir, id))
@@ -602,7 +604,7 @@ func validManagedPath(sessionID, rel string) bool {
 	}
 	sum := sha256.Sum256([]byte(sessionID))
 	digest := hex.EncodeToString(sum[:])
-	if rel == digest+".context.json" || rel == filepath.Join("operations", "output-compaction", digest) {
+	if rel == digest+".context.json" || rel == filepath.Join("operations", "output-compaction", digest) || rel == filepath.Join("presentation", digest) {
 		return true
 	}
 	if filepath.Dir(rel) == "operations" && safeComponent(filepath.Base(rel)) && validSessionID(filepath.Base(rel)) {

@@ -25,6 +25,7 @@ import (
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/mcpclient"
 	"github.com/pkyanam/pk/internal/modelstream"
+	"github.com/pkyanam/pk/internal/presentation"
 	"github.com/pkyanam/pk/internal/providers"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/pkyanam/pk/internal/skillinstall"
@@ -541,6 +542,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "prompt text is empty", "recoverable": true})
 			return
 		}
+		originalUserText := text
 		var files []string
 		if raw := payload["files"]; len(raw) > 0 {
 			if err := json.Unmarshal(raw, &files); err != nil {
@@ -612,6 +614,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}()
 		go func() {
+			var loadedAttachments []attachments.Attachment
 			if err := ctx.Err(); err != nil {
 				finished <- turnDone{id: msg.ID, err: err}
 				return
@@ -626,8 +629,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				if loader == nil {
 					loader = loadPromptAttachments
 				}
-				var loaded []attachments.Attachment
-				text, loaded, err = loader(ctx, workspace, text, resolved)
+				text, loadedAttachments, err = loader(ctx, workspace, text, resolved)
 				if err != nil {
 					finished <- turnDone{id: msg.ID, err: fmt.Errorf("load attachments: %w", err)}
 					return
@@ -636,8 +638,8 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 					finished <- turnDone{id: msg.ID, err: err}
 					return
 				}
-				summaries := make([]map[string]any, 0, len(loaded))
-				for _, item := range loaded {
+				summaries := make([]map[string]any, 0, len(loadedAttachments))
+				for _, item := range loadedAttachments {
 					summaries = append(summaries, map[string]any{"path": item.Path, "kind": item.Kind, "content_type": item.ContentType, "truncated": item.Truncated, "pages_extracted": item.PagesExtracted, "pages_total": item.PagesTotal})
 				}
 				_ = s.emit(msg.ID, "attachments_loaded", map[string]any{"files": summaries})
@@ -705,6 +707,24 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			s.mu.Unlock()
 			out := &rpcRunnerOutput{server: s, id: msg.ID}
 			opts.Prompt = text
+			if len(loadedAttachments) > 0 {
+				promptID, idErr := newPresentationPromptID()
+				if idErr != nil {
+					fmt.Fprintf(s.diagnostics, "pk: could not assign attachment presentation ID: %v\n", idErr)
+				} else if record, recordErr := presentation.NewRecord(originalUserText, text, loadedAttachments); recordErr != nil {
+					fmt.Fprintf(s.diagnostics, "pk: could not describe attachment history: %v\n", recordErr)
+				} else {
+					opts.PromptID = promptID
+					opts.BeforeInputPersist = func(sessionID, inputID string) error {
+						if inputID != promptID {
+							fmt.Fprintln(s.diagnostics, "pk: attachment presentation input ID mismatch; full prompt will be retained")
+							return nil
+						}
+						saveHistoryPresentation(s.sessionDir, sessionID, inputID, record, s.diagnostics)
+						return nil
+					}
+				}
+			}
 			opts.Output = out
 			opts.JSONL = true
 			opts.Diagnostics = s.diagnostics
@@ -1161,7 +1181,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			if err != nil {
 				return nil, err
 			}
-			entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(ctx, store, request.SessionID, request.BeforeSequence)
+			entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(ctx, store, request.SessionID, request.BeforeSequence, s.sessionDir)
 			if err != nil {
 				return nil, err
 			}
@@ -1983,12 +2003,13 @@ func taskPayload(t tasks.Task) map[string]any {
 }
 
 type historyEntry struct {
-	Role       string `json:"role"`
-	Text       string `json:"text"`
-	Sequence   uint64 `json:"sequence"`
-	Name       string `json:"name,omitempty"`
-	State      string `json:"state,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	Role        string                    `json:"role"`
+	Text        string                    `json:"text"`
+	Sequence    uint64                    `json:"sequence"`
+	Name        string                    `json:"name,omitempty"`
+	State       string                    `json:"state,omitempty"`
+	ToolCallID  string                    `json:"tool_call_id,omitempty"`
+	Attachments []presentation.Attachment `json:"attachments,omitempty"`
 }
 
 const (
@@ -2002,7 +2023,7 @@ func (s *rpcServer) emitSessionHistory(requestID, id string) error {
 	if err != nil {
 		return err
 	}
-	entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, id, 0)
+	entries, hasEarlier, truncated, beforeSequence, err := sessionHistoryPage(s.ctx, store, id, 0, s.sessionDir)
 	if err != nil {
 		return err
 	}
@@ -2018,7 +2039,7 @@ func recentSessionHistory(ctx context.Context, store *localfile.Store, id string
 // A zero cursor means the newest page. Items() loads the backing event log, so
 // each request performs one store read and returns only the small transcript
 // projection; UI paging never accumulates the full transcript in memory.
-func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, beforeSequence uint64) ([]historyEntry, bool, bool, uint64, error) {
+func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, beforeSequence uint64, presentationDirs ...string) ([]historyEntry, bool, bool, uint64, error) {
 	maxInt := uint64(^uint(0) >> 1)
 	limit := int(maxInt)
 	if beforeSequence > 0 {
@@ -2035,6 +2056,12 @@ func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, 
 		return nil, false, false, 0, err
 	}
 	entries, hasEarlier, truncated := projectHistory(page.Items)
+	if len(presentationDirs) > 0 && presentationDirs[0] != "" {
+		var presentationEarlier, presentationTruncated bool
+		entries, presentationEarlier, presentationTruncated = enrichHistoryPresentation(presentationDirs[0], id, page.Items, entries)
+		hasEarlier = hasEarlier || presentationEarlier
+		truncated = truncated || presentationTruncated
+	}
 	var cursor uint64
 	if len(entries) > 0 {
 		cursor = entries[0].Sequence
@@ -2155,7 +2182,11 @@ func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
 }
 
 func historyEntrySize(entry historyEntry) int {
-	return len(entry.Text) + len(entry.Name) + len(entry.State) + len(entry.ToolCallID)
+	size := len(entry.Text) + len(entry.Name) + len(entry.State) + len(entry.ToolCallID)
+	for _, attachment := range entry.Attachments {
+		size += len(attachment.Name) + len(attachment.Kind) + len(attachment.ContentType) + 24
+	}
+	return size
 }
 
 func historyToolState(status tool.CallStatus, operations []operation.Operation) (string, string) {
