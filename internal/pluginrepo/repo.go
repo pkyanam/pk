@@ -642,7 +642,10 @@ func defaultCommand(ctx context.Context, dir, name string, args ...string) ([]by
 	if name == "git" {
 		command.Env = append(command.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+nullDevice())
 	} else if name == "go" {
-		command.Env = append(command.Env, "GOWORK=off", "GOFLAGS=", "GOTOOLCHAIN=local")
+		// Keep toolchain selection under the user's Go installation/configuration.
+		// In particular, newer modules may require Go's automatic toolchain
+		// download when the locally installed launcher is older.
+		command.Env = append(command.Env, "GOWORK=off", "GOFLAGS=")
 	}
 	var stdout, stderr limitedBuffer
 	stdout.limit, stderr.limit = maxOutputBytes, maxOutputBytes

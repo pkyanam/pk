@@ -7,25 +7,29 @@ without evidence. Do not post promotional material externally without explicit a
 
 ## Scope and order
 
-1. Continue reproducing and diagnosing the urgent OpenTUI freeze report, then rerun terminal
-   stability checks. `eba1d60` fixes reproducible input/focus defects, but the reported freeze has
-   not been independently diagnosed as resolved. AskUser and scrolling passed earlier live checks.
-2. Revalidate the latest TUI interactions: clickable selectors/question choices, scroll behavior,
-   grouped compact tool rows, expansion, and Markdown rendering. Keep unattended task workers free of
-   model-controlled blocking questions.
-3. Continue the Pi-like extension design and implementation in `docs/extensions-design.md`.
-4. Continue the model-invokable image-generation bridge through the existing Codex CLI login only
-   where the provider driver supports it. A live pk smoke succeeded with Luna orchestrating an
-   explicit Astra image driver; do not call this native Luna generation or shipped functionality.
-5. Expand the matched success, latency, token, and cache benchmark. Do not claim optimization gains
-   from the current single-repetition pilot.
-6. Keep the six-harness comparison in the research owner's document. After technical behavior is
-   validated, use the reviewer's Cap/Cmux video plan to capture and edit a concise local demo; draft
-   optional marketing assets for review; do not post them externally.
+1. Finish the guided skill-browser flow and repository-based plugin installation in the TUI; source
+   already includes CLI discovery/install. Verify explicit review/selection and that browsing does
+   not execute candidate code.
+2. Complete guided MCP setup/auth for local and remote servers, OAuth/PKCE and static credentials,
+   with fixtures first. Cloudflare instructions do not authorize changing the user's account.
+3. Integrate searchable saved sessions with batch archive-to-trash and restore. Keep the active
+   session protected and make archive recoverable.
+4. Reproduce the reported OpenTUI freeze only when the user's workspace is available and not being
+   actively used. Finish stress checks of history/scrolling, questions, paste, tools, and the persistent
+   activity indicator without disturbing a live session.
+5. Audit privacy claims against actual network and storage code. Preserve the installed Bun
+   `DO_NOT_TRACK=1` opt-out; distinguish pk from providers, skills sources, MCP servers, and plugins.
+6. Continue matched quality, latency, total-token, cache, and resource measurements. Keep the
+   superiority goal aspirational until repeated evidence supports it. If time remains, produce the
+   local Cap/Cmux demo for review; do not publish or post.
 
 Each change should preserve workspace and process permissions as currently documented. A new
 interaction must not imply that Bash is sandboxed. Avoid broad rewrites when a small tested change
 will do.
+
+The requested delivery target is 08:00 EDT on 23 September. Treat it as a handoff deadline: finish
+the highest-value reviewable slices, report anything still open accurately, and do not skip release
+gates or imply that every backlog item is complete.
 
 ## Checkpoints
 
@@ -327,3 +331,27 @@ will do.
 - Broader replay-compaction benchmark launched once from clean commit `226b07c`, with clamp/webhook, two repetitions, 90-second phase limits. Owner cache_runtime holds session 37111 and output `/tmp/pkbench-webhook-replay-rep2`; do not restart on observation timeout. Initial clamp holdouts pass; results are not final.
 - User added guided skills.sh browsing/install, repository-based plugin installation, model self-configuration, Streamable HTTP MCP, OAuth, bearer/API-key auth, and Cloudflare setup compatibility. Owners are implementing vertical slices; do not claim these installed. Cloudflare's prompt was read as setup requirements, not executed against the user's account.
 - Computer Use stopped after external user interaction closed the newly opened test workspace. Leave the user's Cmux alone while they are active. A reusable ffmpeg edit script is committed; actual Cap capture/final edit remains owed.
+
+### 2026-09-23 03:18 EDT — guided installs, privacy opt-out, and next handoff
+
+- Installed revision `184c6a0de9a2be6b35cb914983838ed5bfe1289f` as release
+  `20260923T071743.415072000Z-06e2ed312728-3c8d66c3`. Root reports isolated Go race/vet, updater
+  tests/build/activation, and installed pre-prompt catalog smoke passed. This release adds source-based
+  `pk skills` and `pk plugin` management, Bun `DO_NOT_TRACK=1`, and initial MCP OAuth backend work.
+  The new terminal manager UI flows and rich session operations are still in development.
+- The installed privacy change opts Bun out of its documented anonymous crash reports. Keep claims
+  limited to pk-controlled behavior; providers, MCP servers, plugins, and remote skill/search services
+  have their own data handling. The parent is reviewing precise network, rollback, workspace access,
+  and data-removal wording before the privacy audit is closed.
+- Current checkout contains session list/archive/restore manager and RPC glue plus TUI history work.
+  Batch operations must keep the active session safe, move data to recoverable trash, and have their
+  concurrency/rollback tests reviewed before an install claim.
+- The user’s larger goal remains an outstanding challenge: build a notably capable and efficient
+  harness. Existing benchmark evidence is mixed/small and the output-cap probe was a no-op; no
+  general speed/token advantage is established. Broaden matched runs and include quality and failure
+  rates rather than optimizing a single token metric.
+- Next in order: complete and validate the TUI skills flow; validate source plugin installation;
+  finish MCP OAuth/auth fixtures and guided setup; integrate session history/bulk archive/restore;
+  revise the privacy page after parent review; then use remaining time for freeze-safe GUI checks,
+  benchmark follow-up, and local demo editing. Deadline is 08:00 EDT; report remaining work instead of
+  claiming full completion.

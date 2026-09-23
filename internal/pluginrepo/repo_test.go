@@ -114,6 +114,17 @@ func TestNormalizeRepositoryRejectsNonGitHubAndAmbiguousPaths(t *testing.T) {
 	}
 }
 
+func TestGoCommandPreservesAutomaticToolchainSelection(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "auto")
+	got, err := defaultCommand(context.Background(), t.TempDir(), "go", "env", "GOTOOLCHAIN")
+	if err != nil {
+		t.Fatalf("go env GOTOOLCHAIN: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "auto" {
+		t.Fatalf("GOTOOLCHAIN=%q, want auto", got)
+	}
+}
+
 func TestServiceRemoveIntegrationForgetOnlyExternalManifests(t *testing.T) {
 	// This test covers the expected package behavior once Service.Remove lands;
 	// external manifests must not be deleted by a plugin ID removal.
