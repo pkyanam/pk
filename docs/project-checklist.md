@@ -1,14 +1,16 @@
 # pk project checklist and durable handoff
 
-Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed GitHub binary release is `v0.1.1` (source commit `28f1429`, managed release `legacy-20260923T150731-9d680d28`). The managed updater passed its build/test gates. Source `961fdba` added an opt-in subagent-schema benchmark and recorded live results; production still uses five subagent tools. Native reload/history/copy checks belong to earlier checkpoints below and were not repeated for this install. Earlier release references in dated checkpoints are historical.
+Updated 2026-09-23 UTC. `[x]` means verified; `[~]` means active or partly delivered; `[ ]` means still owed. Latest installed GitHub binary release is `v0.1.2` (source commit `033bf40`, managed release `legacy-20260923T153425-6f651f0c`). The managed updater passed its build/test gates. Source `961fdba` added an opt-in subagent-schema benchmark and recorded live results; production still uses five subagent tools. Native reload/history/copy checks belong to earlier checkpoints below and were not repeated for this install. Earlier release references in dated checkpoints are historical.
 
 ## Product and implementation
 
 ### Follow-up review of external product advice
 
-- [~] Group CLI help around user tasks and distinguish TUI commands from plain mode. Preserve supported automation interfaces without making internal worker commands part of onboarding.
-- [~] Make Ctrl+C cancel an active TUI turn without exiting; preserve text selections, drafts, attachments, and safe update/reload behavior.
-- [~] Start tool-only extension workers on first invocation, while keeping hook observers eager. Measure process overhead separately from tool-schema/context overhead; lazy processes do not remove schemas from requests.
+- [~] Add a searchable keyboard/mouse provider catalog: select a named provider, paste a masked API key, and choose a discovered model. Keep custom endpoints and agent-friendly CLI configuration. Research OpenCode and model catalogs; distinguish native API adapters from compatible endpoints, and show auth exceptions honestly.
+
+- [x] Group CLI help around user tasks and distinguish TUI commands from plain mode. Preserve supported automation interfaces without making internal worker commands part of onboarding.
+- [x] Make Ctrl+C cancel an active TUI turn without exiting; preserve text selections, drafts, attachments, and safe update/reload behavior.
+- [x] Start tool-only extension workers on first invocation, while keeping hook observers eager. Measure process overhead separately from tool-schema/context overhead; lazy processes do not remove schemas from requests.
 - [x] Provide complete reproducible native request bodies for two user turns, including a tool follow-up: see `docs/context-payload.md`. The synthetic provider fixture exercises the actual serializer; it is not a paid-provider transcript.
 - [ ] Evaluate structured file read/patch/search tools against shell-based workflows using matched correctness and token measurements before expanding the always-present tool catalog.
 - [ ] Design durable task questions with persisted waiting state and attach-time answers; foreground AskUser alone does not establish detached-task support.
