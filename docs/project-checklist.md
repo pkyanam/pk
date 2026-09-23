@@ -32,6 +32,9 @@ Updated 2026-09-23. This checklist consolidates the user's project requests from
 - [~] Make rich tool cards compact, grouped, and expandable/clickable with readable built-in Markdown rendering. Compact grouped rows, click/keyboard expansion, and heading/list/fence/link rendering shipped in `b544505`; recheck alongside the outstanding freeze investigation.
 - [x] Add Pi-like extension points; the design and implementation are documented in `docs/extensions-design.md`. Backend implementation is installed in `1ebe672`. It supports explicitly named extension manifests and async tool calls; a live CLI smoke had Luna invoke `workspace_stats` and report its empty workspace correctly. CLI command registration is not wired, hooks are rejected in protocol v1, and no streaming progress or sandbox is provided.
 - [x] Publish the complete TUI system prompt and built-in tool schemas in `docs/prompt-reference.md`. Backend checkpoint `c0c9952` replaces the inherited first identity line with pk plus the selected model ID. Tests verify model switching; legacy snapshots retain their saved prompt and `/new` starts with the updated identity.
+- [~] Add a bundled `pk` skill that explains pk identity, architecture, source-level self-development, and current install boundaries. Source instructions are at `skills/pk/SKILL.md`; runtime/installer registration is still needed before it appears automatically in the TUI.
+- [ ] Add `/skills` and `/plugins` TUI discovery/management surfaces. Current checked-in source does not expose these commands; consult live `/help` and do not describe them as shipped until implemented.
+- [ ] Add an in-app self-update flow that updates both the installed Go binary and OpenTUI assets, reports failures safely, and explains relaunch/`/new` for changed prompt or skill context. `scripts/install` is a manual source-checkout installer today; it does not provide in-app self-update or hot-restart.
 
 ## Research and evidence
 
@@ -51,6 +54,8 @@ Updated 2026-09-23. This checklist consolidates the user's project requests from
 - [x] Draft an initial README tease that the product is coming soon, then replace it with the concise public-facing README and conceptual design preview (`fd9633c`).
 
 ## Long-running work and overnight continuation
+
+- [~] Accept mid-turn steering messages while the agent is working. Show queued input, inject it at the next tool-result boundary (or the next available model boundary when no tools remain), preserve ordering and durable acknowledgments, and keep Esc as separate cancellation. Do not kill running commands or silently drop queued attachments. Runner/RPC/TUI integration and regression checks are pending.
 
 - [x] Keep background coding work durable, resumable, and isolated in a new workspace, with task status, follow/attach, cancel, and resume operations. Smoke evidence and recovery limits are in `docs/getting-started.md` and `docs/validation.md`.
 - [x] Let users start a task from the foreground `/task` or `/new` workflow and see its separate workspace; do not describe `/detach` as a way to keep a direct foreground process alive after exit.
