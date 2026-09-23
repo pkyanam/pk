@@ -771,3 +771,9 @@ Tagged `v0.1.3` at `57dd4ea` after all Go packages, UI typecheck/build, and 168 
 The user explicitly asked to run `pk update` personally. Keep their installed v0.1.2 and active processes untouched; verify release artifacts in isolation and publish only after those checks. This entry records the candidate, not a published or installed release.
 
 Published v0.1.3 after both platform jobs passed and both downloaded archives matched SHA256SUMS. The first Linux attempt hit a test assumption that two queued steers share one model request; the unchanged release retry passed. The fixture was corrected separately on main (`85b6f94`) and passed 30 normal and five race repetitions. Darwin's archive also passed isolated import and PTY startup/clean Ctrl-C exit. Darwin SHA256: `78e48edd07c5b9d55e8402cd5f2e546da19c97d90ad760360f5c47928547affd`; Linux: `0ebf9074f178b03b9b5a3ca74ed274bfb4fc522ba39c9e80af3c2db72e2a6dd1`. Release: https://github.com/pkyanam/pk/releases/tag/v0.1.3. User installation remains v0.1.2 for their own updater test.
+
+### Post-v0.1.3 — durable task questions and self-knowledge
+
+Background AskUser persistence, worker/RPC integration, and attached-task UI are under implementation. Review identified a crash window between question-state persistence and event publication; recovery tests and repair are required before this capability is marked delivered. Existing published v0.1.3 is unchanged, and the user retains control of installation.
+
+Corrected the bundled pk skill to describe checksum-verified GitHub Release updates (source builds are explicit or compatibility fallback) and distinguish provider token counters from byte-composition measurements. Removed upstream branding from the model-facing architecture summary. The skill validator passed with an isolated PyYAML dependency.
