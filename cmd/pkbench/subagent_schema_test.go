@@ -195,4 +195,7 @@ func TestSubagentTaskFlagRequiresSchemaExperimentAndRejectsUnknown(t *testing.T)
 	if code := run([]string{"-subagent-schema-ablation", "-subagent-task", "unknown"}); code != 2 {
 		t.Fatalf("unknown task returned %d, want usage error 2", code)
 	}
+	if code := run([]string{"-tool-schema-ablation", "-total-timeout", "20m"}); code != 2 {
+		t.Fatalf("whole timeout on unrelated experiment returned %d, want usage error 2", code)
+	}
 }
