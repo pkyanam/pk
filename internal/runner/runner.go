@@ -71,7 +71,11 @@ type Options struct {
 	// registry. On resume, saved tool definitions still determine the model-visible
 	// schema, so adding a decorator does not silently change an existing prefix.
 	DecorateRegistry func(tool.Registry) tool.Registry
-	CaptureLimit     int
+	// RemoteJobHandlers creates run-scoped local remote-job handlers. The factory
+	// receives the operation manager's cancellation context so handlers stop when
+	// this runner has settled and tears down the operation manager.
+	RemoteJobHandlers func(context.Context) []operation.RemoteJobHandler
+	CaptureLimit      int
 }
 
 // Input is a steer/follow-up prompt submitted to the active coordinator.
@@ -196,12 +200,21 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create session inbox: %w", err)
 	}
-	manager := operation.NewLocalOperationManager(runCtx)
+	var remoteJobHandlers []operation.RemoteJobHandler
+	if options.RemoteJobHandlers != nil {
+		remoteJobHandlers = options.RemoteJobHandlers(runCtx)
+	}
+	manager := operation.NewLocalOperationManager(runCtx, remoteJobHandlers...)
 	defer func() {
 		stopRun()
 		for range manager.Updates() {
 			// Drain buffered status updates while the manager shuts down. The
 			// coordinator has already returned, so no consumer remains attached.
+		}
+		for _, handler := range remoteJobHandlers {
+			if waiter, ok := handler.(interface{ Wait() }); ok {
+				waiter.Wait()
+			}
 		}
 	}()
 	operationDir := filepath.Join(options.SessionDir, "operations")
@@ -260,6 +273,19 @@ func Run(ctx context.Context, options Options) (RunResult, error) {
 		fmt.Fprintf(options.Diagnostics, "pk: warning: %v\n", warning)
 	}
 	if loadedSnapshot {
+		var missingTools []string
+		for _, definition := range snapshot.Tools {
+			if _, ok := registry.Resolve(definition.Name); !ok {
+				missingTools = append(missingTools, definition.Name)
+			}
+		}
+		if len(missingTools) != 0 {
+			return RunResult{SessionID: string(id)}, fmt.Errorf(
+				"session %s requires tools unavailable in this run (%s); restore the original extension and image-driver configuration or start a new session",
+				id,
+				strings.Join(missingTools, ", "),
+			)
+		}
 		captured, captureErr := captureSkills(skills)
 		if captureErr != nil {
 			return RunResult{SessionID: string(id)}, captureErr

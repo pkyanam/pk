@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,27 @@ func TestParseRunArgsRepeatedFiles(t *testing.T) {
 	}
 	if options.Prompt != "summarize" {
 		t.Fatalf("prompt = %q", options.Prompt)
+	}
+}
+
+func TestParseRunArgsExplicitExtensionsAndResumeGuard(t *testing.T) {
+	t.Setenv("PK_HOME", t.TempDir())
+	workspace := t.TempDir()
+	options, _, _, _, manifests, imageDriver, err := parseRunArgsWithInputs([]string{
+		"-p", "summarize", "--workspace", workspace,
+		"--extension", "./one.json", "--extension", "/tmp/two.json", "--image-driver", "gpt-6-astra",
+	}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Workspace != workspace || !reflect.DeepEqual(manifests, []string{"./one.json", "/tmp/two.json"}) || imageDriver != "gpt-6-astra" {
+		t.Fatalf("workspace=%q manifests=%#v imageDriver=%q", options.Workspace, manifests, imageDriver)
+	}
+	if _, _, _, _, _, _, err := parseRunArgsWithInputs([]string{"-p", "resume", "--session", "session-id", "--extension", "./one.json"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("--session plus --extension error=%v", err)
+	}
+	if _, _, _, _, _, _, err := parseRunArgsWithInputs([]string{"-p", "resume", "--session", "session-id", "--image-driver", "gpt-6-astra"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("--session plus --image-driver error=%v", err)
 	}
 }
 

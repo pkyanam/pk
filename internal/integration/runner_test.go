@@ -1,12 +1,17 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,8 +19,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/operation"
+	"github.com/unreallabsai/unreal-agent/harness/session"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
 )
 
 type scriptedAdapter struct {
@@ -376,6 +386,150 @@ func TestRunCancellationKillsActiveBashProcess(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Errorf("Bash process %d survived Run cancellation", pid)
+}
+
+func TestRunImageGenReturnsArtifactToModel(t *testing.T) {
+	workspace, sessionDir, codexHome := t.TempDir(), t.TempDir(), t.TempDir()
+	thread := "01a0cc58-0b27-7c20-8f9b-3efe81d0553b"
+	executable := filepath.Join(t.TempDir(), "codex-fixture")
+	var pngData bytes.Buffer
+	if err := png.Encode(&pngData, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatal(err)
+	}
+	generated := filepath.Join(t.TempDir(), "source.png")
+	if err := os.WriteFile(generated, pngData.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nmkdir -p \"$CODEX_HOME/generated_images/" + thread + "\"\ncp '" + generated + "' \"$CODEX_HOME/generated_images/" + thread + "/exec-one.png\"\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"" + thread + "\"}'\n"
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	responses := []llm.Response{
+		{ID: "imagegen-tool", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "image-call", Name: imagegen.ToolName, Arguments: `{"prompt":"mint leaf","output_path":"art/leaf.png"}`}}}},
+		{ID: "after-imagegen", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "image saved"}}}},
+	}
+	adapter := &scriptedAdapter{responses: responses}
+	config := imagegen.Config{Executable: executable, CodexHome: codexHome, Driver: "gpt-6-astra", Timeout: time.Minute}
+	result, err := runner.Run(t.Context(), runner.Options{
+		Prompt: "draw a leaf", SessionDir: sessionDir, Workspace: workspace, Adapter: adapter,
+		DecorateRegistry: imagegen.Decorator(config, workspace), RemoteJobHandlers: imagegen.HandlerFactory(config, workspace),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Text) != "image saved" {
+		t.Fatalf("final response = %q", result.Text)
+	}
+	artifact := filepath.Join(workspace, "art", "leaf.png")
+	if info, err := os.Stat(artifact); err != nil || info.Size() != int64(pngData.Len()) {
+		t.Fatalf("artifact stat = %v, %v", info, err)
+	}
+	artifact, err = filepath.EvalSymlinks(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.requests) != 2 {
+		t.Fatalf("provider requests = %d, want tool result follow-up", len(adapter.requests))
+	}
+	var resultText string
+	for _, item := range adapter.requests[1].Input {
+		if item.Type != llm.ItemToolResult {
+			continue
+		}
+		toolResult := item.Data.(llm.ToolResult)
+		if toolResult.CallID != "image-call" {
+			continue
+		}
+		for _, output := range toolResult.Output {
+			resultText += output.Value
+		}
+	}
+	if !strings.Contains(resultText, `"path":"`+artifact+`"`) || !strings.Contains(resultText, `"width":3`) || !strings.Contains(resultText, `"height":2`) {
+		t.Fatalf("model received no artifact metadata: %q", resultText)
+	}
+}
+
+func TestRunCancellationSettlesImageGenRemoteJobAndKillsWorker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell and process IDs")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	workspace, sessionDir, codexHome := t.TempDir(), t.TempDir(), t.TempDir()
+	store, err := localfile.New(sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "image-worker.pid")
+	thread := "01a0cc58-0b27-7c20-8f9b-3efe81d0553b"
+	executable := filepath.Join(t.TempDir(), "slow-codex")
+	script := "#!/bin/sh\nprintf '%s' $$ > '" + marker + "'\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"" + thread + "\"}'\nexec sleep 30\n"
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := `{"prompt":"mint leaf","output_path":"leaf.png"}`
+	adapter := &scriptedAdapter{responses: []llm.Response{{ID: "imagegen-call", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "image-call", Name: imagegen.ToolName, Arguments: args}}}}}}
+	imageConfig := imagegen.Config{Executable: executable, CodexHome: codexHome, Driver: "gpt-6-astra", Timeout: time.Minute}
+	done := make(chan error, 1)
+	var sessionID string
+	go func() {
+		_, err := runner.Run(ctx, runner.Options{
+			Prompt: "create a leaf", SessionDir: sessionDir, Workspace: workspace, Adapter: adapter,
+			Store: store, OnSession: func(id string) { sessionID = id },
+			DecorateRegistry:  imagegen.Decorator(imageConfig, workspace),
+			RemoteJobHandlers: imagegen.HandlerFactory(imageConfig, workspace),
+		})
+		done <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	var pid int
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			pid, _ = strconv.Atoi(string(data))
+			if pid > 0 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid <= 0 {
+		cancel()
+		t.Fatal("ImageGen worker did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run() error after cancellation = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not settle canceled ImageGen operation")
+	}
+	page, err := store.Items(context.Background(), session.ID(sessionID), sessionstore.BeforeFirst, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminalCanceled bool
+	for _, item := range page.Items {
+		if item.Kind != sessionstore.ItemToolCallStatus {
+			continue
+		}
+		status := item.Data.(sessionstore.ToolCallStatus)
+		for _, current := range status.Operations {
+			if current.Type == operation.TypeRemoteJob && current.Status == operation.StatusCanceled {
+				terminalCanceled = true
+			}
+		}
+	}
+	if !terminalCanceled {
+		t.Fatal("canceled ImageGen operation was not durably recorded")
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("ImageGen worker %d survived cancellation: %v", pid, err)
+	}
 }
 
 func TestProviderFailureReapsActiveBashBeforeRunReturns(t *testing.T) {

@@ -1,0 +1,35 @@
+package intervals
+
+import "sort"
+
+type Interval struct{ Start, End int }
+
+func Merge(input []Interval) []Interval {
+	if len(input) == 0 {
+		return []Interval{}
+	}
+
+	// Work on a copy so sorting and merging leave the caller's slice unchanged.
+	ordered := append([]Interval(nil), input...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Start == ordered[j].Start {
+			return ordered[i].End < ordered[j].End
+		}
+		return ordered[i].Start < ordered[j].Start
+	})
+
+	merged := make([]Interval, 0, len(ordered))
+	for _, current := range ordered {
+		if len(merged) == 0 || current.Start > merged[len(merged)-1].End {
+			merged = append(merged, current)
+			continue
+		}
+
+		last := &merged[len(merged)-1]
+		if current.End > last.End {
+			last.End = current.End
+		}
+	}
+
+	return merged
+}

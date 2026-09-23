@@ -12,6 +12,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/operation"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
@@ -31,6 +32,22 @@ func (registry extraDefinitionRegistry) StaticDefinitions() []tool.Definition {
 	return append(definitions, tool.Definition{Tool: registry.definition})
 }
 
+func (registry extraDefinitionRegistry) Resolve(name string) (tool.Translator, bool) {
+	if name == registry.definition.Name {
+		return extensionProbeTranslator{}, true
+	}
+	return registry.Registry.Resolve(name)
+}
+
+type extensionProbeTranslator struct{}
+
+func (extensionProbeTranslator) Translate(tool.Context, llm.ToolCall) tool.CallStatus {
+	return tool.CallStatus{}
+}
+func (extensionProbeTranslator) TranslateResult(callID string, _ tool.CallStatus, _ []operation.Operation) (llm.ToolResult, error) {
+	return llm.ToolResult{CallID: callID}, nil
+}
+
 func TestRegistryDecoratorExtendsFreshSchemaButDoesNotRewriteSavedSchema(t *testing.T) {
 	ctx := t.Context()
 	workspace, sessionDir := t.TempDir(), t.TempDir()
@@ -47,10 +64,12 @@ func TestRegistryDecoratorExtendsFreshSchemaButDoesNotRewriteSavedSchema(t *test
 		t.Fatalf("initial Run() error = %v", err)
 	}
 	second := &cacheProbeAdapter{response: response}
+	newTool := llm.Tool{Type: llm.ToolFunction, Name: "NewInteractionTool"}
 	_, err = runner.Run(ctx, runner.Options{
 		Prompt: "continue", SessionID: created.SessionID, Workspace: workspace, SessionDir: sessionDir, Adapter: second,
 		DecorateRegistry: func(registry tool.Registry) tool.Registry {
-			return extraDefinitionRegistry{Registry: registry, definition: llm.Tool{Type: llm.ToolFunction, Name: "NewInteractionTool"}}
+			withSavedTool := extraDefinitionRegistry{Registry: registry, definition: firstTool}
+			return extraDefinitionRegistry{Registry: withSavedTool, definition: newTool}
 		},
 	})
 	if err != nil {
@@ -72,6 +91,29 @@ func TestRegistryDecoratorExtendsFreshSchemaButDoesNotRewriteSavedSchema(t *test
 	}
 	if !containsString(firstNames, "AskUser") || containsString(resumedNames, "NewInteractionTool") {
 		t.Fatalf("decorated schemas = initial %v, resumed %v; resume must retain saved AskUser schema", firstNames, resumedNames)
+	}
+}
+
+func TestResumeRejectsMissingSavedToolBeforeModelRequest(t *testing.T) {
+	ctx := t.Context()
+	workspace, sessionDir := t.TempDir(), t.TempDir()
+	response := llm.Response{ID: "decorator-probe", Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}}}
+	first := &cacheProbeAdapter{response: response}
+	created, err := runner.Run(ctx, runner.Options{Prompt: "start", Workspace: workspace, SessionDir: sessionDir, Adapter: first,
+		DecorateRegistry: func(registry tool.Registry) tool.Registry {
+			return extraDefinitionRegistry{Registry: registry, definition: llm.Tool{Type: llm.ToolFunction, Name: "ImageGen"}}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := &cacheProbeAdapter{response: response}
+	_, err = runner.Run(ctx, runner.Options{Prompt: "continue", SessionID: created.SessionID, Workspace: workspace, SessionDir: sessionDir, Adapter: second})
+	if err == nil || !strings.Contains(err.Error(), "ImageGen") || !strings.Contains(err.Error(), "restore the original extension") {
+		t.Fatalf("resume error = %v, want missing ImageGen diagnostic", err)
+	}
+	if len(second.requests) != 0 {
+		t.Fatalf("provider was called %d times before rejecting missing tool", len(second.requests))
 	}
 }
 

@@ -1,0 +1,43 @@
+package catalog
+
+import "strings"
+
+// Source maps a request path to one enabled handler.
+type Source struct {
+	Name     string
+	Prefix   string
+	Priority int
+	Enabled  bool
+}
+
+// Select chooses the best enabled source for path. TODO: implement the
+// documented specificity, priority, boundary, and stable-tie rules.
+func Select(sources []Source, path string) (Source, bool) {
+	var best Source
+	bestIndex := -1
+	for i, source := range sources {
+		if !source.Enabled || source.Prefix == "" {
+			continue
+		}
+
+		matches := path == source.Prefix
+		if source.Prefix == "/" {
+			matches = strings.HasPrefix(path, "/")
+		} else if !matches {
+			matches = strings.HasPrefix(path, source.Prefix+"/")
+		}
+		if !matches {
+			continue
+		}
+
+		if bestIndex == -1 || len(source.Prefix) > len(best.Prefix) ||
+			(len(source.Prefix) == len(best.Prefix) && source.Priority > best.Priority) {
+			best = source
+			bestIndex = i
+		}
+	}
+	if bestIndex == -1 {
+		return Source{}, false
+	}
+	return best, true
+}

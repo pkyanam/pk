@@ -15,6 +15,7 @@ import (
 	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/openaicodex"
@@ -105,7 +106,7 @@ func hasPromptFlag(args []string) bool {
 }
 
 func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	options, useCodex, codexPath, files, err := parseRunArgsWithFiles(args, stderr)
+	options, useCodex, codexPath, files, extensionPaths, imageDriver, err := parseRunArgsWithInputs(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -129,9 +130,32 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	defer client.Close()
 	options.Adapter = client
+	var imageExtension []cliRegistryExtension
+	if imageDriver != "" {
+		imageConfig := imagegen.Config{Driver: imageDriver, Effort: "low", CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME"))}
+		imageExtension = append(imageExtension, cliRegistryExtension{Decorate: imagegen.Decorator(imageConfig, options.Workspace), RemoteJobHandlers: imagegen.HandlerFactory(imageConfig, options.Workspace)})
+	}
+	host, err := configureCLIExtensions(ctx, &options, extensionPaths, nil, stderr, imageExtension...)
+	if err != nil {
+		fmt.Fprintf(stderr, "pk run: load extensions: %v\n", err)
+		return 1
+	}
+	if host != nil {
+		defer func() {
+			if closeErr := host.Close(); closeErr != nil {
+				fmt.Fprintf(stderr, "pk: close extension workers: %v\n", closeErr)
+			}
+		}()
+	}
 	options.Output = stdout
 	options.Diagnostics = stderr
 	options.OnSession = func(id string) { fmt.Fprintf(stderr, "Session: %s\n", id) }
+	finishBenchmark, err := beginBenchmarkRun(&options)
+	if err != nil {
+		fmt.Fprintf(stderr, "pk run: benchmark instrumentation: %v\n", err)
+		return 1
+	}
+	defer finishBenchmark()
 	_, err = runner.Run(ctx, options)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk run: %v\n", err)
@@ -278,7 +302,12 @@ func parseRunArgs(args []string, stderr io.Writer) (runner.Options, bool, string
 }
 
 func parseRunArgsWithFiles(args []string, stderr io.Writer) (runner.Options, bool, string, []string, error) {
-	return parseCommandArgsWithFiles(args, stderr, true)
+	options, useCodex, codexPath, files, _, _, err := parseRunArgsWithInputs(args, stderr)
+	return options, useCodex, codexPath, files, err
+}
+
+func parseRunArgsWithInputs(args []string, stderr io.Writer) (runner.Options, bool, string, []string, []string, string, error) {
+	return parseCommandArgsWithInputs(args, stderr, true)
 }
 
 func parseInteractiveArgs(args []string, stderr io.Writer) (runner.Options, bool, string, error) {
@@ -291,6 +320,11 @@ func parseCommandArgs(args []string, stderr io.Writer, requirePrompt bool) (runn
 }
 
 func parseCommandArgsWithFiles(args []string, stderr io.Writer, requirePrompt bool) (runner.Options, bool, string, []string, error) {
+	options, useCodex, codexPath, files, _, _, err := parseCommandArgsWithInputs(args, stderr, requirePrompt)
+	return options, useCodex, codexPath, files, err
+}
+
+func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt bool) (runner.Options, bool, string, []string, []string, string, error) {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var options runner.Options
@@ -298,11 +332,13 @@ func parseCommandArgsWithFiles(args []string, stderr io.Writer, requirePrompt bo
 	var codexAuth string
 	var skills stringList
 	var files stringList
+	var extensionPaths stringList
+	var imageDriver string
 	flags.StringVar(&options.Prompt, "p", "", "prompt to send")
 	flags.StringVar(&options.Prompt, "prompt", "", "prompt to send")
 	defaults, configErr := config.Load(filepath.Join(pkHome(), "config.json"))
 	if configErr != nil {
-		return runner.Options{}, false, "", nil, fmt.Errorf("load config: %w", configErr)
+		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("load config: %w", configErr)
 	}
 	flags.StringVar(&options.Model, "model", defaults.Model, "model ID (default from pk config)")
 	flags.StringVar(&options.Effort, "effort", defaults.Effort, "reasoning effort: low, medium, high, xhigh, max")
@@ -315,33 +351,38 @@ func parseCommandArgsWithFiles(args []string, stderr io.Writer, requirePrompt bo
 	flags.Var(&skills, "skills-dir", "directory containing <skill>/SKILL.md; may be repeated")
 	if requirePrompt {
 		flags.Var(&files, "file", "attach a text, PDF, or image file; may be repeated")
+		flags.Var(&extensionPaths, "extension", "load an extension manifest explicitly; may be repeated")
+		flags.StringVar(&imageDriver, "image-driver", "", "explicitly enable ImageGen using this separate model ID")
 	}
 	if err := flags.Parse(args); err != nil {
-		return runner.Options{}, false, "", nil, err
+		return runner.Options{}, false, "", nil, nil, "", err
 	}
 	options.Effort = strings.ToLower(strings.TrimSpace(options.Effort))
 	if flags.NArg() != 0 {
-		return runner.Options{}, false, "", nil, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
 	if requirePrompt && strings.TrimSpace(options.Prompt) == "" {
-		return runner.Options{}, false, "", nil, errors.New("-p/--prompt is required")
+		return runner.Options{}, false, "", nil, nil, "", errors.New("-p/--prompt is required")
 	}
 	if codexAuth != "" && !useCodex {
-		return runner.Options{}, false, "", nil, errors.New("--codex-auth-file requires --use-codex")
+		return runner.Options{}, false, "", nil, nil, "", errors.New("--codex-auth-file requires --use-codex")
 	}
 	if !config.ValidEffort(options.Effort) {
-		return runner.Options{}, false, "", nil, fmt.Errorf("unsupported reasoning effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)", options.Effort)
+		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("unsupported reasoning effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)", options.Effort)
+	}
+	if (len(extensionPaths) > 0 || imageDriver != "") && options.SessionID != "" {
+		return runner.Options{}, false, "", nil, nil, "", errors.New("--extension and --image-driver cannot be combined with --session; tool schemas are fixed when a session starts")
 	}
 	if options.Workspace == "" {
 		var err error
 		options.Workspace, err = os.Getwd()
 		if err != nil {
-			return runner.Options{}, false, "", nil, fmt.Errorf("get working directory: %w", err)
+			return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("get working directory: %w", err)
 		}
 	}
 	workspace, err := filepath.Abs(options.Workspace)
 	if err != nil {
-		return runner.Options{}, false, "", nil, fmt.Errorf("resolve workspace: %w", err)
+		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("resolve workspace: %w", err)
 	}
 	options.Workspace = workspace
 	options.SessionDir = filepath.Join(pkHome(), "sessions")
@@ -357,7 +398,7 @@ func parseCommandArgsWithFiles(args []string, stderr io.Writer, requirePrompt bo
 		}
 		codexAuth = filepath.Join(codexHome, "auth.json")
 	}
-	return options, useCodex, codexAuth, files, nil
+	return options, useCodex, codexAuth, files, extensionPaths, imageDriver, nil
 }
 
 type stringList []string
@@ -365,7 +406,7 @@ type stringList []string
 func (values *stringList) String() string { return strings.Join(*values, ",") }
 func (values *stringList) Set(value string) error {
 	if strings.TrimSpace(value) == "" {
-		return errors.New("skills directory must not be empty")
+		return errors.New("value must not be empty")
 	}
 	*values = append(*values, value)
 	return nil
@@ -422,6 +463,8 @@ Run options:
   --workspace DIR            working directory for tools
   --session ID               resume a saved session
   --file PATH                attach a text, PDF, or image (repeatable; relative to workspace)
+  --extension MANIFEST       load an extension manifest explicitly (repeatable; new sessions only)
+  --image-driver MODEL       explicitly enable ImageGen using a separate model (new sessions only)
   --use-codex                reuse existing Codex credentials read-only
   --jsonl                    write assistant and tool events as JSONL
 

@@ -1,0 +1,47 @@
+package csvcount
+
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"strconv"
+)
+
+func SumColumn(input io.Reader, name string) (int64, error) {
+	records := csv.NewReader(input)
+	header, err := records.Read()
+	if err != nil {
+		if err == io.EOF {
+			return 0, fmt.Errorf("empty CSV input")
+		}
+		return 0, fmt.Errorf("read CSV header: %w", err)
+	}
+
+	column := -1
+	for i, field := range header {
+		if field == name {
+			column = i
+			break
+		}
+	}
+	if column < 0 {
+		return 0, fmt.Errorf("CSV column %q not found", name)
+	}
+
+	var sum int64
+	for row := 2; ; row++ {
+		record, err := records.Read()
+		if err == io.EOF {
+			return sum, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read CSV row %d: %w", row, err)
+		}
+
+		value, err := strconv.ParseInt(record[column], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid int64 in CSV row %d, column %q: %w", row, name, err)
+		}
+		sum += value
+	}
+}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
+	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -27,6 +28,45 @@ import (
 )
 
 type rpcEventSink struct{ events chan []byte }
+
+type clipboardFixture struct{ snapshot clipboard.Snapshot }
+
+func (f clipboardFixture) Read(context.Context) (clipboard.Snapshot, error) { return f.snapshot, nil }
+
+func TestRPCClipboardPasteReadsOnlyOnExplicitRequestAndReturnsSavedImage(t *testing.T) {
+	t.Setenv("PK_HOME", t.TempDir())
+	workspace := t.TempDir()
+	imageBytes := []byte("\x89PNG\r\n\x1a\nfixture")
+	var stdout bytes.Buffer
+	server := &rpcServer{
+		ctx: context.Background(), output: &stdout, diagnostics: io.Discard,
+		started: true, opts: runner.Options{Workspace: workspace},
+		requestTypes: make(map[string]string),
+		clipboardProvider: clipboardFixture{snapshot: clipboard.Snapshot{
+			Text: "filename.png", Image: &clipboard.Image{ContentType: "image/png", Bytes: imageBytes},
+		}},
+	}
+	server.handle(rpcMessage{Version: 1, ID: "paste-1", Type: "clipboard_paste"}, make(chan turnDone, 1))
+	var event struct {
+		Version int    `json:"version"`
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Payload struct {
+			Text  string                   `json:"text"`
+			Files []clipboard.SelectedFile `json:"files"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &event); err != nil {
+		t.Fatalf("decode event: %v; output=%q", err, stdout.String())
+	}
+	if event.Type != "clipboard_files" || event.ID != "paste-1" || event.Payload.Text != "" || len(event.Payload.Files) != 1 {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+	saved, err := os.ReadFile(event.Payload.Files[0].Path)
+	if err != nil || !bytes.Equal(saved, imageBytes) {
+		t.Fatalf("saved image=%q err=%v", saved, err)
+	}
+}
 
 func (sink *rpcEventSink) Write(data []byte) (int, error) {
 	copy := append([]byte(nil), data...)

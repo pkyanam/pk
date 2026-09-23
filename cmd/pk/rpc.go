@@ -17,6 +17,7 @@ import (
 
 	"github.com/pkyanam/pk/internal/attachments"
 	"github.com/pkyanam/pk/internal/auth"
+	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/runner"
@@ -74,6 +75,7 @@ type rpcServer struct {
 	broker              *interaction.Broker
 	loadAttachments     func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
 	prepareAdapter      func(context.Context, bool, string) (*codexAdapter, error)
+	clipboardProvider   clipboard.Provider
 }
 
 func (s *rpcServer) emit(id, typ string, payload any) error {
@@ -367,6 +369,32 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			result, err := runner.Run(broker.Context(), opts)
 			finished <- turnDone{id: msg.ID, text: result.Text, err: err}
 		}()
+	case "clipboard_paste":
+		s.mu.Lock()
+		started, workspace := s.started, s.opts.Workspace
+		s.mu.Unlock()
+		if !started {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "send start before requesting clipboard data", "recoverable": true})
+			return
+		}
+		provider := s.clipboardProvider
+		if provider == nil {
+			provider = clipboard.NativeProvider{}
+		}
+		snapshot, err := provider.Read(s.ctx)
+		if err != nil {
+			_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": "", "message": err.Error()})
+			return
+		}
+		snapshot = clipboard.NormalizeSnapshot(snapshot)
+		selected, err := clipboard.CaptureSnapshot(s.ctx, snapshot, filepath.Join(pkHome(), "attachments"))
+		if err != nil {
+			_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": []clipboard.SelectedFile{}, "text": snapshot.Text, "message": err.Error()})
+			return
+		}
+		// The UI retains these explicit selections and submits their paths through
+		// the same bounded attachment loader used by --file and ordinary prompts.
+		_ = s.emit(msg.ID, "clipboard_files", map[string]any{"files": selected, "text": snapshot.Text, "workspace": workspace, "message": snapshot.Message})
 	case "cancel":
 		s.mu.Lock()
 		cancel, active, sessionID, model, effort := s.activeCancel, s.active, s.session, s.opts.Model, s.opts.Effort
