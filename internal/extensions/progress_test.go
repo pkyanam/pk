@@ -65,15 +65,33 @@ func TestServeLifecycleRequiresNegotiatedWorkerOptIn(t *testing.T) {
 	}
 }
 
-type progressServeHandler struct{ announce bool }
+type progressServeHandler struct {
+	announce  bool
+	lifecycle bool
+}
 
 func (h progressServeHandler) Initialize(_ context.Context, params InitializeParams) (InitializeResult, error) {
+	result := InitializeResult{APIVersion: ProtocolVersion, ID: params.ID}
 	for _, f := range params.HostFeatures {
 		if f == HostFeatureToolProgress {
 			h.announce = true
 		}
+		if h.lifecycle && f == HostFeatureLifecycle {
+			result.Features = append(result.Features, HostFeatureLifecycle)
+		}
 	}
-	return InitializeResult{APIVersion: ProtocolVersion, ID: params.ID}, nil
+	return result, nil
+}
+
+func TestServeRejectsLifecycleFeatureWithoutObserverImplementation(t *testing.T) {
+	input := `{"id":"init","method":"initialize","params":{"api_version":"pk.extensions/v1","id":"sample","host_features":["lifecycle_notifications"]}}` + "\n"
+	var output bytes.Buffer
+	if err := Serve(context.Background(), strings.NewReader(input), &output, progressServeHandler{lifecycle: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "without implementing the observer") {
+		t.Fatalf("invalid lifecycle feature claim was not rejected: %s", output.String())
+	}
 }
 func (h progressServeHandler) ExecuteTool(ctx context.Context, _ ToolExecuteParams) (ToolResult, error) {
 	for i := 0; i < MaxProgressEventsPerCall+3; i++ {

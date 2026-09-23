@@ -284,15 +284,27 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, handler Handl
 				var initialized InitializeResult
 				initialized, err = handler.Initialize(ctx, params)
 				if err == nil {
-					result = initialized
 					for _, feature := range initialized.Features {
 						if feature == HostFeatureLifecycle {
-							for _, offered := range params.HostFeatures {
-								if offered == HostFeatureLifecycle {
-									lifecycleNegotiated = true
+							offered := false
+							for _, hostFeature := range params.HostFeatures {
+								if hostFeature == HostFeatureLifecycle {
+									offered = true
 								}
 							}
+							if !offered {
+								err = errors.New("host did not offer lifecycle notifications")
+								break
+							}
+							if _, ok := handler.(LifecycleObserver); !ok {
+								err = errors.New("handler advertises lifecycle notifications without implementing the observer")
+								break
+							}
+							lifecycleNegotiated = true
 						}
+					}
+					if err == nil {
+						result = initialized
 					}
 				}
 			}
