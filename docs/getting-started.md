@@ -18,6 +18,23 @@ installs them under `~/.local/bin/pk` and `~/.local/lib/pk/ui`. Add `~/.local/bi
 needed. Set `PK_BIN_DIR` or `PK_LIB_DIR` to install elsewhere. For a repo-local build, run
 `./scripts/build`; it writes `bin/pk` and `ui/dist/main.js`.
 
+## Update an installed release
+
+From an installed `pk`, select a pk source checkout and run:
+
+```sh
+pk update --source /path/to/pk
+pk version
+```
+
+The updater validates the checkout, runs Go and OpenTUI checks/builds in a staged copy, then activates
+a paired release containing both the Go binary and UI assets. `pk rollback` restores the previous
+release. Without `--source`, `pk update` uses the current directory; pass an explicit path when the
+intended checkout is not the current directory. This is a CLI workflow. The installed `f608b9e`
+release does not provide in-app `/update` or `/reload`; exit and relaunch `pk` after a CLI update.
+Use `/new` to start with updated prompts and skills, or `/attach SESSION_ID` to continue an older
+conversation with its saved context.
+
 ## Sign in
 
 Connect pk to ChatGPT:
@@ -191,6 +208,9 @@ operating location, not a process sandbox.
 The built-in tools are **Bash**, **ViewImage**, and **SkillUse**. Bash runs with the permissions of the
 pk process and is not confined to the workspace. ViewImage lets the model inspect images. SkillUse
 loads a registered skill.
+
+Use `/skills` to browse available skills and insert one into the prompt. Use `/plugins` to inspect
+known extension manifests. To register a manifest explicitly, enter `/plugin enable "/absolute/path/to/manifest.json"`, then use `/new` because extension tools are fixed for a session. `/plugins` toggles known plugins and is not a manifest file browser.
 
 By default pk discovers skills below `~/.codex/skills` and `~/.agents/skills`. For direct runs, pass
 one or more `--skills-dir DIR` flags to use custom directories instead of those defaults. A skill is

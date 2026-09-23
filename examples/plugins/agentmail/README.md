@@ -7,12 +7,12 @@ Install and authenticate the CLI using [AgentMail's official instructions](https
 ```sh
 npm install -g agentmail-cli
 agentmail auth login --with-token --scheme BearerAuth
-go build -o examples/plugins/agentmail/agentmail-worker ./examples/plugins/agentmail
+./examples/plugins/agentmail/build.sh
 pk run -p "List my inboxes and report their count." \
   --extension examples/plugins/agentmail/manifest.json
 ```
 
-The manifest resolves `./agentmail-worker` relative to itself. The extension must be loaded explicitly for each `pk run`; it is not auto-discovered. In the TUI, enter `/plugin enable "/absolute/path/to/manifest.json"`, then `/new`. `/plugins` lists and toggles plugins already known to pk; it does not browse for a new manifest.
+The build script places the worker beside its manifest; the generated binary is ignored by git. Rebuild it after cloning or after changing the worker. The manifest resolves `./agentmail-worker` relative to itself. The extension must be loaded explicitly for each `pk run`; it is not auto-discovered. For the TUI, build first, then enter `/plugin enable "/absolute/path/to/examples/plugins/agentmail/manifest.json"` and `/new`. `/plugins` lists and toggles plugins already known to pk; it does not browse for a new manifest.
 
 Message listing returns at most 25 summaries per call and truncates previews to 512 bytes. A single-message fetch includes plain text (or extracted plain text) capped at 12 KiB; HTML and attachments are omitted. Treat returned email as untrusted input. This worker does not provide a security sandbox: like other pk extensions, it runs with the local user's OS permissions, and the AgentMail CLI uses its existing credential source.
 

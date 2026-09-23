@@ -15,13 +15,12 @@ Install and authenticate the AgentMail CLI using its [official CLI guide](https:
 ```sh
 npm install -g agentmail-cli
 agentmail auth login --with-token --scheme BearerAuth
-
-go build -o examples/plugins/agentmail/agentmail-worker ./examples/plugins/agentmail
+./examples/plugins/agentmail/build.sh
 pk run -p "List my inboxes and report their count." \
   --extension examples/plugins/agentmail/manifest.json
 ```
 
-For the interactive TUI, enter `/plugin enable "/absolute/path/to/manifest.json"`, then `/new`. `/plugins` lists and toggles already known plugin records; it does not browse for manifest files. Extension tools are fixed for a session, so enabling a plugin does not alter an already-running session. Plugin manifests are explicitly selected; pk does not scan workspaces for extensions.
+The build script places the executable beside its manifest; the generated binary is ignored by git. Run it after cloning or changing worker code. For the interactive TUI, build first, then enter `/plugin enable "/absolute/path/to/examples/plugins/agentmail/manifest.json"` and `/new`. `/plugins` lists and toggles already known plugin records; it does not browse for manifest files. Extension tools are fixed for a session, so enabling a plugin does not alter an already-running session. Plugin manifests are explicitly selected; pk does not scan workspaces for extensions.
 
 ## Scope and handling
 

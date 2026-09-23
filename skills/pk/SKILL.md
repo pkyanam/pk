@@ -1,65 +1,43 @@
 ---
 name: pk
-description: Guidance for pk architecture, identity, skills, extensions, and source development. Use when explaining or changing pk; do not imply an in-app updater exists.
+description: Guidance for pk workflows and source development. Distinguish installed CLI capabilities from newer source or unshipped in-app controls.
 ---
 
 # pk
 
-Use this skill when the user asks how pk works, wants help with a pk-specific workflow, or asks to
-change pk itself. Ground answers and edits in the active checkout and its current documentation;
-installed builds and docs may lag the source.
+Use this skill for pk-specific questions and changes. Ground operational advice in the installed `pk --help`, the active TUI `/help`, and current source/docs; an installed release may lag the checkout.
 
-## Identity and architecture
+## Product and architecture
 
-- pk is the application and coding-agent harness. The selected model and provider power it; do not
-  present the model or provider as pk's product identity. The model ID can change with `/model`.
-- The runtime is Go and is based on the pinned Unreal Agent harness. The OpenTUI client is Bun and
-  TypeScript. The Go CLI composes authentication/configuration, the local stdio RPC host, runner,
-  tasks, and tool integrations. Check the current `go.mod`, `cmd/pk`, `internal/runner`, and `ui/`
-  before describing implementation details.
-- Current built-in tools are Bash, ViewImage, and SkillUse; the interactive foreground TUI also
-  registers AskUser. Bash runs with the pk process's OS permissions; choosing a workspace does not
-  sandbox it. AskUser collects a foreground choice and is not permission approval. Do not imply
-  headless or detached workers can block on AskUser.
-- Skills are instruction files discovered from configured roots and loaded on demand with SkillUse.
-  Session snapshots preserve the instructions and tool schemas from session creation. `/new` starts
-  a session with the current instructions; attaching a legacy session does not rewrite its context.
-- Optional CLI extension manifests are explicit and trusted code, not a sandbox or general plugin
-  marketplace. Check `docs/extensions-design.md` and live `pk --help`/TUI `/help` for the exact
-  current interface. Do not claim hooks, extension commands, or `/plugins` support unless current
-  source and help show they have shipped.
+- pk is the local coding-agent harness; the selected model/provider powers it. Identify the app as pk and the model separately.
+- The runtime is Go on the pinned Unreal Agent foundation, with a Bun/TypeScript OpenTUI frontend. Check `go.mod`, `cmd/pk/`, `internal/runner/`, and `ui/` for current boundaries.
+- Bash runs with pk's operating-system permissions; the workspace is a working location, not a sandbox. AskUser is a foreground question/choice flow, not a permission gate; detached/headless runs must not depend on blocking questions.
+- Skills load on demand. The bundled `pk` skill is source-controlled at `skills/pk/SKILL.md`; `/skills` lists available instructions. Session snapshots retain their original prompt and tool/skill context. Use `/new` to adopt changed instructions; attaching an older session does not rewrite its snapshot.
+- Keep model tools distinct from TUI slash commands, CLI commands, and tool names mentioned in workspace files. When asked what tools are available, report only the functions in the current session's tool schema; mention an extension only if it was successfully registered for that session.
+- `/plugins` lists and toggles known explicit extension manifests. To register a manifest, use `/plugin enable "/absolute/path/to/manifest.json"`, then `/new`. Extensions are trusted local programs, not sandboxed plugins. Check `docs/extensions-design.md` for protocol limits.
+- Do not advertise MCP or ACP from an uninstalled source tree. Confirm their command is present in the installed `pk --help`, exercise the protocol, and check its documentation before describing support.
 
-For a prompt-level question, see `docs/prompt-reference.md`. For component boundaries, see
-`docs/architecture.md`; for the extension protocol and its limits, see `docs/extensions-design.md`.
+In a pk checkout, consult `docs/architecture.md`, `docs/prompt-reference.md`, and `docs/extensions-design.md` for detailed boundaries.
 
-## Work on pk itself
+## Develop and update pk
 
-Locate the intended source checkout rather than assuming a machine-specific path:
+Locate the intended checkout instead of assuming a machine-specific path:
 
 ```sh
 git rev-parse --show-toplevel
 command -v pk
 ```
 
-This skill's source is `skills/pk/SKILL.md` in the pk checkout. The bundled loader is being added;
-until that implementation is included in an installed build, this repository file alone does not
-make the skill appear in pk's live `/skills` picker.
+Make source changes in that checkout. `cmd/pk/` composes CLI/RPC, `internal/runner/` owns model/session behavior, other runtime packages live in `internal/`, and `ui/src/` contains the TUI. Read applicable `AGENTS.md` files and nearby tests before editing. Build outputs such as `bin/pk` and `ui/dist/` are generated.
 
-Make requested product changes in that checkout's source. Relevant areas include `cmd/pk/` for CLI
-and RPC composition, `internal/runner/` for the model/session loop, `internal/` for runtime
-components, and `ui/src/` for OpenTUI behavior. Read the closest `AGENTS.md` and existing tests
-before editing. Run only the checks appropriate to the change; generated `bin/pk` and `ui/dist/`
-are build outputs, not source-of-truth edit targets.
+The installed CLI supports managed updates from a selected pk checkout:
 
-The repository provides `scripts/build` and `scripts/install`. The installer builds the Go binary
-and OpenTUI assets, then stages and replaces the user's installed binary and UI directory. Use it
-only when the user asks to install the checkout or another instruction clearly includes installation.
-It does not hot-reload an already running TUI: exit and launch `pk` again to run the newly installed
-binary and frontend.
+```sh
+pk update --source /path/to/pk
+pk version
+pk rollback
+```
 
-There is currently no supported in-app `pk self-update` command. Treat automated self-update as a
-pending product feature, not an existing workflow. The desired flow must build and install both
-binary and UI assets, report failures without leaving a half-updated install, then ask the user to
-relaunch the TUI; use `/new` when changed prompt or skill context must take effect. Do not invent a
-`/plugins` or `/skills` command if it is absent from the active TUI's `/help` and source. Do not push,
-publish, or alter another pk checkout unless the user explicitly asks.
+The updater validates the source, runs Go and UI checks/builds in a staged copy, then activates a paired immutable Go/UI release. `pk rollback` restores the preceding release. `pk update` without `--source` uses the current directory, so prefer an explicit path when more than one checkout is available. This shell workflow does not imply `/update` or `/reload` exists in the installed TUI; check that binary's live `/help` first. After a CLI update, exit and relaunch `pk`. Use `/attach SESSION_ID` to continue an existing saved session or `/new` for current prompt and skill context.
+
+`scripts/install` remains useful for building/installing directly from a checkout. Do not install, publish, push, or modify another checkout unless the user requested it. Validate the installed binary separately from source-level changes before claiming an in-app capability shipped.
