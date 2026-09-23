@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +33,11 @@ import (
 	"github.com/pkyanam/pk/internal/websearch"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/operation"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
 const rpcVersion = 1
@@ -1980,9 +1983,12 @@ func taskPayload(t tasks.Task) map[string]any {
 }
 
 type historyEntry struct {
-	Role     string `json:"role"`
-	Text     string `json:"text"`
-	Sequence uint64 `json:"sequence"`
+	Role       string `json:"role"`
+	Text       string `json:"text"`
+	Sequence   uint64 `json:"sequence"`
+	Name       string `json:"name,omitempty"`
+	State      string `json:"state,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 const (
@@ -2037,11 +2043,57 @@ func sessionHistoryPage(ctx context.Context, store *localfile.Store, id string, 
 }
 
 func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
+	type toolKey struct {
+		turn session.TurnID
+		call string
+	}
+	type callInfo struct{ name, arguments string }
+	type callHistory struct {
+		info     callInfo
+		sequence uint64
+		state    string
+		detail   string
+	}
+	calls := map[toolKey]callInfo{}
+	toolRows := map[toolKey]*callHistory{}
+	// First collect call metadata and latest persisted state. A row is anchored
+	// at the first status event, whose sequence is unique even when one model
+	// response contains several parallel tool calls.
+	for _, item := range items {
+		switch item.Kind {
+		case sessionstore.ItemModelResponse:
+			response, ok := item.Data.(sessionstore.ModelResponse)
+			if !ok {
+				continue
+			}
+			for _, output := range response.Response.Output {
+				if output.Type == llm.ItemToolCall {
+					if call, ok := output.Data.(llm.ToolCall); ok {
+						calls[toolKey{response.TurnID, call.CallID}] = callInfo{name: call.Name, arguments: call.Arguments}
+					}
+				}
+			}
+		case sessionstore.ItemToolCallStatus:
+			status, ok := item.Data.(sessionstore.ToolCallStatus)
+			if !ok {
+				continue
+			}
+			key := toolKey{status.TurnID, status.CallID}
+			row := toolRows[key]
+			if row == nil {
+				row = &callHistory{sequence: uint64(item.Sequence), state: "running"}
+				toolRows[key] = row
+			}
+			row.info = calls[key]
+			row.state, row.detail = historyToolState(status.Status, status.Operations)
+		}
+	}
 	entries := make([]historyEntry, 0, maxHistoryEntries)
 	hasEarlier, truncated := false, false
 	readBytes := 0
 	for _, item := range items {
 		var role, text string
+		var extra historyEntry
 		switch item.Kind {
 		case sessionstore.ItemInput:
 			if input, ok := item.Data.(inbox.Input); ok && input.Kind == inbox.InputExternal {
@@ -2064,31 +2116,212 @@ func projectHistory(items []sessionstore.Item) ([]historyEntry, bool, bool) {
 					role, text = "assistant", strings.Join(parts, "\n")
 				}
 			}
+		case sessionstore.ItemToolCallStatus:
+			status, ok := item.Data.(sessionstore.ToolCallStatus)
+			if ok {
+				key := toolKey{status.TurnID, status.CallID}
+				if row := toolRows[key]; row != nil && row.sequence == uint64(item.Sequence) {
+					role, text = "tool", historyToolText(row.info.arguments, row.detail)
+					extra = historyEntry{Name: historyPrefixUTF8(row.info.name, 256), State: row.state, ToolCallID: historyPrefixUTF8(status.CallID, 256)}
+				}
+			}
 		}
 		if text == "" {
 			continue
 		}
-		if len(text) > maxHistoryEntryBytes {
-			text = tailUTF8(text, maxHistoryEntryBytes)
+		extra.Role, extra.Text, extra.Sequence = role, text, uint64(item.Sequence)
+		entryLimit := maxHistoryEntryBytes - (historyEntrySize(extra) - len(text))
+		if entryLimit < 0 {
+			entryLimit = 0
+		}
+		if len(text) > entryLimit {
+			text = tailUTF8(text, entryLimit)
+			extra.Text = text
 			truncated = true
 		}
-		for len(entries) > 0 && (len(entries) >= maxHistoryEntries || readBytes+len(text) > maxHistoryBytes) {
-			readBytes -= len(entries[0].Text)
+		for len(entries) > 0 && (len(entries) >= maxHistoryEntries || readBytes+historyEntrySize(extra) > maxHistoryBytes) {
+			readBytes -= historyEntrySize(entries[0])
 			entries = entries[1:]
 			hasEarlier = true
 			truncated = true
 		}
-		if len(text) > maxHistoryBytes {
-			text = tailUTF8(text, maxHistoryBytes)
+		if historyEntrySize(extra) > maxHistoryBytes {
+			text = tailUTF8(text, maxHistoryBytes-(historyEntrySize(extra)-len(text)))
+			extra.Text = text
 			truncated = true
 		}
 		if text != "" {
-			entries = append(entries, historyEntry{Role: role, Text: text, Sequence: uint64(item.Sequence)})
-			readBytes += len(text)
+			extra.Text = text
+			entries = append(entries, extra)
+			readBytes += historyEntrySize(extra)
 		}
 	}
 	return entries, hasEarlier, truncated
 }
+
+func historyEntrySize(entry historyEntry) int {
+	return len(entry.Text) + len(entry.Name) + len(entry.State) + len(entry.ToolCallID)
+}
+
+func historyToolState(status tool.CallStatus, operations []operation.Operation) (string, string) {
+	if status.Error != "" {
+		return "failed", status.Error
+	}
+	if len(status.WaitingFor) == 0 {
+		return "completed", ""
+	}
+	byID := make(map[operation.ID]operation.Operation, len(operations))
+	for _, op := range operations {
+		byID[op.ID] = op
+	}
+	allTerminal := true
+	canceled := false
+	var details []string
+	for _, id := range status.WaitingFor {
+		op, ok := byID[id]
+		if !ok {
+			allTerminal = false
+			continue
+		}
+		switch op.Status {
+		case operation.StatusFailed:
+			return "failed", historyToolOperationDetails(operations)
+		case operation.StatusCanceled:
+			canceled = true
+		case operation.StatusCompleted:
+		default:
+			allTerminal = false
+		}
+		if op.Type == operation.TypeRemoteJob {
+			if decoded, err := operation.DecodeRemoteJobState(op); err == nil {
+				if decoded.TerminalError != "" {
+					details = append(details, decoded.TerminalError)
+				} else if decoded.TerminalResult != "" {
+					details = append(details, decoded.TerminalResult)
+				}
+			}
+		} else if op.Type == operation.TypeShell {
+			if decoded, err := operation.DecodeShellState(op); err == nil {
+				if len(decoded.InlineOut) > 0 {
+					details = append(details, string(decoded.InlineOut))
+				}
+				if len(decoded.InlineErr) > 0 {
+					details = append(details, string(decoded.InlineErr))
+				}
+				if decoded.TerminalError != "" {
+					details = append(details, decoded.TerminalError)
+				}
+			}
+		}
+	}
+	if !allTerminal {
+		return "running", strings.Join(details, "\n")
+	}
+	if canceled {
+		return "canceled", strings.Join(details, "\n")
+	}
+	return "completed", strings.Join(details, "\n")
+}
+
+func historyToolOperationDetails(operations []operation.Operation) string {
+	var details []string
+	for _, op := range operations {
+		if op.Type == operation.TypeRemoteJob {
+			if decoded, err := operation.DecodeRemoteJobState(op); err == nil {
+				if decoded.TerminalError != "" {
+					details = append(details, decoded.TerminalError)
+				} else if decoded.TerminalResult != "" {
+					details = append(details, decoded.TerminalResult)
+				}
+			}
+		} else if op.Type == operation.TypeShell {
+			if decoded, err := operation.DecodeShellState(op); err == nil {
+				if len(decoded.InlineOut) > 0 {
+					details = append(details, string(decoded.InlineOut))
+				}
+				if len(decoded.InlineErr) > 0 {
+					details = append(details, string(decoded.InlineErr))
+				}
+				if decoded.TerminalError != "" {
+					details = append(details, decoded.TerminalError)
+				}
+			}
+		}
+	}
+	return strings.Join(details, "\n")
+}
+
+func historyToolText(arguments, result string) string {
+	var parts []string
+	if arguments != "" {
+		parts = append(parts, "Arguments: "+historyPrefixUTF8(redactHistoryJSON(arguments), 3<<10))
+	}
+	if result != "" {
+		parts = append(parts, "Result: "+historyPrefixUTF8(redactHistoryText(result), 3<<10))
+	}
+	if len(parts) == 0 {
+		return "No arguments or result recorded."
+	}
+	return strings.Join(parts, "\n")
+}
+
+func historyPrefixUTF8(value string, maxBytes int) string {
+	value = strings.ToValidUTF8(value, "�")
+	if len(value) <= maxBytes {
+		return value
+	}
+	cut := maxBytes - len("…")
+	for cut > 0 && cut < len(value) && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut] + "…"
+}
+
+func redactHistoryJSON(raw string) string {
+	var value any
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return redactHistoryText(raw)
+	}
+	var redact func(any, string) any
+	redact = func(v any, key string) any {
+		key = strings.ToLower(strings.NewReplacer("-", "_", " ", "_").Replace(key))
+		for _, part := range []string{"token", "password", "secret", "credential", "authorization", "api_key", "apikey", "private_key", "privatekey"} {
+			if strings.Contains(key, part) {
+				return "[redacted]"
+			}
+		}
+		switch x := v.(type) {
+		case map[string]any:
+			out := make(map[string]any, len(x))
+			for k, item := range x {
+				out[k] = redact(item, k)
+			}
+			return out
+		case []any:
+			out := make([]any, len(x))
+			for i, item := range x {
+				out[i] = redact(item, key)
+			}
+			return out
+		case string:
+			return redactHistoryText(x)
+		default:
+			return v
+		}
+	}
+	encoded, err := json.Marshal(redact(value, ""))
+	if err != nil {
+		return "[unavailable]"
+	}
+	return string(encoded)
+}
+
+func redactHistoryText(value string) string {
+	value = strings.ToValidUTF8(value, "�")
+	return historyBearerPattern.ReplaceAllString(value, "Bearer [redacted]")
+}
+
+var historyBearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
 
 func tailUTF8(value string, maxBytes int) string {
 	value = strings.ToValidUTF8(value, "�")

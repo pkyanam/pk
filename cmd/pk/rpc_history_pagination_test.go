@@ -12,9 +12,117 @@ import (
 
 	"github.com/pkyanam/pk/internal/runner"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
+	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/operation"
 	"github.com/unreallabsai/unreal-agent/harness/session"
+	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
+	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
+
+func TestProjectHistoryCollapsesToolLifecycleAndKeepsStableSequence(t *testing.T) {
+	plan := operation.RemoteJobPlan{Type: "test", Version: 1, Data: jsontext.Value(`{}`)}
+	spec, err := operation.NewRemoteJobSpec(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := json.Marshal(operation.RemoteJobState{Plan: plan, TerminalResult: "created report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []sessionstore.Item{
+		{Sequence: 1, Kind: sessionstore.ItemInput, Data: inbox.Input{Kind: inbox.InputExternal, Payload: jsontext.Value(`"inspect files"`)}},
+		{Sequence: 2, Kind: sessionstore.ItemModelResponse, Data: sessionstore.ModelResponse{TurnID: "turn-a", Response: llm.Response{Output: []llm.Item{
+			{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "analysis", Text: "private chain of thought"}},
+			{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "Bash", Arguments: `{"command":"ls","api_key":"dont-show"}`}},
+		}}}},
+		{Sequence: 3, Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: "turn-a", CallID: "call-1", Status: tool.CallStatus{WaitingFor: []operation.ID{"op-1"}}, Operations: []operation.Operation{{ID: "op-1", Type: operation.TypeRemoteJob, Version: operation.VersionRemoteJob, Status: operation.StatusReady}}}},
+		{Sequence: 4, Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: "turn-a", CallID: "call-1", Status: tool.CallStatus{WaitingFor: []operation.ID{"op-1"}}, Operations: []operation.Operation{{ID: "op-1", Type: operation.TypeRemoteJob, Version: operation.VersionRemoteJob, Status: operation.StatusCompleted, MaxOutputLength: spec.MaxOutputLength, State: jsontext.Value(state)}}}},
+		{Sequence: 5, Kind: sessionstore.ItemModelResponse, Data: sessionstore.ModelResponse{TurnID: "turn-a", Response: llm.Response{Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Phase: "final_answer", Text: "Done."}}}}}},
+	}
+	entries, earlier, truncated := projectHistory(items)
+	if earlier || truncated || len(entries) != 3 {
+		t.Fatalf("projection entries=%+v earlier=%v truncated=%v", entries, earlier, truncated)
+	}
+	toolRow := entries[1]
+	if toolRow.Role != "tool" || toolRow.Sequence != 3 || toolRow.ToolCallID != "call-1" || toolRow.Name != "Bash" || toolRow.State != "completed" {
+		t.Fatalf("tool history row=%+v", toolRow)
+	}
+	if !strings.Contains(toolRow.Text, `"command":"ls"`) || !strings.Contains(toolRow.Text, "created report") || !strings.Contains(toolRow.Text, "[redacted]") {
+		t.Fatalf("tool detail=%q", toolRow.Text)
+	}
+	if strings.Contains(toolRow.Text, "dont-show") || strings.Contains(entries[2].Text, "private chain of thought") {
+		t.Fatalf("sensitive history leaked: %+v", entries)
+	}
+	redacted := redactHistoryText("Bearer abc.one Authorization: Bearer def.two")
+	if strings.Contains(redacted, "abc.one") || strings.Contains(redacted, "def.two") || strings.Count(redacted, "[redacted]") != 2 {
+		t.Fatalf("multiple bearer values were not redacted: %q", redacted)
+	}
+	if got := redactHistoryJSON(`{"apiKey":"no-show","public":"ok"}`); strings.Contains(got, "no-show") || !strings.Contains(got, "[redacted]") {
+		t.Fatalf("camelCase key was not redacted: %q", got)
+	}
+}
+
+func TestHistoryToolStateRequiresAllOperationsTerminal(t *testing.T) {
+	waiting := []operation.ID{"done", "pending"}
+	completed := operation.Operation{ID: "done", Status: operation.StatusCompleted}
+	ready := operation.Operation{ID: "pending", Status: operation.StatusReady}
+	for _, operations := range [][]operation.Operation{{completed, ready}, {ready, completed}} {
+		state, _ := historyToolState(tool.CallStatus{WaitingFor: waiting}, operations)
+		if state != "running" {
+			t.Fatalf("mixed operation states reported %q: %+v", state, operations)
+		}
+	}
+	state, _ := historyToolState(tool.CallStatus{WaitingFor: waiting}, []operation.Operation{completed, {ID: "pending", Status: operation.StatusCompleted}})
+	if state != "completed" {
+		t.Fatalf("all terminal operations reported %q", state)
+	}
+}
+
+func TestProjectHistoryBoundsToolEntriesAndPreservesLegacyProjection(t *testing.T) {
+	ordinary, _, _ := projectHistory([]sessionstore.Item{{Sequence: 1, Kind: sessionstore.ItemInput, Data: inbox.Input{Kind: inbox.InputExternal, Payload: jsontext.Value(`"ordinary text mentioning User-provided file attachments"`)}}})
+	if len(ordinary) != 1 || !strings.Contains(ordinary[0].Text, "User-provided file attachments") {
+		t.Fatalf("ordinary user text was modified: %+v", ordinary)
+	}
+	items := []sessionstore.Item{}
+	for i := 0; i < maxHistoryEntries+5; i++ {
+		turnID := session.TurnID("turn-" + strconv.Itoa(i))
+		callID := "call-" + strconv.Itoa(i)
+		items = append(items,
+			sessionstore.Item{Sequence: sessionstore.Sequence(2 + i*2), Kind: sessionstore.ItemModelResponse, Data: sessionstore.ModelResponse{TurnID: turnID, Response: llm.Response{Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: callID, Name: "Read", Arguments: `{}`}}}}}},
+			sessionstore.Item{Sequence: sessionstore.Sequence(3 + i*2), Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: turnID, CallID: callID, Status: tool.CallStatus{}}},
+		)
+	}
+	entries, earlier, truncated := projectHistory(items)
+	if len(entries) != maxHistoryEntries || !earlier || !truncated {
+		t.Fatalf("bounded history len=%d earlier=%v truncated=%v", len(entries), earlier, truncated)
+	}
+	if entries[len(entries)-1].Role != "tool" {
+		t.Fatalf("last history entry=%+v", entries[len(entries)-1])
+	}
+}
+
+func TestProjectHistoryToolRowsSurviveCursorBoundaryAndParallelCalls(t *testing.T) {
+	response := sessionstore.ModelResponse{TurnID: "turn", Response: llm.Response{Output: []llm.Item{
+		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "a", Name: "Read", Arguments: `{}`}},
+		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "b", Name: "Bash", Arguments: `{}`}},
+	}}}
+	items := []sessionstore.Item{
+		{Sequence: 1, Kind: sessionstore.ItemModelResponse, Data: response},
+		{Sequence: 2, Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: "turn", CallID: "a", Status: tool.CallStatus{WaitingFor: []operation.ID{"pending-a"}}}},
+		{Sequence: 3, Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: "turn", CallID: "b", Status: tool.CallStatus{WaitingFor: []operation.ID{"pending-b"}}}},
+		{Sequence: 4, Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: "turn", CallID: "a", Status: tool.CallStatus{Error: "failed"}}},
+		{Sequence: 5, Kind: sessionstore.ItemToolCallStatus, Data: sessionstore.ToolCallStatus{TurnID: "turn", CallID: "b", Status: tool.CallStatus{Error: "failed"}}},
+	}
+	all, _, _ := projectHistory(items)
+	if len(all) != 2 || all[0].Sequence != 2 || all[1].Sequence != 3 || all[0].ToolCallID != "a" || all[1].ToolCallID != "b" || all[0].State != "failed" || all[1].State != "failed" {
+		t.Fatalf("parallel tool projection=%+v", all)
+	}
+	beforeLastStatus, _, _ := projectHistory(items[:4])
+	if len(beforeLastStatus) != 2 || beforeLastStatus[0].State != "failed" || beforeLastStatus[1].State != "running" {
+		t.Fatalf("history before cursor should show state persisted by that point: %+v", beforeLastStatus)
+	}
+}
 
 func TestHistoryBeforeReturnsBoundedOlderPagesAndRejectsStaleSession(t *testing.T) {
 	ctx := context.Background()
