@@ -1719,6 +1719,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   }
 
   usePaste((event) => {
+    // Bracketed paste is delivered globally, even when a modal textarea owns
+    // keyboard focus. Only reinterpret file paths while the chat composer is
+    // the active input; AskUser answers and modal fields should receive the
+    // original paste bytes as text.
+    if (question || !composerShouldBeFocused(selector !== null, sessionManagerOpen, mcpManagerOpen, pluginSourceModalOpen)) return
     const pasted = new TextDecoder().decode(event.bytes)
     const parsed = parsePastedPaths(pasted, event.metadata?.mimeType ?? "")
     if (!parsed) return

@@ -38,6 +38,12 @@ function fakeTransport() {
   return { transport: transport as unknown as PkTransport, sent, starts, emit: transport.emit }
 }
 
+function pasteIntoRenderer(setup: Awaited<ReturnType<typeof testRender>>, text: string) {
+  // Exercise the terminal's actual bracketed-paste parser path so both the
+  // app-level usePaste handler and whichever input owns focus receive it.
+  ;(setup.renderer.stdin as any).emit("data", Buffer.from(`\x1b[200~${text}\x1b[201~`))
+}
+
 describe("OpenTUI application", () => {
   test("transcript timeline ignores clock ticks unless a live tool duration is visible", () => {
     const onToggle = () => {}
@@ -1932,6 +1938,47 @@ describe("OpenTUI application", () => {
     expect(setup.captureCharFrame()).toContain("←/→ change · Tab/Enter next")
     expect(setup.captureCharFrame()).not.toContain("Enter details")
     expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+  })
+
+  test("file-looking paste goes to a focused MCP field instead of the attachment queue", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "paste-mcp-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/mcp") })
+    act(() => setup.mockInput.pressEnter())
+    const list = fake.sent.find((item) => item.type === "mcp_list")!
+    act(() => fake.emit({ version: 1, id: list.id, type: "mcp_catalog", payload: { servers: [], tools: [] } }))
+    await setup.waitForFrame((frame) => frame.includes("MCP connections"))
+    await act(async () => { await setup.mockInput.pressKey("a") })
+    const formFrame = await setup.waitForFrame((frame) => frame.includes("Executable path"))
+    const executableRow = formFrame.split("\n").findIndex((line) => line.includes("/absolute/path/to/server"))
+    await act(async () => setup.mockMouse.click(formFrame.split("\n")[executableRow]!.indexOf("/absolute"), executableRow))
+
+    await act(async () => { pasteIntoRenderer(setup, "/usr/local/bin/server"); await setup.flush() })
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("/usr/local/bin/server")
+    expect(frame).not.toContain("Queued file 1/8")
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("")
+    expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
+  })
+
+  test("file-looking paste remains literal text when answering an AskUser question", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, id: "paste-question-ready", type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    act(() => fake.emit({ version: 1, id: "paste-question-turn", type: "question", payload: { id: "paste-question", text: "Which path?", choices: [] } }))
+    await setup.waitForFrame((frame) => frame.includes("Which path?"))
+
+    await act(async () => { pasteIntoRenderer(setup, "/usr/local/bin/server"); await setup.flush() })
+    expect((setup.renderer.root as any).findDescendantById("composer").plainText).toBe("/usr/local/bin/server")
+    expect(setup.captureCharFrame()).not.toContain("Queued file 1/8")
+    act(() => setup.mockInput.pressEnter())
+    expect(fake.sent.some((item) => item.type === "answer_question" && item.payload?.answer === "/usr/local/bin/server")).toBe(true)
     expect(fake.sent.some((item) => item.type === "prompt")).toBe(false)
   })
 
