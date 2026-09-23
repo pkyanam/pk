@@ -31,6 +31,7 @@ type SkillSearchOption = { name: string; id: string; source: string; installs: n
 type SkillCandidate = { name: string; description: string; source: string; path: string; url: string }
 type SkillInstalled = { name: string; description?: string; source?: string; path?: string }
 type PluginOption = { id: string; version?: string; manifest_path?: string; enabled: boolean; tools?: string[]; commands?: string[]; error?: string }
+type PluginCandidate = { id: string; version?: string; manifest_path: string; tools: string[]; commands: string[]; build_required: boolean }
 type ExtensionCommand = { name: string; extension_id: string; command_name: string; description: string; enabled?: boolean; error?: string }
 type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string; transport?: string; url?: string; auth_mode?: string; auth_status?: string; credential_env?: string[] }
 type MCPToolOption = { server_id: string; server_tool_name: string; name: string; description: string; input_schema?: Record<string, unknown> }
@@ -51,7 +52,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/tasks", description: "Browse durable agent tasks", action: "tasks" },
   { name: "/sessions", description: "Search, reopen, archive, or restore saved conversations", action: "sessions" },
   { name: "/skills", description: "Search skills.sh, review/install skills, and manage installed skills", action: "skills" },
-  { name: "/plugins", description: "Inspect installed plugins and their state", action: "plugins" },
+  { name: "/plugins", description: "Browse installed plugins or discover and install from a source", action: "plugins" },
   { name: "/commands", description: "Browse namespaced plugin commands", action: "plugin_commands" },
   { name: "/plugin", description: "Enable or disable a plugin manifest", action: "plugin" },
   { name: "/mcp", description: "List, add, or remove MCP servers · configuration only changes new sessions", action: "mcp" },
@@ -292,7 +293,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | "history" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_models" | "extension_commands" | "history" | null>(null)
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
   const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
   const [mcpManagerOpen, setMcpManagerOpen] = useState(false)
@@ -317,6 +318,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingSkillCatalog = useRef("")
   const skillsPanelRequested = useRef(false)
   const [plugins, setPlugins] = useState<PluginOption[]>([])
+  const [pluginCandidates, setPluginCandidates] = useState<PluginCandidate[]>([])
+  const [pluginCandidateReview, setPluginCandidateReview] = useState<PluginCandidate | null>(null)
+  const [pluginCandidateSource, setPluginCandidateSource] = useState("")
+  const [pluginCandidateRevision, setPluginCandidateRevision] = useState("")
+  const [pluginSourceOperation, setPluginSourceOperation] = useState("")
+  const pluginSourceRequest = useRef("")
   const [extensionCommands, setExtensionCommands] = useState<ExtensionCommand[]>([])
   const [mcpServers, setMcpServers] = useState<MCPServerOption[]>([])
   const [mcpTools, setMcpTools] = useState<MCPToolOption[]>([])
@@ -1033,10 +1040,47 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setPlugins(available)
         if (selector !== "plugins") setSelectionIndex(0)
         setSelector("plugins")
-        if (event.type === "plugins_updated" && data.next_session_only) addEntry("system", "Plugin configuration saved · applies to new sessions. Use /new to start one.")
+        if (event.type === "plugins_updated" && data.next_session_only) {
+          const installed = data.installed === true
+          addEntry("system", installed ? "Plugin installed and enabled · available in new sessions. Use /new to load it." : "Plugin configuration saved · applies to new sessions. Use /new to start one.")
+          if (installed) {
+            pluginSourceRequest.current = ""
+            setPluginSourceOperation("")
+            setPluginCandidateReview(null)
+            setSelector("plugins")
+          }
+        }
         if (!available.length) addEntry("system", "No plugins are installed.")
         break
       }
+      case "plugin_discover_started":
+      case "plugin_install_started": {
+        if (pluginSourceRequest.current && event.id !== pluginSourceRequest.current) break
+        setPluginSourceOperation(event.type === "plugin_discover_started" ? "Inspecting plugin source…" : "Installing reviewed plugin…")
+        break
+      }
+      case "plugin_candidates": {
+        if (event.id !== pluginSourceRequest.current) break
+        pluginSourceRequest.current = ""
+        setPluginSourceOperation("")
+        const candidates = Array.isArray(data.candidates) ? data.candidates.filter((item: any) => item && typeof item.id === "string" && typeof item.manifest_path === "string").slice(0, 100).map((item: any) => ({
+          id: String(item.id), version: typeof item.version === "string" ? item.version : undefined,
+          manifest_path: String(item.manifest_path), tools: Array.isArray(item.tools) ? item.tools.map(String).slice(0, 100) : [],
+          commands: Array.isArray(item.commands) ? item.commands.map(String).slice(0, 100) : [], build_required: item.build_required === true,
+        })) : []
+        setPluginCandidates(candidates)
+        setPluginCandidateSource(String(data.source ?? pluginCandidateSource))
+        setPluginCandidateRevision(String(data.revision ?? ""))
+        setPluginCandidateReview(null)
+        setSelectionIndex(0)
+        setSelector("plugin_candidates")
+        for (const item of Array.isArray(data.unsupported) ? data.unsupported.slice(0, 10) : []) addEntry("system", `Plugin source · ${String(item).slice(0, 240)}`)
+        if (!candidates.length) addEntry("system", "No installable plugins were found in that source.")
+        break
+      }
+      case "plugin_source_cancel_requested":
+        setPluginSourceOperation("Canceling plugin source operation…")
+        break
       case "mcp_catalog":
       case "mcp_updated": {
         const servers = Array.isArray(data.servers) ? data.servers.filter((item: any) => item && typeof item.id === "string").map((item: any) => ({
@@ -1292,6 +1336,12 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         void transport.close().finally(() => renderer.destroy())
         break
       case "error":
+        if (event.id && event.id === pluginSourceRequest.current) {
+          pluginSourceRequest.current = ""
+          setPluginSourceOperation("")
+          addEntry("system", `Plugin source · ${String(data.message ?? "The plugin operation failed.").slice(0, 400)}`)
+          break
+        }
         if (event.id && event.id === skillOperationRequest.current) {
           skillOperationRequest.current = ""
           setSkillOperation("")
@@ -1624,7 +1674,24 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else addEntry("system", "Usage: /skills [installed|available] · /skills search QUERY · /skills browse SOURCE · /skills remove NAME")
         break
       }
-      case "plugins": transport.send("plugins_list" as any); break
+      case "plugins": {
+        const [operation, ...rest] = args
+        if (operation === "discover" && rest.length) {
+          if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pluginCommandRun) {
+            addEntry("system", "Plugin discovery is available while the session is idle.")
+            break
+          }
+          const source = rest.join(" ").trim()
+          setPluginCandidateSource(source)
+          setPluginCandidateReview(null)
+          setPluginSourceOperation("Inspecting plugin source…")
+          setSelector("plugin_candidates")
+          pluginSourceRequest.current = transport.send("plugins_discover" as any, { source }) ?? ""
+          if (!pluginSourceRequest.current) { setPluginSourceOperation(""); addEntry("system", "Could not inspect plugin source because the RPC connection is unavailable.") }
+        } else if (!operation || operation === "list") transport.send("plugins_list" as any)
+        else addEntry("system", 'Usage: /plugins · /plugins discover OWNER/REPO|URL|LOCAL_PATH · select a candidate to review, then press i to install.')
+        break
+      }
       case "plugin_commands": transport.send("plugin_commands_list" as any); break
       case "mcp": {
         const [operation, ...options] = args
@@ -1893,6 +1960,22 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     requestSkillOperation("skill_remove", { name: skill.name }, `Removing ${skill.name}…`)
   }
 
+  const installReviewedPlugin = () => {
+    const candidate = pluginCandidateReview
+    if (!candidate || pluginSourceOperation || candidate.build_required) return
+    if (busy || turnActive.current || waiting.current || question || activeTaskId || maintenance || pluginCommandRun) {
+      addEntry("system", "Plugin installation is available while the session is idle.")
+      return
+    }
+    pluginSourceRequest.current = transport.send("plugins_install" as any, {
+      source: pluginCandidateSource,
+      manifest_path: candidate.manifest_path,
+      revision: pluginCandidateRevision,
+    }) ?? ""
+    if (pluginSourceRequest.current) setPluginSourceOperation("Installing reviewed plugin…")
+    else addEntry("system", "Could not install the plugin because the RPC connection is unavailable.")
+  }
+
   const activateSelectorOption = (index: number) => {
     if (selector === "history") {
       if (index >= historyEntries.length) {
@@ -1949,6 +2032,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setSelector(null)
         textarea.current?.focus()
       }
+    } else if (selector === "plugin_candidates") {
+      const candidate = pluginCandidates[index]
+      if (candidate) setPluginCandidateReview(candidate)
     } else if (selector === "plugins") {
       const plugin = plugins[index]
       if (plugin) {
@@ -2012,6 +2098,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   useKeyboard((key) => {
     if (sessionManagerOpen || mcpManagerOpen) return
+    const liveDraft = textarea.current?.plainText ?? draft
     const isEscape = key.name === "escape" || key.name === "esc"
     const commandModifier = key.super === true || key.meta === true
     if ((commandModifier || key.ctrl) && key.name.toLowerCase() === "v") {
@@ -2063,7 +2150,24 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (selector) {
-      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      const count = selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 1 : selector === "provider_models" ? providerModels.length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      if (selector === "plugin_candidates" && pluginSourceOperation && isEscape) {
+        transport.send("plugin_source_cancel" as any)
+        pluginSourceRequest.current = ""
+        setPluginSourceOperation("")
+        setSelector(null)
+        textarea.current?.focus()
+        return
+      }
+      if (selector === "plugin_candidates" && pluginCandidateReview && isEscape) {
+        setPluginCandidateReview(null)
+        return
+      }
+      if (selector === "plugin_candidates" && pluginCandidateReview && (key.name.toLowerCase() === "i" || key.name === "return")) {
+        key.preventDefault()
+        installReviewedPlugin()
+        return
+      }
       if (selector === "skills" && skillOperation && isEscape) {
         transport.send("skill_cancel")
         skillOperationRequest.current = ""
@@ -2120,10 +2224,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       textarea.current?.focus()
       return
     }
-    if (draft.startsWith("/")) {
-      const typedCommand = draft.trim().split(/\s/)[0] || "/"
+    if (liveDraft.startsWith("/")) {
+      const typedCommand = liveDraft.trim().split(/\s/)[0] || "/"
       const filtered = availableSlashCommands.filter((item) => item.name.startsWith(typedCommand))
-      if (key.name === "return" && filtered.length && !/\s/.test(draft.trim())) {
+      if (key.name === "return" && filtered.length && !/\s/.test(liveDraft.trim())) {
         key.preventDefault()
         const selected = filtered[slashIndex % filtered.length]
         if (selected && selected.action !== "task" && selected.action !== "attach") {
@@ -2204,14 +2308,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             : skillsView === "installed" ? skillInstallations.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "Managed skill"}${skill.source ? ` · ${skill.source}` : ""}`, state: "installed" }))
               : skillsView === "review" ? []
                 : skills.map((skill) => ({ label: skill.name, value: skill.name, description: `${skill.description || "No description"} · ${skill.path}`, state: skill.saved ? "saved" : skill.bundled ? "bundled" : "available" }))
-        : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
+        : selector === "plugin_candidates" ? pluginCandidates.map((plugin) => ({ label: plugin.id, value: plugin.manifest_path, description: `${plugin.version ? `v${plugin.version} · ` : ""}${plugin.tools.length} tools · ${plugin.commands.length} commands${plugin.build_required ? " · build required" : ""}`, state: plugin.build_required ? "review only" : "candidate" }))
+          : selector === "plugins" ? plugins.map((plugin) => ({ label: plugin.id, value: plugin.id, description: plugin.error ? `Error · ${plugin.error}` : `${plugin.manifest_path ?? "manifest unavailable"}${plugin.tools?.length ? ` · ${plugin.tools.length} tools` : ""}${plugin.commands?.length ? ` · ${plugin.commands.length} commands` : ""}`, state: plugin.enabled ? "enabled" : "disabled" }))
           : selector === "mcp" ? mcpServers.map((server) => ({ label: server.id, value: server.id, description: server.url
             ? `${server.url} · ${server.auth_mode ?? "anonymous"} · ${server.auth_status ?? "configured"}${server.credential_env?.length ? ` · env ${server.credential_env.join(", ")}` : ""}`
             : `${server.command} · ${server.arguments_count} args · env ${server.environment_keys.join(", ") || "none"}${server.working_directory ? ` · cwd ${server.working_directory}` : ""}`, state: server.auth_status ?? "configured" }))
             : modelTools.map((tool) => ({ label: tool.name, value: tool.name, description: tool.description, state: tool.source ?? "" }))
   const selectorPageSize = selector === "history" ? Math.max(3, Math.min(6, Math.floor((renderer.height - 20) / 2))) : selector === "skills"
     ? Math.max(3, Math.min(7, Math.floor((renderer.height - 12) / 3)))
-    : selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
+    : selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" ? Math.max(4, Math.min(10, Math.floor((renderer.height - 12) / 2))) : 8
   const selectorWindowStart = Math.max(0, Math.min(selectionIndex - Math.floor(selectorPageSize / 2), selectedOptions.length - selectorPageSize))
   const skillOptionCount = selector === "skills" ? skillsView === "results" ? skillSearchResults.length : skillsView === "candidates" ? skillCandidates.length : skillsView === "installed" ? skillInstallations.length : skillsView === "review" ? 0 : skills.length : 0
   const availableSlashCommands: SlashCommand[] = [...slashCommands, ...extensionCommands.filter((item) => item.enabled && !item.error).map((item) => ({ name: item.name, description: item.description || `Plugin command · ${item.extension_id}`, action: "plugin_commands" as const }))]
@@ -2239,14 +2344,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", minHeight: 0, flexGrow: 1, backgroundColor: palette.bg, paddingLeft: 2, paddingRight: 2 }}>
       <box style={{ flexDirection: "row", height: 1 }}>
-        <text selectable={false} fg={palette.text} content="p k  ·  /skills  /plugins  /mcp  /provider" />
+        <text selectable={false} fg={palette.text} content="pk" />
       </box>
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
         <text selectable={false} fg={palette.muted} content={`${shortPath(cwd, 42)}  ·  ${sessionId ? `session ${sessionId.slice(0, 8)}` : "new session"}`} />
       </box>
       <scrollbox id="transcript" stickyScroll stickyStart="bottom" style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 0, paddingBottom: 0 }}>
-        {groupTranscript(entries).map((item) => item.kind === "entry"
-          ? <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
+        {groupTranscript(entries.filter((entry) => entry.id !== 0 || entries.length === 1)).map((item) => item.kind === "entry"
+          ? item.entry.id === 0 && entries.length === 1
+            ? <WelcomeEntry key="welcome" onAction={(command) => { runSlashCommand(command); clearComposer(true) }} />
+            : <TranscriptEntry key={`entry-${item.entry.id}`} entry={item.entry} clock={clock} />
           : <ToolTranscriptGroup key={`tools-${toolGroupKey(item.entries)}`} entries={item.entries} clock={clock} expanded={expandedToolGroups.has(toolGroupKey(item.entries))} onToggle={() => toggleToolGroup(toolGroupKey(item.entries))} />)}
       </scrollbox>
       <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 0, flexShrink: 0 }}>
@@ -2291,9 +2398,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           <text selectable={false} fg={palette.muted} content={`${model}  ·  ${effort}`} />
         </box>
       </box>
-      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
-        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+      {selector && <box style={{ position: "absolute", left: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", right: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "8%" : "25%", top: selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
+        <text fg={palette.text} content={selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Installed plugins" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "skills" && <text fg={skillNotice ? palette.accent : palette.dim} content={skillNotice || skillOperation || (skillsView === "review" ? `${skillReview?.description || "No description provided."} · source ${skillReview?.source ?? "unknown"}` : skillsView === "installed" ? "Enter inserts its instruction · x removes selected · /skills search QUERY" : skillsView === "results" ? "↑↓ select source · Enter browse skills in source · /skills search QUERY" : skillsView === "candidates" ? "↑↓ select · Enter review details before install · Esc returns to search results" : "Catalog snapshot · /skills search QUERY · /skills installed · /skills available")} />}
+        {selector === "plugin_candidates" && <text fg={pluginSourceOperation ? palette.accent : palette.dim} content={pluginSourceOperation || (pluginCandidateReview ? `${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands · source reviewed before install` : `Source · ${pluginCandidateSource}${pluginCandidateRevision ? ` · revision ${pluginCandidateRevision.slice(0, 12)}` : ""} · review a candidate before installation`)} />}
         {selector === "history" && <text fg={palette.dim} content={historyLoading ? "Loading saved conversation…" : `Saved user and assistant entries · before #${historyBeforeSequence}`} />}
         {selector === "mcp" && <text fg={palette.dim} content={`${mcpTools.length} MCP tool${mcpTools.length === 1 ? "" : "s"} in ${mcpSavedTools ? "saved session snapshot" : "current catalog"} · no servers are started by listing`} />}
         {selector === "providers" && <text fg={palette.dim} content="Enter selects for this session · /provider use ID persists only through pk provider use ID" />}
@@ -2307,7 +2415,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             <text fg={palette.accent} content="Install this skill · new sessions only" />
           </box>
         </box>}
-        {selectedOptions.length === 0 && !(selector === "skills" && skillsView === "review") && <text fg={palette.muted} content={selector === "skills" ? skillsEmptyLabel : selector === "plugins" ? "No plugins installed" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? modelToolsPreview ? "No preview tools available" : modelToolsInitialized ? "No model tools available" : "Not initialized yet" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : selector === "history" ? "No earlier saved entries" : "Nothing to show"} />}
+        {selectedOptions.length === 0 && !(selector === "skills" && skillsView === "review") && !(selector === "plugin_candidates" && pluginCandidateReview) && <text fg={palette.muted} content={selector === "skills" ? skillsEmptyLabel : selector === "plugins" ? "No plugins installed" : selector === "plugin_candidates" ? pluginSourceOperation || "No candidates to review" : selector === "mcp" ? "No MCP servers configured" : selector === "tools" ? modelToolsPreview ? "No preview tools available" : modelToolsInitialized ? "No model tools available" : "Not initialized yet" : selector === "providers" ? "No providers configured" : selector === "provider_models" ? providerModelsLoading ? "Loading models…" : "No models returned" : selector === "history" ? "No earlier saved entries" : "Nothing to show"} />}
+        {selector === "plugin_candidates" && pluginCandidateReview && <box style={{ flexDirection: "column", border: ["top"], borderColor: palette.line, paddingTop: 1, gap: 1 }}>
+          <text fg={palette.text} content={`${pluginCandidateReview.version ? `Version ${pluginCandidateReview.version} · ` : ""}${pluginCandidateReview.tools.length} tools · ${pluginCandidateReview.commands.length} commands`} />
+          {pluginCandidateReview.tools.length > 0 && <text fg={palette.dim} content={`Tools · ${pluginCandidateReview.tools.slice(0, 6).join(", ")}${pluginCandidateReview.tools.length > 6 ? `, +${pluginCandidateReview.tools.length - 6}` : ""}`} />}
+          {pluginCandidateReview.commands.length > 0 && <text fg={palette.dim} content={`Commands · ${pluginCandidateReview.commands.slice(0, 6).join(", ")}${pluginCandidateReview.commands.length > 6 ? `, +${pluginCandidateReview.commands.length - 6}` : ""}`} />}
+          {pluginCandidateReview.build_required && <text fg={palette.amber} content="This candidate requires a build and cannot be installed from this picker yet." />}
+          <box onMouseDown={(event) => leftMouseDown(event, installReviewedPlugin)} style={{ backgroundColor: palette.panel, paddingLeft: 1, paddingRight: 1, height: 1 }}>
+            <text fg={pluginCandidateReview.build_required || pluginSourceOperation ? palette.dim : palette.accent} content={pluginCandidateReview.build_required ? "Install unavailable · build required" : "Install and enable · affects new sessions"} />
+          </box>
+        </box>}
         {selectedOptions.slice(selectorWindowStart, selectorWindowStart + selectorPageSize).map((option, localIndex) => {
           const index = selectorWindowStart + localIndex
           return <box key={option.value} onMouseOver={() => setSelectionIndex(index)} onMouseDown={(event) => leftMouseDown(event, () => activateSelectorOption(index))} style={{ flexDirection: "column", backgroundColor: index === selectionIndex ? palette.panel : palette.raised, paddingLeft: 1, paddingRight: 1 }}>
@@ -2322,7 +2439,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         {selector === "history" && historyDetailIndex !== null && historyEntries[historyDetailIndex] && <box style={{ border: ["top"], borderColor: palette.line, paddingTop: 1, maxHeight: 8, flexShrink: 0 }}><text fg={palette.text} content={historyEntries[historyDetailIndex]!.text.slice(0, 1200)} /></box>}
         <box style={{ height: 1 }} />
         {selector === "skills" && skillsView === "installed" && selectedOptions[selectionIndex] && <box onMouseDown={(event) => leftMouseDown(event, () => removeInstalledSkill(selectionIndex))} style={{ backgroundColor: palette.panel, paddingLeft: 1, height: 1 }}><text fg={palette.amber} content={`Remove ${selectedOptions[selectionIndex]!.label} · x`} /></box>}
-        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugin enable|disable · new session required" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
+        <text fg={palette.dim} content={selector === "history" ? "↑↓ browse · Enter preview or load earlier · /history older · Esc close" : selector === "skills" ? skillsView === "review" ? "i or click to install · Esc back to results" : skillsView === "installed" ? "↑↓ choose · Enter use · x or click remove · Esc close" : skillsView === "available" ? "↑↓ move · Enter insert instruction · Esc close" : "↑↓ move · Enter inspect · Esc close" : selector === "plugins" ? "↑↓ move · Enter toggle · /plugins discover SOURCE · /plugin enable|disable · new session required" : selector === "plugin_candidates" ? pluginCandidateReview ? "i or click to install · Esc back to candidates" : "↑↓ choose · Enter review · Esc close" : selector === "mcp" ? "↑↓ move · Enter details · /mcp add|remove · new session required · Esc close" : selector === "tools" ? "↑↓ move · Enter details · registry snapshot · Esc close" : selector === "providers" ? "↑↓ move · Enter select · /provider models ID · Esc close" : selector === "provider_models" ? "↑↓ browse · Esc close" : selector === "extension_commands" ? "↑↓ move · Enter insert into composer · Esc close" : "↑↓ move  ·  Enter choose  ·  Esc close"} />
       </box>}
       {question && <box style={{ position: "absolute", left: "15%", right: "15%", top: "20%", border: true, borderColor: palette.accent, backgroundColor: palette.raised, padding: 2, flexDirection: "column" }}>
         <text fg={palette.accent} content={question.kind === "confirmation" ? "Confirmation needed" : "A question for you"} />
@@ -2405,6 +2522,25 @@ const ToolTranscriptGroup = memo(function ToolTranscriptGroupView({ entries, clo
   const elapsedIsLive = previous.entries.some((entry) => entry.startedAt !== undefined && entry.elapsedMs === undefined && !["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes((entry.toolState ?? "").toLowerCase()))
   return !elapsedIsLive || previous.clock === next.clock
 })
+
+function WelcomeEntry({ onAction }: { onAction: (command: string) => void }) {
+  const actions = ["/skills", "/plugins", "/mcp", "/provider"]
+  const wordmark = ["       _    ", " _ __ | | __", "| '_ \\| |/ /", "| |_) |   < ", "| .__/|_|\\_\\", "|_|         "]
+  return <box style={{ flexDirection: "column", paddingLeft: 2, paddingTop: 1, paddingBottom: 1 }}>
+    {wordmark.map((line, index) => <text key={index} fg={palette.accent} content={line} />)}
+    <text fg={palette.muted} content="A quiet workspace for your next task." />
+    <box style={{ flexDirection: "row", gap: 2, paddingTop: 1 }}>
+      {actions.map((command) => <box key={command} onMouseDown={(event) => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        onAction(command)
+      }} style={{ backgroundColor: palette.raised, paddingLeft: 1, paddingRight: 1, height: 1 }}>
+        <text fg={palette.accent} content={command} />
+      </box>)}
+    </box>
+  </box>
+}
 
 const TranscriptEntry = memo(function TranscriptEntryView({ entry, clock }: { entry: Entry; clock: number }) {
   if (entry.role === "system") return <box style={{ paddingLeft: 2, paddingBottom: 1 }}><text fg={palette.dim} content={entry.text} /></box>

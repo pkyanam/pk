@@ -46,6 +46,7 @@ describe("OpenTUI application", () => {
     await setup.flush()
     const frame = await setup.waitForFrame((value) => value.includes("Ask pk to inspect"))
     expect(frame).toContain("pk")
+    expect(frame).toContain("_ __ | | __")
     expect(frame).toContain("/skills")
     expect(frame).toContain("/plugins")
     expect(frame).toContain("/mcp")
@@ -74,8 +75,21 @@ describe("OpenTUI application", () => {
     await setup.flush()
     expect(fake.sent.some((item) => item.type === "prompt")).toBe(true)
     frame = setup.captureCharFrame()
-    expect(frame).toContain("/skills")
+    expect(frame).not.toContain("/skills")
     expect(frame).toContain("check this workspace")
+    expect(frame).not.toContain("_ __ | | __")
+  })
+
+  test("rapid slash typing and Enter runs the command from the live composer value", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    await act(async () => { await setup.mockInput.typeText("/plugins") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.some((item) => item.type === "plugins_list")).toBe(true)
+    expect(fake.sent.some((item) => item.type === "provider_models")).toBe(false)
   })
 
   test("shows an installed update as a reload hint without restarting automatically", async () => {
@@ -333,13 +347,45 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "plugins_disable" && item.payload?.id === "mint-tools")).toBe(true)
   })
 
+  test("plugin source flow previews candidates and only installs after review", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { model: "gpt-6-luna", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText('/plugins discover "owner/sample plugin"') })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const discover = fake.sent.find((item) => item.type === "plugins_discover")
+    expect(discover?.payload?.source).toBe("owner/sample plugin")
+    act(() => fake.emit({ version: 1, id: discover!.id, type: "plugin_candidates", payload: {
+      source: "owner/sample plugin", revision: "rev-1234567890", candidates: [
+        { id: "sample", version: "1.0.0", manifest_path: "/tmp/plugin/plugin.json", tools: ["lookup", "search"], commands: ["report"], build_required: false },
+      ], unsupported: [],
+    } }))
+    await setup.waitForFrame((frame) => frame.includes("Review plugin source") && frame.includes("sample"))
+    act(() => setup.mockInput.pressEnter())
+    let frame = await setup.waitForFrame((value) => value.includes("Review sample") && value.includes("Install and enable"))
+    expect(frame).toContain("lookup, search")
+    expect(fake.sent.some((item) => item.type === "plugins_install")).toBe(false)
+    await act(async () => { await setup.mockInput.pressKeys(["i"], 100) })
+    await setup.flush()
+    const install = fake.sent.find((item) => item.type === "plugins_install")
+    expect(install?.payload).toEqual({ source: "owner/sample plugin", manifest_path: "/tmp/plugin/plugin.json", revision: "rev-1234567890" })
+    act(() => fake.emit({ version: 1, id: install!.id, type: "plugins_updated", payload: { installed: true, next_session_only: true, plugins: [
+      { id: "sample", version: "1.0.0", manifest_path: "/tmp/pk/plugins/sample/plugin.json", enabled: true, tools: ["lookup", "search"], commands: ["report"] },
+    ] } }))
+    frame = await setup.waitForFrame((value) => value.includes("Plugin installed and enabled"))
+    expect(frame).toContain("available in new sessions")
+  })
+
   test("slash menu makes plugin panels discoverable by command description", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
     await act(async () => { await setup.mockInput.typeText("/pl") })
-    const frame = await setup.waitForFrame((value) => value.includes("Inspect installed plugins"))
+    const frame = await setup.waitForFrame((value) => value.includes("discover and install from a source"))
     expect(frame).toContain("/plugin")
     await act(async () => { await setup.mockInput.typeText("ugins") })
     act(() => setup.mockInput.pressEnter())
