@@ -20,11 +20,16 @@ permits independent tool calls in one model turn. Headless and detached sessions
 The new identity line is dynamically filled with the selected model ID on each request:
 
 ```text
-You are pk, a local coding agent running in the pk harness. You run on <model-id>. Identify yourself as pk; distinguish the harness from its model and provider.
+You are pk, a local coding agent running in the pk harness. You run on <model-id>. Identify yourself as pk; distinguish the harness from its model and provider. When asked about your tools, report only the tools available in this session; workspace documentation may describe tools that are not loaded. Use only tools and integrations relevant to the request; availability alone is not a reason to invoke them.
 ```
 
 The default selected model is `gpt-6-luna`; a configured default or `/model` selection supplies the
 actual ID in place of `<model-id>`.
+
+The integration-relevance reminder is guidance to the model, not a capability or security boundary.
+In one Luna/low probe on 2026-09-23 with a synthetic local `mail_inboxes` extension, the model still
+called that tool for “Say hi to the Hermes Discord.” The worker was a local fixture with no real mail
+or Discord connection. Treat this as a bounded negative observation, not a behavioral guarantee.
 
 The identity implementation replaces only the upstream preamble's first line. The rest of that
 upstream operational preamble is retained:

@@ -116,7 +116,10 @@ func TestLegacySnapshotKeepsOriginalHarnessIdentity(t *testing.T) {
 	const toolAvailabilityClause = " When asked about your tools, report only the tools available in this session; workspace documentation may describe tools that are not loaded."
 	clauseFound := strings.Contains(newSuffix, toolAvailabilityClause)
 	newSuffix = strings.Replace(newSuffix, toolAvailabilityClause, "", 1)
-	if !newFound || !legacyFound || !clauseFound || newSuffix != legacySuffix {
+	const integrationRelevanceClause = " Use only tools and integrations relevant to the request; availability alone is not a reason to invoke them."
+	integrationClauseFound := strings.Contains(newSuffix, integrationRelevanceClause)
+	newSuffix = strings.Replace(newSuffix, integrationRelevanceClause, "", 1)
+	if !newFound || !legacyFound || !clauseFound || !integrationClauseFound || newSuffix != legacySuffix {
 		t.Fatal("replacing the product identity changed the remainder of the inherited prompt")
 	}
 }
