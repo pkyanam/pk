@@ -910,12 +910,22 @@ func TestConfigCommandPersistsSelectedDefaults(t *testing.T) {
 	if code := runConfigCommand([]string{"set", "effort", "high"}, &out, &errOut); code != 0 {
 		t.Fatalf("set effort exit=%d: %s", code, errOut.String())
 	}
+	if code := runConfigCommand([]string{"set", "context-policy", "compact"}, &out, &errOut); code != 0 {
+		t.Fatalf("set context policy exit=%d: %s", code, errOut.String())
+	}
 	options, _, _, err := parseRunArgs([]string{"-p", "hello", "--workspace", t.TempDir()}, &errOut)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.Model != "gpt-6-astra" || options.Effort != "high" {
-		t.Fatalf("parsed model/effort=%s/%s", options.Model, options.Effort)
+	if options.Model != "gpt-6-astra" || options.Effort != "high" || !options.CompactCapturedOutput {
+		t.Fatalf("parsed model/effort/compact=%s/%s/%v", options.Model, options.Effort, options.CompactCapturedOutput)
+	}
+	options, _, _, err = parseRunArgs([]string{"-p", "hello", "--workspace", t.TempDir(), "--context-policy", "full"}, &errOut)
+	if err != nil || options.CompactCapturedOutput {
+		t.Fatalf("explicit full policy options=%+v err=%v", options, err)
+	}
+	if code := runConfigCommand([]string{"show"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "context_policy = compact") {
+		t.Fatalf("show context policy exit=%d output=%q error=%q", code, out.String(), errOut.String())
 	}
 }
 
@@ -923,6 +933,15 @@ func TestConfigRejectsUnsupportedNoneEffort(t *testing.T) {
 	t.Setenv("PK_HOME", t.TempDir())
 	var out, errOut bytes.Buffer
 	if code := runConfigCommand([]string{"set", "effort", "none"}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "not supported by the current adapter") {
+		t.Fatalf("code=%d error=%q", code, errOut.String())
+	}
+}
+
+func TestTaskCreateRejectsUnknownContextPolicyBeforeStartingWorker(t *testing.T) {
+	t.Setenv("PK_HOME", t.TempDir())
+	var out, errOut bytes.Buffer
+	code := runTaskCommand(context.Background(), []string{"create", "-p", "do work", "--context-policy", "summarize-history"}, &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "use full or compact") {
 		t.Fatalf("code=%d error=%q", code, errOut.String())
 	}
 }

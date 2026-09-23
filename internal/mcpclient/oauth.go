@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -169,7 +168,7 @@ func oauthCallbackFetcher(listener net.Listener, open func(context.Context, stri
 		}()
 		if open != nil {
 			if err := open(ctx, args.URL); err != nil {
-				fmt.Fprintf(os.Stderr, "Open this URL to authorize pk: %s\n", args.URL)
+				return nil, errors.New("could not open the browser for MCP authorization")
 			}
 		}
 		select {

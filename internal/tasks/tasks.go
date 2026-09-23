@@ -42,21 +42,22 @@ const (
 )
 
 type StartOptions struct {
-	ID           string   `json:"id,omitempty"`
-	PromptID     string   `json:"prompt_id,omitempty"`
-	Prompt       string   `json:"prompt"`
-	Workspace    string   `json:"workspace"`
-	Model        string   `json:"model,omitempty"`
-	Effort       string   `json:"effort,omitempty"`
-	ProviderID   string   `json:"provider_id,omitempty"`
-	SystemPrompt string   `json:"system_prompt,omitempty"`
-	SessionDir   string   `json:"session_dir,omitempty"`
-	SkillsDirs   []string `json:"skills_dirs,omitempty"`
-	JSONL        bool     `json:"jsonl,omitempty"`
-	ToolEvents   bool     `json:"tool_events,omitempty"`
-	UseCodex     bool     `json:"use_codex,omitempty"`
-	CodexPath    string   `json:"codex_path,omitempty"`
-	Executable   string   `json:"executable,omitempty"`
+	ID            string   `json:"id,omitempty"`
+	PromptID      string   `json:"prompt_id,omitempty"`
+	Prompt        string   `json:"prompt"`
+	Workspace     string   `json:"workspace"`
+	Model         string   `json:"model,omitempty"`
+	Effort        string   `json:"effort,omitempty"`
+	ContextPolicy string   `json:"context_policy,omitempty"`
+	ProviderID    string   `json:"provider_id,omitempty"`
+	SystemPrompt  string   `json:"system_prompt,omitempty"`
+	SessionDir    string   `json:"session_dir,omitempty"`
+	SkillsDirs    []string `json:"skills_dirs,omitempty"`
+	JSONL         bool     `json:"jsonl,omitempty"`
+	ToolEvents    bool     `json:"tool_events,omitempty"`
+	UseCodex      bool     `json:"use_codex,omitempty"`
+	CodexPath     string   `json:"codex_path,omitempty"`
+	Executable    string   `json:"executable,omitempty"`
 }
 
 // WorkerOptions is the persisted runner input plus runtime-only callbacks.
@@ -612,20 +613,10 @@ func RunWorker(ctx context.Context, id string, run func(context.Context, WorkerO
 			break
 		}
 		if _, cancelErr := os.Stat(filepath.Join(dir, "cancel.request")); cancelErr == nil {
-			now := time.Now().UTC()
-			t.Status = StatusCanceled
-			t.Error = "canceled"
-			t.PID = 0
-			t.FinishedAt = &now
-			t.UpdatedAt = now
 			_ = os.Remove(filepath.Join(dir, "cancel.request"))
-			e = writeTask(dir, t)
+			e = finishTask(dir, StatusCanceled, "canceled")
 			inputUnlock()
-			if e != nil {
-				return e
-			}
-			_, eventErr := appendEvent(dir, &t, Event{Type: string(t.Status), Error: t.Error})
-			return eventErr
+			return e
 		}
 		pending, e := hasPendingInputs(dir)
 		if e != nil {
@@ -651,35 +642,15 @@ func RunWorker(ctx context.Context, id string, run func(context.Context, WorkerO
 			continuing = true
 			continue
 		}
-		now := time.Now().UTC()
-		t.Status = StatusSucceeded
-		t.Error = ""
-		t.PID = 0
-		t.FinishedAt = &now
-		t.UpdatedAt = now
-		t.PendingPromptID = ""
-		e = writeTask(dir, t)
+		e = finishTask(dir, StatusSucceeded, "")
 		inputUnlock()
-		if e != nil {
-			return e
-		}
-		_, eventErr := appendEvent(dir, &t, Event{Type: string(t.Status)})
-		return eventErr
-	}
-	now := time.Now().UTC()
-	t.Status = StatusFailed
-	t.Error = runErr.Error()
-	if errors.Is(runErr, context.Canceled) {
-		t.Status = StatusCanceled
-		t.Error = "canceled"
-	}
-	t.PID = 0
-	t.FinishedAt = &now
-	t.UpdatedAt = now
-	if e := writeTask(dir, t); e != nil {
 		return e
 	}
-	_, eventErr := appendEvent(dir, &t, Event{Type: string(t.Status), Error: t.Error})
+	status, message := StatusFailed, runErr.Error()
+	if errors.Is(runErr, context.Canceled) {
+		status, message = StatusCanceled, "canceled"
+	}
+	eventErr := finishTask(dir, status, message)
 	if runErr != nil {
 		return runErr
 	}
@@ -942,6 +913,10 @@ func appendEvent(dir string, t *Task, e Event) (Event, error) {
 		return Event{}, err
 	}
 	defer unlock()
+	return appendEventLocked(dir, t, e)
+}
+
+func appendEventLocked(dir string, t *Task, e Event) (Event, error) {
 	latest, err := readTask(dir)
 	if err != nil {
 		return Event{}, err
@@ -989,6 +964,33 @@ func appendEvent(dir string, t *Task, e Event) (Event, error) {
 		return Event{}, err
 	}
 	return e, nil
+}
+
+// finishTask serializes the terminal manifest update with event appends. This
+// keeps LastEvent monotonic when a late output/input event races worker exit.
+func finishTask(dir string, status Status, message string) error {
+	unlock, err := openEventLock(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	latest, err := readTask(dir)
+	if err != nil {
+		return err
+	}
+	event, err := appendEventLocked(dir, &latest, Event{Type: string(status), Error: message})
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	latest.Status = status
+	latest.Error = message
+	latest.PID = 0
+	latest.FinishedAt = &now
+	latest.UpdatedAt = now
+	latest.PendingPromptID = ""
+	latest.LastEvent = event.Seq
+	return writeTask(dir, latest)
 }
 
 // repairEventTail truncates only a partial trailing line and returns the last

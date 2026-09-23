@@ -188,7 +188,7 @@ func runOneShot(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	subagentManager, err := configureSubagents(ctx, &options, subagentRuntimeConfig{
 		Workspace: options.Workspace, SessionDir: options.SessionDir, SkillsDirs: options.SkillsDirs,
-		Effort:          options.Effort,
+		Effort: options.Effort, CompactCapturedOutput: options.CompactCapturedOutput,
 		PluginManifests: extensionPaths, MCPServers: mcpServers,
 		InheritPlugins: len(extensionPaths) > 0, InheritMCP: len(mcpServers) > 0,
 		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
@@ -262,7 +262,7 @@ func runInteractiveCommand(ctx context.Context, args []string, stdin io.Reader, 
 	}
 	subagentManager, err := configureSubagents(ctx, &options, subagentRuntimeConfig{
 		Workspace: options.Workspace, SessionDir: options.SessionDir, SkillsDirs: options.SkillsDirs,
-		Effort:     options.Effort,
+		Effort: options.Effort, CompactCapturedOutput: options.CompactCapturedOutput,
 		MCPServers: mcpServers, InheritMCP: len(mcpServers) > 0,
 		UseCodex: useCodex, CodexPath: codexPath, ProviderConfig: providerSnapshot, Diagnostics: stderr,
 	})
@@ -420,6 +420,7 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	var files stringList
 	var extensionPaths stringList
 	var imageDriver string
+	var contextPolicy string
 	flags.StringVar(&options.Prompt, "p", "", "prompt to send")
 	flags.StringVar(&options.Prompt, "prompt", "", "prompt to send")
 	defaults, configErr := config.Load(filepath.Join(pkHome(), "config.json"))
@@ -428,6 +429,7 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	}
 	flags.StringVar(&options.Model, "model", defaults.Model, "model ID (default from pk config)")
 	flags.StringVar(&options.Effort, "effort", defaults.Effort, "reasoning effort: low, medium, high, xhigh, max")
+	flags.StringVar(&contextPolicy, "context-policy", defaults.ContextPolicy, "tool-result context: full or compact (default from pk config)")
 	flags.StringVar(&options.Workspace, "workspace", "", "working directory for Bash and relative image paths")
 	flags.StringVar(&options.SessionID, "session", "", "resume an existing session ID")
 	flags.StringVar(&options.SystemPrompt, "system", "", "additional system instructions")
@@ -459,6 +461,11 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 	})
 	applyProviderDefaults(&options, provider, modelSet, effortSet)
 	options.Effort = strings.ToLower(strings.TrimSpace(options.Effort))
+	contextPolicy = strings.ToLower(strings.TrimSpace(contextPolicy))
+	if !config.ValidContextPolicy(contextPolicy) {
+		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("unsupported context policy %q (use full or compact)", contextPolicy)
+	}
+	options.CompactCapturedOutput = contextPolicy == config.ContextPolicyCompact
 	if flags.NArg() != 0 {
 		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
@@ -569,7 +576,7 @@ func usage(out io.Writer) {
   pk provider list|add|use  manage model providers
   pk task create -p PROMPT   start a durable background task
   pk task list|status|attach|cancel|resume ...
-  pk config [show|set model|set effort VALUE]
+  pk config [show|set model|set effort|set context-policy VALUE]
   pk login
   pk logout
   pk status
@@ -582,6 +589,7 @@ func usage(out io.Writer) {
 Run options:
   --model MODEL              model ID (default gpt-6-luna)
   --effort EFFORT            reasoning effort (default medium)
+  --context-policy POLICY   full tool output or compact large Bash results (default from config)
   --workspace DIR            working directory for tools
   --session ID               resume a saved session
   --file PATH                attach a text, PDF, or image (repeatable; relative to workspace)

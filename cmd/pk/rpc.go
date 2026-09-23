@@ -82,6 +82,7 @@ type rpcServer struct {
 	skillOperationCancel context.CancelFunc
 	skillOperationDone   chan struct{}
 	skillOperationActive bool
+	skillOperationKind   string
 	reloadPrepared       bool
 	activeInputs         chan runner.Input
 	pendingSteers        map[string]func(error)
@@ -494,7 +495,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		for _, issue := range pluginIssues {
 			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
 		}
-		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
+		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, CompactCapturedOutput: cfg.ContextPolicy == config.ContextPolicyCompact, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
 		s.providerID = providerID
 		s.session = sessionID
 		s.opts.SessionID = s.session
@@ -1020,6 +1021,32 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "session_id is required", "recoverable": true})
 			return
 		}
+		s.mu.Lock()
+		currentSessionID := s.session
+		s.mu.Unlock()
+		saved, err := s.getSession(s.ctx, id)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not load saved session metadata: " + err.Error(), "recoverable": true})
+			return
+		}
+		if saved.Active && id != currentSessionID {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "that session is active in another pk process; wait until it finishes before attaching", "recoverable": true})
+			return
+		}
+		if strings.TrimSpace(saved.Workspace) == "" {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "the saved session has no workspace metadata; start pk in its original workspace to attach", "recoverable": true})
+			return
+		}
+		workspace, err := filepath.Abs(saved.Workspace)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "could not resolve saved session workspace", "recoverable": true})
+			return
+		}
+		workspaceInfo, err := os.Stat(workspace)
+		if err != nil || !workspaceInfo.IsDir() {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "saved session workspace is unavailable; restore that directory before attaching", "recoverable": true})
+			return
+		}
 		pluginPaths, pluginIssues, err := snapshotRPCPluginPaths(userPluginService())
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
@@ -1033,6 +1060,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.opts.SessionID = id
 		s.pluginPaths = pluginPaths
 		s.pluginIssues = pluginIssueMessages(pluginIssues)
+		s.opts.Workspace = workspace
 		workspace, model, effort := s.opts.Workspace, s.opts.Model, s.opts.Effort
 		steeringEnabled, providerID := s.steeringEnabled, s.providerID
 		s.mu.Unlock()
@@ -1318,22 +1346,46 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.mu.Unlock()
 		_ = s.emit(msg.ID, "provider_selected", map[string]any{"provider_id": providerID, "model": model, "effort": effort})
 	case "plugins_enable":
-		s.mu.Lock()
-		workspace := s.opts.Workspace
-		s.mu.Unlock()
-		manifestPath, err := normalizePluginManifestPath(get("manifest_path"), workspace)
-		if err != nil {
-			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
-			return
+		var payload map[string]any
+		var err error
+		if id := get("id"); id != "" {
+			payload, err = enableRPCPluginID(userPluginService(), id)
+		} else {
+			s.mu.Lock()
+			workspace := s.opts.Workspace
+			s.mu.Unlock()
+			manifestPath, pathErr := normalizePluginManifestPath(get("manifest_path"), workspace)
+			if pathErr != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": pathErr.Error(), "recoverable": true})
+				return
+			}
+			payload, err = enableRPCPlugin(userPluginService(), manifestPath)
 		}
-		payload, err := enableRPCPlugin(userPluginService(), manifestPath)
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
 		}
 		_ = s.emit(msg.ID, "plugins_updated", payload)
+	case "plugins_discover":
+		source := get("source")
+		s.startSkillOperation(msg.ID, "plugin source", "plugin_discover_started", "plugin_candidates", map[string]any{"source": source}, func(ctx context.Context) (any, error) {
+			return discoverRPCPluginSource(ctx, source)
+		})
+	case "plugins_install":
+		source, manifestPath, revision := get("source"), get("manifest_path"), get("revision")
+		s.startSkillOperation(msg.ID, "plugin install", "plugin_install_started", "plugins_updated", map[string]any{"source": source, "manifest_path": manifestPath}, func(ctx context.Context) (any, error) {
+			return installRPCPluginSource(ctx, userPluginService(), source, manifestPath, revision)
+		})
 	case "plugins_disable":
-		payload, err := disableRPCPlugin(userPluginService(), get("id"))
+		id := get("id")
+		payload, err := disableRPCPlugin(userPluginService(), id)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "plugins_updated", payload)
+	case "plugins_remove":
+		payload, err := removeRPCPluginID(userPluginService(), get("id"))
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
@@ -1384,6 +1436,15 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "mcp_updated", payload)
+	case "mcp_login":
+		s.startMCPOAuthLogin(msg.ID, get("id"))
+	case "mcp_logout":
+		payload, err := s.mcpOAuthLogout(s.ctx, get("id"))
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
+		_ = s.emit(msg.ID, "mcp_auth_status", payload)
 	case "tools":
 		payload, err := s.modelToolCatalog(s.ctx)
 		if err != nil {
@@ -1401,7 +1462,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "skill_search":
 		query := get("query")
 		manager := skillInstallManager()
-		s.startSkillOperation(msg.ID, "skill_search_started", "skill_search_results", map[string]any{"query": query}, func(ctx context.Context) (any, error) {
+		s.startSkillOperation(msg.ID, "skill", "skill_search_started", "skill_search_results", map[string]any{"query": query}, func(ctx context.Context) (any, error) {
 			results, err := manager.Search(ctx, query)
 			if err != nil {
 				return nil, err
@@ -1411,7 +1472,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "skill_source_list":
 		source := get("source")
 		manager := skillInstallManager()
-		s.startSkillOperation(msg.ID, "skill_source_list_started", "skill_source_candidates", map[string]any{"source": source}, func(ctx context.Context) (any, error) {
+		s.startSkillOperation(msg.ID, "skill", "skill_source_list_started", "skill_source_candidates", map[string]any{"source": source}, func(ctx context.Context) (any, error) {
 			candidates, err := manager.Discover(ctx, source)
 			if err != nil {
 				return nil, err
@@ -1421,7 +1482,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "skill_install":
 		source, skillPath := get("source"), get("path")
 		manager := skillInstallManager()
-		s.startSkillOperation(msg.ID, "skill_install_started", "skill_installed", map[string]any{"source": source, "path": skillPath}, func(ctx context.Context) (any, error) {
+		s.startSkillOperation(msg.ID, "skill", "skill_install_started", "skill_installed", map[string]any{"source": source, "path": skillPath}, func(ctx context.Context) (any, error) {
 			installed, err := manager.Install(ctx, source, skillPath)
 			if err != nil {
 				return nil, err
@@ -1448,7 +1509,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		_ = s.emit(msg.ID, "skill_removed", map[string]any{"name": name, "next_session_only": true})
 	case "skill_cancel":
 		s.mu.Lock()
-		cancel, active := s.skillOperationCancel, s.skillOperationActive
+		cancel, active := s.skillOperationCancel, s.skillOperationActive && s.skillOperationKind == "skill"
 		s.mu.Unlock()
 		if !active || cancel == nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "no skill network operation is running", "recoverable": true})
@@ -1456,6 +1517,10 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		cancel()
 		_ = s.emit(msg.ID, "skill_cancel_requested", map[string]any{})
+	case "session_operation_cancel":
+		s.cancelRPCOperation(msg.ID, "session ", "session_operation_cancel_requested")
+	case "plugin_source_cancel":
+		s.cancelRPCOperation(msg.ID, "plugin ", "plugin_source_cancel_requested")
 	case "skill_read":
 		document, err := s.readSkill(s.ctx, get("name"))
 		if err != nil {
@@ -1463,6 +1528,69 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		_ = s.emit(msg.ID, "skill_document", map[string]any{"skill": document.Skill, "content": document.Content})
+	case "sessions_list":
+		var request struct {
+			Query     string `json:"query,omitempty"`
+			Workspace string `json:"workspace,omitempty"`
+			Limit     int    `json:"limit,omitempty"`
+		}
+		if len(msg.Payload) > 0 {
+			if err := json.Unmarshal(msg.Payload, &request); err != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid session search request", "recoverable": true})
+				return
+			}
+		}
+		s.startSkillOperation(msg.ID, "session search", "sessions_list_started", "sessions", map[string]any{}, func(ctx context.Context) (any, error) {
+			items, err := s.listSessions(ctx, request.Query, request.Workspace, request.Limit)
+			return map[string]any{"sessions": items}, err
+		})
+	case "sessions_archive":
+		var request struct {
+			SessionIDs []string `json:"session_ids"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid session archive request", "recoverable": true})
+			return
+		}
+		s.startSkillOperation(msg.ID, "session archive", "sessions_archive_started", "sessions_archived", map[string]any{"count": len(request.SessionIDs)}, func(ctx context.Context) (any, error) {
+			return map[string]any{"results": s.archiveSessions(ctx, request.SessionIDs)}, nil
+		})
+	case "sessions_trash_list":
+		var request struct {
+			Query string `json:"query,omitempty"`
+		}
+		if len(msg.Payload) > 0 {
+			if err := json.Unmarshal(msg.Payload, &request); err != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid archived session search request", "recoverable": true})
+				return
+			}
+		}
+		s.startSkillOperation(msg.ID, "session trash search", "sessions_trash_list_started", "sessions_trash", map[string]any{}, func(ctx context.Context) (any, error) {
+			items, err := s.listSessionTrash(ctx, request.Query)
+			return map[string]any{"sessions": items}, err
+		})
+	case "sessions_restore":
+		var request struct {
+			TrashIDs []string `json:"trash_ids"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid session restore request", "recoverable": true})
+			return
+		}
+		s.startSkillOperation(msg.ID, "session restore", "sessions_restore_started", "sessions_restored", map[string]any{"count": len(request.TrashIDs)}, func(ctx context.Context) (any, error) {
+			return map[string]any{"results": s.restoreSessions(ctx, request.TrashIDs)}, nil
+		})
+	case "sessions_purge":
+		var request struct {
+			TrashIDs []string `json:"trash_ids"`
+		}
+		if err := json.Unmarshal(msg.Payload, &request); err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": "invalid permanent session deletion request", "recoverable": true})
+			return
+		}
+		s.startSkillOperation(msg.ID, "session purge", "sessions_purge_started", "sessions_purged", map[string]any{"count": len(request.TrashIDs)}, func(ctx context.Context) (any, error) {
+			return map[string]any{"results": s.purgeSessions(ctx, request.TrashIDs)}, nil
+		})
 	case "tasks":
 		store, err := localfile.New(s.sessionDir)
 		if err != nil {
@@ -1492,7 +1620,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "task prompt is empty", "recoverable": true})
 			return
 		}
-		cfg, _ := config.Load(s.cfgPath)
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+			return
+		}
 		model, effort, providerID := get("model"), get("effort"), get("provider_id")
 		s.mu.Lock()
 		if providerID == "" {
@@ -1520,7 +1652,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			workspace = filepath.Join(s.opts.Workspace, "pk-work", fmt.Sprintf("task-%d", time.Now().UnixNano()))
 		}
 		executable, _ := os.Executable()
-		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
+		t, err := (tasks.Store{Root: filepath.Join(pkHome(), "tasks")}).Start(s.ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ContextPolicy: cfg.ContextPolicy, ProviderID: providerID, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
 		if err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})
 			return
@@ -1664,7 +1796,13 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		model, effort, sessionID, providerID := s.opts.Model, s.opts.Effort, s.session, s.providerID
 		s.mu.Unlock()
 		if model != "" && effort != "" {
-			if err := config.Save(s.cfgPath, config.Config{Model: model, Effort: effort}); err != nil {
+			cfg, err := config.Load(s.cfgPath)
+			if err != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not load pk defaults: " + err.Error(), "recoverable": true})
+				return
+			}
+			cfg.Model, cfg.Effort = model, effort
+			if err := config.Save(s.cfgPath, cfg); err != nil {
 				_ = s.emit(msg.ID, "error", map[string]any{"message": "could not save model defaults: " + err.Error(), "recoverable": true})
 				return
 			}

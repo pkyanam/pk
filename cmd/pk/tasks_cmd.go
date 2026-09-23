@@ -27,13 +27,14 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 	case "create":
 		fs := flag.NewFlagSet("pk task create", flag.ContinueOnError)
 		fs.SetOutput(errOut)
-		var prompt, workspace, model, effort, system, providerChoice string
+		var prompt, workspace, model, effort, system, providerChoice, contextPolicy string
 		var useCodex bool
 		fs.StringVar(&prompt, "p", "", "prompt to run")
 		fs.StringVar(&prompt, "prompt", "", "prompt to run")
 		fs.StringVar(&workspace, "workspace", "", "new or existing task workspace directory")
 		fs.StringVar(&model, "model", "", "model override")
 		fs.StringVar(&effort, "effort", "", "reasoning effort override")
+		fs.StringVar(&contextPolicy, "context-policy", "", "full or compact context policy override")
 		fs.StringVar(&providerChoice, "provider", "", "configured provider ID, or native for ChatGPT login")
 		fs.BoolVar(&useCodex, "use-codex", false, "use the native ChatGPT login")
 		fs.StringVar(&system, "system", "", "additional system instructions")
@@ -41,7 +42,7 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			return 2
 		}
 		if fs.NArg() != 0 || strings.TrimSpace(prompt) == "" {
-			fmt.Fprintln(errOut, "usage: pk task create -p PROMPT [--workspace DIR] [--provider ID|native] [--model MODEL --effort EFFORT]")
+			fmt.Fprintln(errOut, "usage: pk task create -p PROMPT [--workspace DIR] [--provider ID|native] [--model MODEL --effort EFFORT --context-policy full|compact]")
 			return 2
 		}
 		if workspace == "" {
@@ -62,16 +63,25 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
 		}
-		modelSet, effortSet := false, false
+		modelSet, effortSet, contextPolicySet := false, false, false
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
 			case "model":
 				modelSet = true
 			case "effort":
 				effortSet = true
+			case "context-policy":
+				contextPolicySet = true
 			}
 		})
 		options := runner.Options{Model: cfg.Model, Effort: cfg.Effort}
+		if contextPolicySet {
+			cfg.ContextPolicy = strings.ToLower(strings.TrimSpace(contextPolicy))
+		}
+		if !config.ValidContextPolicy(cfg.ContextPolicy) {
+			fmt.Fprintf(errOut, "pk task create: unsupported context policy %q (use full or compact)\n", cfg.ContextPolicy)
+			return 2
+		}
 		if modelSet {
 			options.Model = model
 		}
@@ -90,7 +100,7 @@ func runTaskCommand(ctx context.Context, args []string, out, errOut io.Writer) i
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
 		}
-		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ProviderID: options.ProviderID, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
+		t, err := taskStore().Start(ctx, tasks.StartOptions{Prompt: prompt, Workspace: workspace, Model: model, Effort: effort, ContextPolicy: strings.ToLower(cfg.ContextPolicy), ProviderID: options.ProviderID, UseCodex: useCodex || providerChoice == "native" || providerChoice == "codex", SystemPrompt: system, SessionDir: filepath.Join(pkHome(), "sessions"), SkillsDirs: defaultSkillDirs(), ToolEvents: true, Executable: executable})
 		if err != nil {
 			fmt.Fprintf(errOut, "pk task create: %v\n", err)
 			return 1
@@ -190,7 +200,7 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 				}
 			}
 		}()
-		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: taskOptions.OnSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: taskOptions.OnSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
 		client, providerSnapshot, err := prepareCLIAdapter(ctx, &o, taskOptions.UseCodex, taskOptions.CodexPath)
 		if err != nil {
 			return err

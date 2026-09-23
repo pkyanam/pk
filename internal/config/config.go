@@ -11,19 +11,32 @@ import (
 )
 
 const (
-	DefaultModel  = "gpt-6-luna"
-	DefaultEffort = "medium"
+	DefaultModel         = "gpt-6-luna"
+	DefaultEffort        = "medium"
+	ContextPolicyFull    = "full"
+	ContextPolicyCompact = "compact"
 )
 
 type Config struct {
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
+	Model         string `json:"model"`
+	Effort        string `json:"effort"`
+	ContextPolicy string `json:"context_policy"`
 }
 
-func Defaults() Config { return Config{Model: DefaultModel, Effort: DefaultEffort} }
+func Defaults() Config {
+	return Config{Model: DefaultModel, Effort: DefaultEffort, ContextPolicy: ContextPolicyFull}
+}
 func ValidEffort(effort string) bool {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
+}
+func ValidContextPolicy(policy string) bool {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case ContextPolicyFull, ContextPolicyCompact:
 		return true
 	default:
 		return false
@@ -37,6 +50,11 @@ func (c Config) Normalized() Config {
 		c.Effort = DefaultEffort
 	} else {
 		c.Effort = strings.ToLower(strings.TrimSpace(c.Effort))
+	}
+	if strings.TrimSpace(c.ContextPolicy) == "" {
+		c.ContextPolicy = ContextPolicyFull
+	} else {
+		c.ContextPolicy = strings.ToLower(strings.TrimSpace(c.ContextPolicy))
 	}
 	return c
 }
@@ -52,10 +70,17 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
-	return c.Normalized(), nil
+	c = c.Normalized()
+	if !ValidContextPolicy(c.ContextPolicy) {
+		return Config{}, fmt.Errorf("invalid context_policy %q (use full or compact)", c.ContextPolicy)
+	}
+	return c, nil
 }
 func Save(path string, c Config) error {
 	c = c.Normalized()
+	if !ValidContextPolicy(c.ContextPolicy) {
+		return fmt.Errorf("invalid context_policy %q (use full or compact)", c.ContextPolicy)
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err

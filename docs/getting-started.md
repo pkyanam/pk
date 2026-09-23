@@ -72,11 +72,14 @@ The initial defaults are `gpt-6-luna` and `medium` reasoning effort. Inspect or 
 pk config show
 pk config set model gpt-6-luna
 pk config set effort medium
+pk config set context-policy full
 ```
 
+`full` is the default and sends full completed Bash results in context. To opt into compacting large completed Bash results while keeping their local captures available, use `pk config set context-policy compact` or pass `--context-policy compact` to `pk run`. This policy can change token use or task behavior; a small exploratory pilot does not establish a general savings claim. A saved session keeps the context policy from its original snapshot, so resume it with the same policy or start a new session to adopt a different one.
+
 These defaults are saved to `~/.pk/config.json` (or `$PK_HOME/config.json`) and are used by the TUI
-and by new detached tasks. A task's `--model` and `--effort` flags override the defaults for that
-task. The TUI's `/model` and `/effort` pickers update the saved defaults. Valid reasoning efforts
+and by new detached tasks. A run's `--model`, `--effort`, and `--context-policy` flags override the defaults for that
+run. The TUI's `/model` and `/effort` pickers update the saved defaults. Valid reasoning efforts
 are `low`, `medium`, `high`, `xhigh`, and `max`; the selected model must accept the chosen effort.
 
 ## Use the OpenTUI session

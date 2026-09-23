@@ -43,9 +43,9 @@ Tasks have durable output and can be attached to, steered, canceled, or resumed.
 - **Update from the terminal.** Run `pk update` or use `/update`, then roll back if needed. Selecting transcript text copies it when your terminal supports clipboard writes; Ctrl-Y is the fallback.
 - **Private by default.** pk collects no first-party usage analytics or crash reports; provider and enabled-tool requests happen when you use them. See [privacy and data handling](docs/privacy.md).
 
-The default model is `gpt-6-luna` with `medium` reasoning effort. Change it with `pk config set model MODEL` and `pk config set effort EFFORT`.
+The default model is `gpt-6-luna` with `medium` reasoning effort. Change it with `pk config set model MODEL` and `pk config set effort EFFORT`. The default context policy is `full`; `pk config set context-policy compact` opts into compacting large completed Bash results in the model-visible context while preserving their local captures. This policy is snapshot-bound for a session and does not promise lower total usage.
 
-pk builds on Unreal Agent's asynchronous tool coordinator and keeps full shell captures while bounding the result text sent back to the model. Prompt caching is provider-controlled; reported counters are actual provider usage, and a cache hit is never guaranteed. See the [verified runtime foundation](docs/unreal-foundation-audit.md). A small paired coding-task pilot is documented in [benchmark findings](docs/benchmark-findings.md); it is exploratory and does not establish a general performance advantage.
+pk builds on Unreal Agent's asynchronous tool coordinator and can keep full local shell captures while compacting large result text sent back to the model when explicitly enabled. Prompt caching is provider-controlled; reported counters are actual provider usage, and a cache hit is never guaranteed. See the [verified runtime foundation](docs/unreal-foundation-audit.md). A small paired coding-task pilot is documented in [benchmark findings](docs/benchmark-findings.md); it is exploratory and does not establish a general performance advantage.
 
 **Learn more:** [Getting started](docs/getting-started.md) · [Providers](docs/providers.md) · [Available tools](docs/toolbelt.md) · [MCP](docs/mcp.md) · [ACP](docs/acp.md) · [Validation](docs/validation.md)
 

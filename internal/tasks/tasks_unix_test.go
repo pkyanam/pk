@@ -20,6 +20,9 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 		mode := os.Getenv("PK_TASK_TEST_MODE")
 		err := RunWorker(context.Background(), id, func(ctx context.Context, options WorkerOptions, out io.Writer) error {
 			if mode == "steer" {
+				if options.ContextPolicy != "compact" {
+					return errors.New("context policy was not preserved by task worker")
+				}
 				if _, err := io.WriteString(out, "worker-ready\n"); err != nil {
 					return err
 				}
@@ -71,7 +74,7 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	}
 
 	store := Store{Root: filepath.Join(root, "tasks")}
-	task, err := store.Start(context.Background(), StartOptions{ID: "detached-check", Prompt: "do a task", Workspace: workspace, ProviderID: "test-provider", Executable: script})
+	task, err := store.Start(context.Background(), StartOptions{ID: "detached-check", Prompt: "do a task", Workspace: workspace, ProviderID: "test-provider", ContextPolicy: "compact", Executable: script})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +88,8 @@ func TestDetachedWorkerFollowAndSteer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loadedTask.ProviderID != "test-provider" || loadedTask.Options.ProviderID != "test-provider" {
-		t.Fatalf("task did not persist provider identity: task=%q options=%q", loadedTask.ProviderID, loadedTask.Options.ProviderID)
+	if loadedTask.ProviderID != "test-provider" || loadedTask.Options.ProviderID != "test-provider" || loadedTask.Options.ContextPolicy != "compact" {
+		t.Fatalf("task did not persist provider/context policy: task=%q options=%+v", loadedTask.ProviderID, loadedTask.Options)
 	}
 	if _, err = store.Resume(context.Background(), task.ID); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("resume of live worker = %v, want ErrAlreadyRunning", err)

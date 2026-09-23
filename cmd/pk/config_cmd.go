@@ -17,11 +17,11 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 			fmt.Fprintf(errOut, "pk config: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "model = %s\neffort = %s\nfile = %s\n", cfg.Model, cfg.Effort, path)
+		fmt.Fprintf(out, "model = %s\neffort = %s\ncontext_policy = %s\nfile = %s\n", cfg.Model, cfg.Effort, cfg.ContextPolicy, path)
 		return 0
 	}
 	if len(args) != 3 || args[0] != "set" {
-		fmt.Fprintln(errOut, "usage: pk config [show | set model|effort VALUE]")
+		fmt.Fprintln(errOut, "usage: pk config [show | set model|effort|context-policy VALUE]")
 		return 2
 	}
 	cfg, err := config.Load(path)
@@ -38,7 +38,14 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "pk config: unsupported effort %q (use low, medium, high, xhigh, or max; none is not supported by the current adapter)\n", value)
 		return 2
 	}
+	if args[1] == "context-policy" && !config.ValidContextPolicy(value) {
+		fmt.Fprintf(errOut, "pk config: unsupported context policy %q (use full or compact)\n", value)
+		return 2
+	}
 	if args[1] == "effort" {
+		value = strings.ToLower(value)
+	}
+	if args[1] == "context-policy" {
 		value = strings.ToLower(value)
 	}
 	switch args[1] {
@@ -46,8 +53,10 @@ func runConfigCommand(args []string, out, errOut io.Writer) int {
 		cfg.Model = value
 	case "effort":
 		cfg.Effort = value
+	case "context-policy":
+		cfg.ContextPolicy = value
 	default:
-		fmt.Fprintf(errOut, "pk config: unknown key %q (use model or effort)\n", args[1])
+		fmt.Fprintf(errOut, "pk config: unknown key %q (use model, effort, or context-policy)\n", args[1])
 		return 2
 	}
 	if err := config.Save(path, cfg); err != nil {

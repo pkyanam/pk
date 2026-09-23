@@ -21,25 +21,26 @@ import (
 // subagentRuntimeConfig captures only explicitly inherited parent capabilities.
 // Child runs never call configureSubagents, so they cannot create nested agents.
 type subagentRuntimeConfig struct {
-	Workspace       string
-	SessionDir      string
-	Model           string
-	Effort          string
-	ProviderID      string
-	ProviderConfig  *providers.Provider
-	SkillsDirs      []string
-	SystemPrompt    string
-	PluginManifests []string
-	MCPServers      []mcpclient.ServerConfig
-	InheritPlugins  bool
-	InheritMCP      bool
-	UseCodex        bool
-	CodexPath       string
-	Diagnostics     io.Writer
-	Events          func(subagents.Event)
-	AdapterFactory  func(context.Context, bool, string) (llm.Adapter, error)
-	Run             func(context.Context, runner.Options) (runner.RunResult, error)
-	MaxConcurrent   int
+	Workspace             string
+	SessionDir            string
+	Model                 string
+	Effort                string
+	CompactCapturedOutput bool
+	ProviderID            string
+	ProviderConfig        *providers.Provider
+	SkillsDirs            []string
+	SystemPrompt          string
+	PluginManifests       []string
+	MCPServers            []mcpclient.ServerConfig
+	InheritPlugins        bool
+	InheritMCP            bool
+	UseCodex              bool
+	CodexPath             string
+	Diagnostics           io.Writer
+	Events                func(subagents.Event)
+	AdapterFactory        func(context.Context, bool, string) (llm.Adapter, error)
+	Run                   func(context.Context, runner.Options) (runner.RunResult, error)
+	MaxConcurrent         int
 }
 
 // configureSubagents installs a parent-only subagent tool surface. The caller
@@ -62,6 +63,11 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 	}
 	if cfg.SessionDir == "" {
 		cfg.SessionDir = parent.SessionDir
+	}
+	// Children inherit the parent's context policy unless the caller has
+	// explicitly supplied a different runtime configuration.
+	if !cfg.CompactCapturedOutput {
+		cfg.CompactCapturedOutput = parent.CompactCapturedOutput
 	}
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = parent.SystemPrompt
@@ -123,6 +129,7 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 		SystemPrompt: cfg.SystemPrompt, SkillsDirs: append([]string(nil), cfg.SkillsDirs...),
 		MaxConcurrent: cfg.MaxConcurrent, Depth: 0, Events: cfg.Events,
 		Runner: func(runCtx context.Context, child runner.Options) (runner.RunResult, error) {
+			child.CompactCapturedOutput = cfg.CompactCapturedOutput
 			child.ProviderID = cfg.ProviderID
 			if cfg.ProviderConfig != nil {
 				child.ProviderFingerprint = cfg.ProviderConfig.Fingerprint()
