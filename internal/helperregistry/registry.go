@@ -63,13 +63,14 @@ func (r *registry) UnregisterSkill(id tool.RegistrationID) { r.base.UnregisterSk
 func (r *registry) Skills() []tool.Skill                   { return r.base.Skills() }
 
 type request struct {
-	Action  string   `json:"action"`
-	Task    string   `json:"task,omitempty"`
-	Files   []string `json:"files,omitempty"`
-	ChildID string   `json:"child_id,omitempty"`
-	Text    string   `json:"text,omitempty"`
-	Model   string   `json:"model,omitempty"`
-	Effort  string   `json:"effort,omitempty"`
+	Action   string   `json:"action"`
+	Task     string   `json:"task,omitempty"`
+	Files    []string `json:"files,omitempty"`
+	TaskOnly bool     `json:"task_only,omitempty"`
+	ChildID  string   `json:"child_id,omitempty"`
+	Text     string   `json:"text,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	Effort   string   `json:"effort,omitempty"`
 }
 type jobPlan struct {
 	RequestID string  `json:"request_id"`
@@ -244,7 +245,7 @@ func (h *remoteHandler) invoke(ctx context.Context, requestID string, r request)
 	var value any
 	switch r.Action {
 	case "start":
-		c, err := h.manager.Launch(ctx, subagents.LaunchRequest{Task: r.Task, Files: r.Files, Model: r.Model, Effort: r.Effort, RequestID: requestID})
+		c, err := h.manager.Launch(ctx, subagents.LaunchRequest{Task: r.Task, Files: r.Files, TaskOnly: r.TaskOnly, Model: r.Model, Effort: r.Effort, RequestID: requestID})
 		if err != nil {
 			return "", err
 		}
@@ -288,7 +289,7 @@ func (h *remoteHandler) publish(op operation.Operation) error {
 func description(name string) string {
 	switch name {
 	case "SubagentStart":
-		return "Start a child coding agent in the shared workspace. Declare the files it owns and a bounded task."
+		return "Start a child coding agent in the shared writable workspace (default max 2 active; up to 8 queued). Set task_only=true and omit files for an investigation with no exclusive file ownership. Otherwise declare 1–64 unique workspace-relative files it owns. Ownership is coordination guidance only: the child has the same tools, write access, and OS permissions, not a sandbox or read-only restriction. Coordinate before changing files outside owned paths. Task is limited to 16 KiB; child agents cannot recursively spawn agents."
 	case "SubagentStatus":
 		return "Get the state of a child coding agent."
 	case "SubagentSend":
@@ -305,10 +306,11 @@ func schema(name string) map[string]any {
 	switch name {
 	case "SubagentStart":
 		props["task"] = map[string]any{"type": "string"}
-		props["files"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+		props["files"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 64, "description": "Optional when task_only is true; otherwise declare 1–64 unique workspace-relative files for coordination ownership."}
+		props["task_only"] = map[string]any{"type": "boolean", "description": "Required explicit no-file-ownership mode. This does not remove workspace write access or enforce a sandbox."}
 		props["model"] = map[string]any{"type": "string"}
 		props["effort"] = map[string]any{"type": "string"}
-		required = []string{"task", "files"}
+		required = []string{"task", "task_only"}
 	case "SubagentSend":
 		props["child_id"] = map[string]any{"type": "string"}
 		props["text"] = map[string]any{"type": "string"}

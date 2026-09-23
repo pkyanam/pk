@@ -78,7 +78,7 @@ func (a *subagentScriptAdapter) Respond(_ context.Context, request llm.Request, 
 	}
 	switch a.calls {
 	case 1:
-		return toolCall("start-call", "SubagentStart", `{"task":"Complete the child unit of work","files":["README.md"]}`), nil
+		return toolCall("start-call", "SubagentStart", `{"task":"Complete the child unit of work","task_only":false,"files":["README.md"]}`), nil
 	case 2:
 		childID := findChildID(request)
 		if childID == "" {
