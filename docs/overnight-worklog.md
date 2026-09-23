@@ -418,3 +418,8 @@ gates or imply that every backlog item is complete.
 - Session preview normalization now stops at the required prefix; Unicode/invalid UTF-8 differential checks and race suite pass. Synthetic 32×128KiB session listing measured 27.3% fewer allocated bytes in one five-iteration run. Reproduction and limitations in docs/performance.md; committed 7436784/d85b6c7.
 - Full UI suite now 97 tests/441 assertions, including repeated-turn/overflow/resize keyboard+mouse recovery. Original reported native freeze remains unreproduced.
 - Second real coding run in /tmp/pk-demo-fixture.4do6j3 passed independent tests and CLI output5. Capture showed generated Finder test window occluding Cmux despite clean Cap still. Rejected/removed second take and edit. Closed only the generated Finder window; next capture must validate an actual short recording, not rely on still behavior.
+
+### 2026-09-23 08:40 UTC — first reviewed local demo delivered
+- Cap short recording confirmed no occlusion, then real Luna/low session in /tmp/pk-demo-fixture.BFypqp fixed the Go inclusive-range bug. Independent tests and README CLI output5 passed.
+- Reviewed original and edited contact sheets plus title/outro frames. Final local video: /Users/preetham/Movies/pk-launch-demo/pk-coding-demo.mp4 (44s, 1080p30, 552306 bytes). Cap project, source export, and reproduction notes retained alongside it; no upload. This is the initial focused coding demo; broader feature montage/polish remains possible.
+- Installed f6d5783 clean GitHub release 20260923T083731.814932000Z-7fb8926ae1f2-039f1af3 includes session preview allocation improvement.
