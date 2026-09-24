@@ -22,9 +22,9 @@ func launchOpenTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	bun, err := exec.LookPath("bun")
+	bun, err := locateBun()
 	if err != nil {
-		fmt.Fprintln(stderr, "Bun is required for the OpenTUI frontend; install Bun or use --plain")
+		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())

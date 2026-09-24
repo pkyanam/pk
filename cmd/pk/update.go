@@ -117,7 +117,7 @@ func runInstallRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "pk install: release archive is missing or invalid")
 		return 1
 	}
-	if _, err := exec.LookPath("bun"); err != nil {
+	if _, err := locateBun(); err != nil {
 		fmt.Fprintln(stderr, "pk install: Bun is required to run the OpenTUI interface; install Bun before activating this release")
 		return 1
 	}
@@ -294,7 +294,7 @@ func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io
 			return 1
 		}
 	}
-	if _, err := exec.LookPath("bun"); err != nil {
+	if _, err := locateBun(); err != nil {
 		fmt.Fprintln(stderr, "pk update: Bun is required to run the OpenTUI interface; install Bun before activating the paired release")
 		return 1
 	}

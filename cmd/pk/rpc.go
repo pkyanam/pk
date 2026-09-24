@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -3035,7 +3034,7 @@ func locateUIEntry(exe string) (string, error) {
 			return candidate, nil
 		}
 	}
-	if _, err := exec.LookPath("bun"); err != nil {
+	if _, err := locateBun(); err != nil {
 		return "", errors.New("Bun is required for the OpenTUI frontend; install Bun or use --plain")
 	}
 	return "", fmt.Errorf("OpenTUI frontend not found next to pk; rebuild/install the ui assets or use --plain")
