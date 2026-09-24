@@ -36,14 +36,15 @@ import (
 	"time"
 )
 
-// Limits bounds journal growth. Zero fields select the defaults.
+// Limits configures journal retention and garbage-collection bounds. Zero
+// fields select the defaults. MaxEntriesPerSession limits the folded view, not
+// physical JSONL size; MaxObjectBytes is currently not enforced by the store.
 type Limits struct {
-	// MaxEntriesPerSession bounds folded entries retained per session journal.
-	// Older entries are dropped from the readable fold; their objects remain
-	// until object-store garbage collection removes unreferenced blobs.
+	// MaxEntriesPerSession bounds entries retained in the readable fold.
+	// Older entries remain in the append-only journal on disk.
 	MaxEntriesPerSession int
-	// MaxObjectBytes bounds the total size of the content-object store. When
-	// exceeded, GC removes blobs unreferenced by any scanned journal.
+	// MaxObjectBytes is a configured target for object-store retention, but is
+	// not currently enforced. Explicit GC removes only proven orphan blobs.
 	MaxObjectBytes int64
 	// MaxSessionsScanned bounds each GC journal scan; when the scan hits the
 	// bound, GC is skipped for that pass rather than deleting possibly
@@ -95,17 +96,17 @@ type Restore struct {
 
 // Op is the folded, reader-facing view of one recorded file mutation.
 type Op struct {
-	Seq      uint64    `json:"seq"`              // sequence of the prepared line
-	ID       string    `json:"id"`               // stable operation ID
+	Seq      uint64    `json:"seq"`               // sequence of the prepared line
+	ID       string    `json:"id"`                // stable operation ID
 	CallID   string    `json:"call_id,omitempty"` // model tool-call ID, may be empty
-	Action   string    `json:"action"`           // WriteFile or EditFile
-	Path     string    `json:"path"`             // workspace-relative slash path
-	Status   string    `json:"status"`           // prepared/completed/failed/restored
-	Pre      *Content  `json:"pre"`              // nil when the file did not exist
-	Post     *Content  `json:"post"`             // nil for failed operations
-	Mode     uint32    `json:"mode"`             // recorded file mode of the post state
-	Time     time.Time `json:"time"`             // prepared time
-	Reason   string    `json:"reason,omitempty"` // failure or restore note
+	Action   string    `json:"action"`            // WriteFile or EditFile
+	Path     string    `json:"path"`              // workspace-relative slash path
+	Status   string    `json:"status"`            // prepared/completed/failed/restored
+	Pre      *Content  `json:"pre"`               // nil when the file did not exist
+	Post     *Content  `json:"post"`              // nil for failed operations
+	Mode     uint32    `json:"mode"`              // recorded file mode of the post state
+	Time     time.Time `json:"time"`              // prepared time
+	Reason   string    `json:"reason,omitempty"`  // failure or restore note
 	Restores []Restore `json:"restores,omitempty"`
 }
 
@@ -354,9 +355,38 @@ func (s *Store) appendStatus(session, opID, kind, reason string) error {
 // sequence allocation survives crashes and torn writes. The caller must hold
 // the session lock.
 func (s *Store) nextSeqLocked(session string) (uint64, error) {
-	lines, _, err := readRawLines(s.journalPath(session))
+	path := s.journalPath(session)
+	lines, tornBytes, err := readRawLines(path)
 	if err != nil {
 		return 0, err
+	}
+	if tornBytes > 0 {
+		// A crash may leave an unterminated final JSON line. Remove only that
+		// tail before appending; otherwise the next valid append would turn the
+		// torn bytes into corrupt interior data and make the journal unreadable.
+		info, err := os.Stat(path)
+		if err != nil {
+			return 0, fmt.Errorf("inspect torn journal tail: %w", err)
+		}
+		validBytes := info.Size() - int64(tornBytes)
+		if validBytes < 0 {
+			return 0, errors.New("invalid torn journal tail length")
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY, filePerm)
+		if err != nil {
+			return 0, fmt.Errorf("open torn journal tail: %w", err)
+		}
+		truncateErr := file.Truncate(validBytes)
+		if truncateErr == nil {
+			truncateErr = file.Sync()
+		}
+		closeErr := file.Close()
+		if truncateErr != nil {
+			return 0, fmt.Errorf("discard torn journal tail: %w", truncateErr)
+		}
+		if closeErr != nil {
+			return 0, fmt.Errorf("close repaired journal: %w", closeErr)
+		}
 	}
 	var last uint64
 	for _, line := range lines {

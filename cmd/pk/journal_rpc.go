@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/pkyanam/pk/internal/filetools"
 	"github.com/pkyanam/pk/internal/runner"
+	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/pkyanam/pk/internal/workspacejournal"
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/session"
@@ -52,7 +55,7 @@ func (s *rpcServer) startJournalRestore(requestID string, sessionID string, opID
 	done := s.skillOperationDone
 	journalRoot := s.opts.WorkspaceJournalRoot
 	s.mu.Unlock()
-	_ = s.emit(requestID, "restore_started", map[string]any{"session_id": sessionID})
+	_ = s.emit(requestID, "journal_restore_started", map[string]any{"session_id": sessionID})
 	go func() {
 		defer close(done)
 		defer cancel()
@@ -64,46 +67,104 @@ func (s *rpcServer) startJournalRestore(requestID string, sessionID string, opID
 			s.mu.Unlock()
 		}
 		defer finishOperation()
+		lease, err := sessionlock.Acquire(s.sessionDir, sessionID)
+		if err != nil {
+			_ = s.emit(requestID, "journal_restore_failed", map[string]any{"session_id": sessionID, "message": "session is in use; wait for its active turn to finish before restoring"})
+			return
+		}
+		defer lease.Release()
 		store, err := workspacejournal.Open(journalRoot, workspacejournal.Limits{})
 		if err != nil {
-			finishOperation()
-			_ = s.emit(requestID, "restore_failed", map[string]any{"message": err.Error()})
+			_ = s.emit(requestID, "journal_restore_failed", map[string]any{"session_id": sessionID, "message": err.Error()})
+			return
+		}
+		ops, err := store.List(sessionID)
+		if err != nil {
+			_ = s.emit(requestID, "journal_restore_failed", map[string]any{"session_id": sessionID, "message": err.Error()})
 			return
 		}
 		report, err := store.Restore(ctx, sessionID, workspace, opIDs)
-		if err != nil {
-			finishOperation()
-			_ = s.emit(requestID, "restore_failed", map[string]any{"message": err.Error()})
-			return
+		items := restoredJournalItems(report, ops)
+		summary := restoreReportNote(report, workspace, items, err)
+		noteRecorded, noteErr := appendJournalNote(context.Background(), s.sessionDir, sessionID, summary)
+		if noteErr != nil {
+			fmt.Fprintf(s.diagnostics, "pk: record journal restore note: %v\n", noteErr)
 		}
-		summary := restoreReportNote(report, workspace)
-		_ = s.emit(requestID, "restore_completed", map[string]any{
+		payload := map[string]any{
 			"session_id": sessionID, "snapshot": report.Snapshot,
-			"restored": report.Restored, "skipped": skippedSummaries(report),
-		})
-		// Record the restore as a user-visible session note so the model and
-		// transcript see it. Submission failures keep the restore itself.
-		if err := s.recordJournalNote(sessionID, summary); err != nil {
-			fmt.Fprintf(s.diagnostics, "pk: record journal restore note: %v\n", err)
+			"restored": uniqueRestoredPaths(items), "restored_operations": items,
+			"skipped": skippedSummaries(report), "note_recorded": noteRecorded,
 		}
+		if err != nil {
+			payload["message"] = err.Error()
+			payload["partial"] = len(items) > 0
+		}
+		if noteErr != nil {
+			payload["note_error"] = noteErr.Error()
+		}
+		eventType := "journal_restore_completed"
+		if err != nil && len(items) == 0 {
+			eventType = "journal_restore_failed"
+		}
+		if releaseErr := lease.Release(); releaseErr != nil {
+			payload["session_unlock_error"] = releaseErr.Error()
+		}
+		finishOperation()
+		_ = s.emit(requestID, eventType, payload)
 	}()
 }
 
+type restoredJournalItem struct {
+	OperationID string `json:"operation_id"`
+	Path        string `json:"path,omitempty"`
+}
+
+func restoredJournalItems(report workspacejournal.RestoreReport, ops []workspacejournal.Op) []restoredJournalItem {
+	paths := make(map[string]string, len(ops))
+	for _, op := range ops {
+		paths[op.ID] = op.Path
+	}
+	items := make([]restoredJournalItem, 0, len(report.Restored))
+	for _, operationID := range report.Restored {
+		items = append(items, restoredJournalItem{OperationID: operationID, Path: paths[operationID]})
+	}
+	return items
+}
+
+func uniqueRestoredPaths(items []restoredJournalItem) []string {
+	seen := make(map[string]bool, len(items))
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Path != "" && !seen[item.Path] {
+			seen[item.Path] = true
+			paths = append(paths, item.Path)
+		}
+	}
+	return paths
+}
+
 // restoreReportNote renders the bounded user/model-facing restore note.
-func restoreReportNote(report workspacejournal.RestoreReport, workspace string) string {
+func restoreReportNote(report workspacejournal.RestoreReport, workspace string, items []restoredJournalItem, restoreErr error) string {
 	var out strings.Builder
-	out.WriteString("Journal restore applied to workspace " + workspace + ".\n")
+	out.WriteString("Journal restore attempt for workspace " + workspace + ".\n")
 	if report.SnapshotDir != "" {
 		out.WriteString("Safety snapshot: " + report.SnapshotDir + "\n")
 	}
-	for _, path := range report.Restored {
-		out.WriteString("Restored to pre-tool state: " + path + "\n")
+	for _, item := range items {
+		if item.Path != "" {
+			out.WriteString("Restored to pre-tool state: " + item.Path + "\n")
+		} else {
+			out.WriteString("Restored journal operation: " + item.OperationID + " (path unavailable)\n")
+		}
 	}
 	for _, skip := range report.Skipped {
 		out.WriteString("Not restored: " + skip.Path + " (" + skip.Reason + ")\n")
 	}
-	if len(report.Restored) == 0 {
+	if len(items) == 0 {
 		out.WriteString("No file contents were changed.\n")
+	}
+	if restoreErr != nil {
+		out.WriteString("Restore ended with an error: " + restoreErr.Error() + "\n")
 	}
 	out.WriteString("File-tool restore only covers WriteFile/EditFile changes; Bash and external edits are unobserved.\n")
 	text := out.String()
@@ -121,24 +182,33 @@ func skippedSummaries(report workspacejournal.RestoreReport) []map[string]any {
 	return summaries
 }
 
-// recordJournalNote submits the restore note into the durable session as an
-// external input. The note is user-visible in the transcript and enters model
-// context on the next turn; it does not itself trigger a turn.
-func (s *rpcServer) recordJournalNote(sessionID, note string) error {
-	store, err := localfile.New(s.sessionDir)
+// appendJournalNote submits a restore note as external input. The caller must
+// hold the session lease so a turn cannot race the append. A missing saved
+// session is expected for CLI restores of orphaned journal data.
+func appendJournalNote(ctx context.Context, sessionDir, sessionID, note string) (bool, error) {
+	store, err := localfile.New(sessionDir)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if _, err := store.Resume(ctx, session.ID(sessionID)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
 	}
 	inputID, err := runner.NewSessionID()
 	if err != nil {
-		return err
+		return false, err
 	}
 	payload, err := json.Marshal(note)
 	if err != nil {
-		return err
+		return false, err
 	}
 	input := inbox.Input{ID: inbox.ID(inputID), Kind: inbox.InputExternal, Payload: payload}
-	return store.AppendInput(s.ctx, session.ID(sessionID), input)
+	if err := store.AppendInput(ctx, session.ID(sessionID), input); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // journalStatus answers an RPC request for the attached session's journal.

@@ -1,0 +1,92 @@
+{
+  "compaction-after_BenchmarkHistoryCutLongTask_allocs": {
+    "median": 56
+  },
+  "compaction-after_BenchmarkHistoryCutLongTask_bytes": {
+    "median": 155833
+  },
+  "compaction-after_BenchmarkHistoryCutLongTask_ns": {
+    "median": 21824
+  },
+  "compaction-before_BenchmarkHistoryCutLongTask_allocs": {
+    "median": 2151
+  },
+  "compaction-before_BenchmarkHistoryCutLongTask_bytes": {
+    "median": 17898080
+  },
+  "compaction-before_BenchmarkHistoryCutLongTask_ns": {
+    "median": 1683470
+  },
+  "context-after_BenchmarkMeasureRequest1MiBMixed_allocs": {
+    "median": 251
+  },
+  "context-after_BenchmarkMeasureRequest1MiBMixed_bytes": {
+    "median": 12094
+  },
+  "context-after_BenchmarkMeasureRequest1MiBMixed_ns": {
+    "median": 729384
+  },
+  "context-before_BenchmarkMeasureRequest1MiBMixed_allocs": {
+    "median": 492
+  },
+  "context-before_BenchmarkMeasureRequest1MiBMixed_bytes": {
+    "median": 1008290
+  },
+  "context-before_BenchmarkMeasureRequest1MiBMixed_ns": {
+    "median": 749807
+  },
+  "sessions-after_BenchmarkGetLargeSessionLogCold_allocs": {
+    "median": 256
+  },
+  "sessions-after_BenchmarkGetLargeSessionLogCold_bytes": {
+    "median": 1403369
+  },
+  "sessions-after_BenchmarkGetLargeSessionLogCold_ns": {
+    "median": 1006143
+  },
+  "sessions-after_BenchmarkListLargeSessionLogs_allocs": {
+    "median": 1009
+  },
+  "sessions-after_BenchmarkListLargeSessionLogs_bytes": {
+    "median": 171465
+  },
+  "sessions-after_BenchmarkListLargeSessionLogs_ns": {
+    "median": 1518795
+  },
+  "sessions-after_BenchmarkListRepeatedLargeSessionLogs_allocs": {
+    "median": 1004
+  },
+  "sessions-after_BenchmarkListRepeatedLargeSessionLogs_bytes": {
+    "median": 120993
+  },
+  "sessions-after_BenchmarkListRepeatedLargeSessionLogs_ns": {
+    "median": 1346797
+  },
+  "sessions-before_BenchmarkGetLargeSessionLogCold_allocs": {
+    "median": 317
+  },
+  "sessions-before_BenchmarkGetLargeSessionLogCold_bytes": {
+    "median": 1408799
+  },
+  "sessions-before_BenchmarkGetLargeSessionLogCold_ns": {
+    "median": 853433
+  },
+  "sessions-before_BenchmarkListLargeSessionLogs_allocs": {
+    "median": 3185
+  },
+  "sessions-before_BenchmarkListLargeSessionLogs_bytes": {
+    "median": 383092
+  },
+  "sessions-before_BenchmarkListLargeSessionLogs_ns": {
+    "median": 1893343
+  },
+  "sessions-before_BenchmarkListRepeatedLargeSessionLogs_allocs": {
+    "median": 3174
+  },
+  "sessions-before_BenchmarkListRepeatedLargeSessionLogs_bytes": {
+    "median": 312753
+  },
+  "sessions-before_BenchmarkListRepeatedLargeSessionLogs_ns": {
+    "median": 1869264
+  }
+}

@@ -13,6 +13,26 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 )
 
+type countingWriter struct{ bytes int64 }
+
+func (writer *countingWriter) Write(data []byte) (int, error) {
+	writer.bytes += int64(len(data))
+	return len(data), nil
+}
+
+func encodedJSONSize(encoder *json.Encoder, writer *countingWriter, value any) (int64, error) {
+	before := writer.bytes
+	if err := encoder.Encode(value); err != nil {
+		return 0, err
+	}
+	encoded := writer.bytes - before
+	if encoded < 1 {
+		return 0, errors.New("empty encoded JSON")
+	}
+	// Encoder.Encode adds one record-separating newline; json.Marshal does not.
+	return encoded - 1, nil
+}
+
 type Size struct {
 	Items int   `json:"items"`
 	Bytes int64 `json:"bytes"`
@@ -90,14 +110,16 @@ func (adapter *Adapter) Respond(ctx context.Context, request llm.Request, option
 
 func MeasureRequest(request llm.Request) (Record, error) {
 	record := Record{Type: "benchmark_context", MessageRoles: make(map[string]Size)}
+	writer := &countingWriter{}
+	encoder := json.NewEncoder(writer)
 	for _, item := range request.Input {
-		value, err := json.Marshal(item.Data)
+		valueSize, err := encodedJSONSize(encoder, writer, item.Data)
 		if err != nil {
 			return Record{}, errors.New("measure benchmark request item")
 		}
-		size := Size{Items: 1, Bytes: int64(len(value))}
+		size := Size{Items: 1, Bytes: valueSize}
 		record.InputItems++
-		record.InputValueBytes += int64(len(value))
+		record.InputValueBytes += valueSize
 		switch item.Type {
 		case llm.ItemMessage:
 			message, ok := item.Data.(llm.Message)
@@ -125,12 +147,12 @@ func MeasureRequest(request llm.Request) (Record, error) {
 		}
 	}
 	for _, tool := range request.Tools {
-		value, err := json.Marshal(tool)
+		valueSize, err := encodedJSONSize(encoder, writer, tool)
 		if err != nil {
 			return Record{}, errors.New("measure benchmark tool schema")
 		}
 		record.ToolSchemas.Items++
-		record.ToolSchemas.Bytes += int64(len(value))
+		record.ToolSchemas.Bytes += valueSize
 	}
 	return record, nil
 }

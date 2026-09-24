@@ -922,6 +922,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [journalNotice, setJournalNotice] = useState("")
   const [journalLoading, setJournalLoading] = useState(false)
   const [journalConfirmIndex, setJournalConfirmIndex] = useState<number | null>(null)
+  const [journalDiff, setJournalDiff] = useState("")
+  const [journalDiffLoading, setJournalDiffLoading] = useState(false)
+  const [journalDiffReady, setJournalDiffReady] = useState(false)
   const [historyEntries, setHistoryEntries] = useState<SavedHistoryEntry[]>([])
   const [historyHasEarlier, setHistoryHasEarlier] = useState(false)
   const [historyBeforeSequence, setHistoryBeforeSequence] = useState(0)
@@ -956,6 +959,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const latestClipboardWriteID = useRef("")
   const pendingToolsRequest = useRef("")
   const pendingJournalRequest = useRef("")
+  const pendingJournalDiffRequest = useRef("")
   const pendingHistoryRequest = useRef("")
   const pendingProviderModelsRequest = useRef("")
   const pendingProviderPresetsRequest = useRef("")
@@ -1122,6 +1126,10 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setJournalSummary(null)
     setJournalNotice("")
     setJournalConfirmIndex(null)
+    setJournalDiff("")
+    setJournalDiffLoading(false)
+    setJournalDiffReady(false)
+    pendingJournalDiffRequest.current = ""
     setSelector("journal")
     setSelectionIndex(0)
     refreshJournal()
@@ -1131,8 +1139,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     const selected = journalRestoreCandidates()
     const op = selected[index]
     if (!op) return
-    transport.send("journal_restore" as any, { ops: [op.id] })
-    setJournalNotice("Restore requested…")
+    setJournalConfirmIndex(index)
+    setJournalNotice("")
+    setJournalDiff("")
+    setJournalDiffReady(false)
+    setJournalDiffLoading(true)
+    pendingJournalDiffRequest.current = transport.send("journal" as any, { diff: true, path: op.path, op_id: op.id }) ?? ""
+    if (!pendingJournalDiffRequest.current) {
+      setJournalDiffLoading(false)
+      setJournalDiffReady(true)
+      setJournalDiff("Diff preview is unavailable while pk is disconnected. You can cancel and retry later.")
+    }
   }
 
   const journalRestoreCandidates = (): JournalOp[] =>
@@ -2556,19 +2573,39 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setJournalSummary(data.summary ?? null)
         break
       }
+      case "journal_diff": {
+        if (!event.id || event.id !== pendingJournalDiffRequest.current) break
+        pendingJournalDiffRequest.current = ""
+        setJournalDiffLoading(false)
+        setJournalDiffReady(true)
+        setJournalDiff(typeof data.diff === "string" && data.diff ? data.diff.slice(0, 12000) : "No textual diff is available for this checkpoint.")
+        break
+      }
+      case "restore_started":
       case "journal_restore_started": {
         setJournalNotice("Restoring journaled files…")
         break
       }
+      case "restore_completed":
       case "journal_restore_completed": {
         const restoredCount = Array.isArray(data.restored) ? data.restored.length : 0
         const skippedCount = Array.isArray(data.skipped) ? data.skipped.length : 0
-        setJournalNotice(restoredCount ? `Restored ${restoredCount} file${restoredCount === 1 ? "" : "s"}${skippedCount ? ` · skipped ${skippedCount}` : ""}.` : "Nothing was restored; see the transcript note.")
-        addEntry("system", typeof data.snapshot === "string" && data.snapshot ? `Journal restore recorded; safety snapshot kept for recovery.` : "Journal restore completed.")
+        const partial = data.partial === true || typeof data.message === "string" && data.message.length > 0
+        const outcome = partial
+          ? `Partial restore · ${restoredCount} restored · ${skippedCount} skipped${typeof data.message === "string" ? ` · ${data.message}` : ""}`
+          : restoredCount ? `Restored ${restoredCount} file${restoredCount === 1 ? "" : "s"}${skippedCount ? ` · skipped ${skippedCount}` : ""}.` : "Nothing was restored; see the transcript note."
+        const warnings = [
+          typeof data.note_error === "string" ? "restore note was not saved" : "",
+          typeof data.session_unlock_error === "string" ? "session lock cleanup failed" : "",
+        ].filter(Boolean)
+        const notice = warnings.length ? `${outcome} · ${warnings.join(" · ")}` : outcome
+        setJournalNotice(notice)
+        addEntry("system", `${typeof data.snapshot === "string" && data.snapshot ? "Journal restore recorded; safety snapshot kept for recovery." : "Journal restore completed."}${warnings.length ? ` ${warnings.join("; ")}.` : ""}`)
         setJournalConfirmIndex(null)
         refreshJournal()
         break
       }
+      case "restore_failed":
       case "journal_restore_failed": {
         setJournalNotice(`Restore failed: ${String(data.message ?? "unknown error")}`)
         setJournalConfirmIndex(null)
@@ -2727,6 +2764,13 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "error":
         const errorID = String(event.id ?? "")
+        if (errorID && errorID === pendingJournalDiffRequest.current) {
+          pendingJournalDiffRequest.current = ""
+          setJournalDiffLoading(false)
+          setJournalDiffReady(true)
+          setJournalDiff("Diff preview unavailable for this checkpoint. Read its file, then cancel or explicitly continue the restore.")
+          break
+        }
         if (errorID && pendingThemeSets.current.has(errorID)) {
           const pendingTheme = pendingThemeSets.current.get(errorID)!
           pendingThemeSets.current.delete(errorID)
@@ -3753,15 +3797,16 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       const tool = modelTools[index]
       if (tool) addEntry("system", `${tool.name}${tool.source ? ` · ${tool.source}` : ""}${tool.description ? ` · ${tool.description}` : ""}`)
     } else if (selector === "journal") {
-      const op = journalRestoreCandidates()[index]
-      if (op) {
-        setJournalConfirmIndex(index)
-      }
+      restoreJournalSelection(index)
     } else commitSelector(index)
   }
 
   const confirmJournalRestore = () => {
     if (journalConfirmIndex === null) return
+    if (!journalDiffReady) {
+      setJournalNotice("Wait for the checkpoint diff preview before restoring.")
+      return
+    }
     const op = journalRestoreCandidates()[journalConfirmIndex]
     if (!op) return
     transport.send("journal_restore" as any, { ops: [op.id] })
@@ -3769,6 +3814,9 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
 
   const cancelJournalRestore = () => {
     setJournalConfirmIndex(null)
+    pendingJournalDiffRequest.current = ""
+    setJournalDiffLoading(false)
+    setJournalDiffReady(false)
   }
 
   const submitQuestionAnswer = (answer: string) => {
@@ -4359,7 +4407,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         setProviderModelHoverIndex(null)
         const direction = event.scroll.direction === "down" ? 1 : event.scroll.direction === "up" ? -1 : 0
         if (direction) setSelectionIndex((index) => Math.max(0, Math.min(filteredProviderModels.length - 1, index + direction * Math.max(1, Math.round(event.scroll!.delta)))))
-      } : undefined} style={{ position: "absolute", left: selector === "theme" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "theme" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "6%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "8%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: selector === "provider_models" || selector === "theme" ? 1 : 2, flexDirection: "column", minHeight: selector === "usage" || selector === "provider_models" || selector === "theme" ? 0 : undefined, overflow: selector === "usage" || selector === "provider_models" || selector === "theme" ? "hidden" : undefined }}>
+      } : undefined} style={{ position: "absolute", left: selector === "theme" ? "5%" : selector === "journal" || selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "theme" ? "5%" : selector === "journal" || selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "6%" : selector === "journal" || selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "theme" || selector === "provider_models" ? "5%" : selector === "journal" || selector === "usage" ? "8%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: selector === "provider_models" || selector === "theme" || selector === "journal" ? 1 : 2, flexDirection: "column", minHeight: selector === "usage" || selector === "provider_models" || selector === "theme" || selector === "journal" ? 0 : undefined, overflow: selector === "usage" || selector === "provider_models" || selector === "theme" || selector === "journal" ? "hidden" : undefined }}>
         <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "journal" ? "Workspace journal · WriteFile/EditFile changes · restore is user-initiated" : selector === "theme" ? "Color theme" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
         {selector === "journal" && <>
           <text fg={palette.muted} content={journalLoading ? "Loading journal…" : journalSummary ? `${journalSummary.observed} entr${journalSummary.observed === 1 ? "y" : "ies"} · ${journalSummary.completed} completed · ${journalSummary.failed} failed · ${journalSummary.unknown} unknown${journalSummary.truncated_paths ? " · path list truncated" : ""}` : journalNotice || "No file-tool changes recorded."} />
@@ -4368,16 +4416,30 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             const op = journalRestoreCandidates()[journalConfirmIndex]
             return op ? (
               <box style={{ flexDirection: "row", gap: 2, marginTop: 1 }}>
-                <text fg={palette.accent} onMouseDown={(event) => leftMouseDown(event, confirmJournalRestore)} content={`[ Restore ${op.path} ]`} />
+                <text fg={journalDiffReady ? palette.accent : palette.dim} onMouseDown={journalDiffReady ? (event) => leftMouseDown(event, confirmJournalRestore) : undefined} content={journalDiffLoading ? `[ Loading diff · ${op.path} ]` : journalDiffReady ? `[ Restore ${op.path} ]` : `[ Preview ${op.path} ]`} />
                 <text fg={palette.muted} onMouseDown={(event) => leftMouseDown(event, cancelJournalRestore)} content="[ Cancel ]" />
-                <text fg={palette.amber} content={`Enter confirms · Esc cancels · current file must match the recorded state`} />
+                <text fg={palette.amber} content={journalDiffReady ? "Enter confirms · Esc cancels · current file must match recorded state" : "Esc cancels · preview must load before restore"} />
               </box>
             ) : null
           })()}
           {journalNotice && <text fg={palette.amber} content={journalNotice} />}
+          {journalConfirmIndex !== null && <box id="journal-diff-preview" style={{ height: 8, minHeight: 0, flexShrink: 0, border: ["top"], borderColor: palette.line, flexDirection: "column" }}>
+            <text style={{ height: 1, flexShrink: 0 }} fg={palette.amber} content="Original edit · restore reverses it" />
+            {journalDiffLoading
+              ? <text style={{ height: 1, flexShrink: 0 }} fg={palette.muted} content="Loading bounded checkpoint diff…" />
+              : (() => {
+                const lines = journalDiff.split("\n")
+                const visibleLines = lines.slice(0, 5)
+                const omitted = lines.length - visibleLines.length
+                return <>
+                  {visibleLines.map((line, lineIndex) => <text key={`journal-diff-${lineIndex}`} style={{ height: 1, flexShrink: 0 }} fg={palette.muted} content={line.slice(0, 2000)} />)}
+                  {omitted > 0 && <text style={{ height: 1, flexShrink: 0 }} fg={palette.dim} content={`… ${omitted} more diff lines omitted`} />}
+                </>
+              })()}
+          </box>}
           <scrollbox id="journal-scroll" focused style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 1 }}>
             {journalRestoreCandidates().map((op, index) => (
-              <text key={op.id + ":" + op.seq} fg={index === selectionIndex ? palette.accent : palette.text} content={`${index === selectionIndex ? "›" : " "} ${op.path} · ${op.action} · ${op.status} · seq ${op.seq}${op.reason ? ` · ${op.reason}` : ""}`} onMouseDown={(event) => leftMouseDown(event, () => { setSelectionIndex(index); setJournalConfirmIndex(index) })} />
+              <text key={op.id + ":" + op.seq} fg={index === selectionIndex ? palette.accent : palette.text} content={`${index === selectionIndex ? "›" : " "} ${op.path} · ${op.action} · ${op.status} · seq ${op.seq}${op.reason ? ` · ${op.reason}` : ""}`} onMouseDown={(event) => leftMouseDown(event, () => { setSelectionIndex(index); restoreJournalSelection(index) })} />
             ))}
             {journalRestoreCandidates().length === 0 && !journalLoading && <text fg={palette.muted} content="No restorable WriteFile/EditFile changes. Bash and external edits are unobserved." />}
           </scrollbox>

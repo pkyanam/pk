@@ -1,5 +1,9 @@
 # Startup performance baseline
 
+For the latest workspace-journal audit and matched local benchmarks, see the
+[September 23 performance pass](../benchmarks/results/2026-09-23-journal-audit/README.md).
+It includes raw before/after runs, allocation measurements, and regressions.
+
 This baseline covers installed process startup, the RPC handshake, RPC tool
 catalog preview, and first OpenTUI frame. It does not measure model latency or
 tool execution. No model requests or external services were used.

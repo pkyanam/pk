@@ -1,0 +1,21 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/pkyanam/pk/internal/sessionmanager
+cpu: Apple M3
+BenchmarkListLargeSessionLogs-8           	     630	   1863827 ns/op	  381232 B/op	    3184 allocs/op
+BenchmarkListLargeSessionLogs-8           	     614	   1893343 ns/op	  383092 B/op	    3185 allocs/op
+BenchmarkListLargeSessionLogs-8           	     592	   1862450 ns/op	  385777 B/op	    3185 allocs/op
+BenchmarkListLargeSessionLogs-8           	     618	   1895710 ns/op	  382619 B/op	    3185 allocs/op
+BenchmarkListLargeSessionLogs-8           	     592	   2002156 ns/op	  385775 B/op	    3185 allocs/op
+BenchmarkListRepeatedLargeSessionLogs-8   	     651	   1845720 ns/op	  312754 B/op	    3174 allocs/op
+BenchmarkListRepeatedLargeSessionLogs-8   	     638	   2290722 ns/op	  312753 B/op	    3174 allocs/op
+BenchmarkListRepeatedLargeSessionLogs-8   	     608	   2093830 ns/op	  312753 B/op	    3174 allocs/op
+BenchmarkListRepeatedLargeSessionLogs-8   	     638	   1861374 ns/op	  312754 B/op	    3174 allocs/op
+BenchmarkListRepeatedLargeSessionLogs-8   	     622	   1869264 ns/op	  312753 B/op	    3174 allocs/op
+BenchmarkGetLargeSessionLogCold-8         	    1395	    857052 ns/op	 1408799 B/op	     317 allocs/op
+BenchmarkGetLargeSessionLogCold-8         	    1186	    862899 ns/op	 1408805 B/op	     317 allocs/op
+BenchmarkGetLargeSessionLogCold-8         	    1341	    853433 ns/op	 1408799 B/op	     317 allocs/op
+BenchmarkGetLargeSessionLogCold-8         	    1429	    850793 ns/op	 1408777 B/op	     317 allocs/op
+BenchmarkGetLargeSessionLogCold-8         	    1395	    846526 ns/op	 1408746 B/op	     317 allocs/op
+PASS
+ok  	github.com/pkyanam/pk/internal/sessionmanager	52.897s

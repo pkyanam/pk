@@ -3,6 +3,12 @@
 This is the starting point for handing development back to pk. Keep this guide
 and the project checklist available when continuing with another provider.
 
+The latest [journal audit and performance results](../benchmarks/results/2026-09-23-journal-audit/README.md)
+record recovery fixes and measured local improvements. Before extending the
+journal, read its [coverage and storage limits](workspace-journal.md): the
+readable-entry cap is not a disk cap, and shared-object GC is not safe alongside
+concurrent writers. Preserve these qualifications in model-facing guidance.
+
 ## Start
 
 1. Keep a clean Git checkpoint before changing the harness. Work in the actual

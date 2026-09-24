@@ -23,10 +23,12 @@ reported as clean or clean-able. Failures where nothing changed (invalid
 arguments, a missing `old_string`, a stale `expected_sha256`) are not recorded,
 because nothing was mutated.
 
-Retention is bounded by defaults: 256 retained entries per session and a
-256 MiB object store with unreferenced-object collection. Older readable
-entries are dropped from the fold; their objects are garbage-collected when no
-scanned journal references them.
+The readable fold defaults to 256 entries per session. This does **not** cap
+physical disk usage: raw logs are not compacted and the configured
+`MaxObjectBytes` limit is not yet enforced. Explicit object collection refuses
+to delete anything if it cannot scan every session within its scan limit.
+Do not run collection concurrently with writers; cross-process coordination
+of the shared object store is not implemented.
 
 ## Coverage and honesty
 
@@ -39,13 +41,18 @@ run with pk's ordinary permissions.
 ## WorkspaceDelta (model tool)
 
 New sessions with journaling enabled include a read-only `WorkspaceDelta`
-tool:
+tool. Its description asks the model to call it after file-tool edits, before
+reporting completion; the bundled pk skill repeats that cue. Tool availability
+is also shown in the initial catalog preview. This is guidance, not a guarantee
+that every model will call it.
+
 
 - Default: a bounded summary of recorded changes — per-path
   created/modified/failed/restored counts, session totals, and a coverage
   note.
 - `cursor`: decimal journal sequence from a previous reply; the summary covers
-  entries at or before the cursor.
+  entries at or before the cursor. Diff requests honor the same cutoff. Omit
+  the cursor for the latest state; it is not a changes-since cursor.
 - `diff=true` with `path` (latest mutation for that path) or `op_id`: one
   bounded unified diff (context lines, hunk and byte caps) between that
   operation's preimage and postimage.
@@ -77,7 +84,10 @@ approval gate on `WriteFile`/`EditFile` themselves.
 - **Fingerprint guard**: a file is only rewritten when its current content
   matches the recorded postimage (or the op was already restored). A file the
   user edited since is skipped with a reason; user edits are never overwritten
-  and the restore is not partial across conflicts.
+  and any conflict detected in preflight prevents the whole selected batch.
+  All preimages are verified before writes, with a 256 MiB aggregate cap.
+  Late filesystem errors or concurrent external edits can still leave a
+  partially applied batch; the report identifies applied and skipped paths.
 - **Safety snapshot**: before any change, current content of every affected
   file is snapshotted into `restores/<timestamp>-<id>/`, so recovery remains
   possible and restore is repeatable.
@@ -94,7 +104,10 @@ The foreground session exposes `journal` (list/summary/diff) and
 is idle, like `/compact`, and a completed restore is appended to the session
 history as a user-visible note so the model knows workspace state changed. The
 TUI `/journal` panel lists restorable changes with keyboard and mouse
-confirmation; restore is always explicit.
+confirmation and a bounded original-change diff before confirmation; restore
+reverses that displayed change. Restore is always explicit. CLI restores also
+acquire the session lease and append a report when the saved session exists.
+Failures to record the note are surfaced rather than silently claiming success.
 
 ## Out of scope
 

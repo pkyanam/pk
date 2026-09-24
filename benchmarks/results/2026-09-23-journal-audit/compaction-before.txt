@@ -1,0 +1,11 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/pkyanam/pk/internal/runner
+cpu: Apple M3
+BenchmarkHistoryCutLongTask-8   	     805	   1683470 ns/op	17898095 B/op	    2151 allocs/op
+BenchmarkHistoryCutLongTask-8   	     795	   1578749 ns/op	17898067 B/op	    2151 allocs/op
+BenchmarkHistoryCutLongTask-8   	     696	   1703370 ns/op	17898080 B/op	    2151 allocs/op
+BenchmarkHistoryCutLongTask-8   	     799	   1570457 ns/op	17898056 B/op	    2151 allocs/op
+BenchmarkHistoryCutLongTask-8   	     624	   1987153 ns/op	17898123 B/op	    2152 allocs/op
+PASS
+ok  	github.com/pkyanam/pk/internal/runner	7.339s

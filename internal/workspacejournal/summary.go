@@ -23,26 +23,26 @@ func (b SummaryBounds) withDefaults() SummaryBounds {
 
 // PathSummary summarizes recorded activity for one path.
 type PathSummary struct {
-	Path      string `json:"path"`
-	Added     int    `json:"added_files"`      // files that did not exist before
-	Modified  int    `json:"modified_files"`   // completed mutations of an existing file
-	Failed    int    `json:"failed_attempts"`
-	Restored  int    `json:"restores"`
-	LastSeq   uint64 `json:"last_seq"`
+	Path       string `json:"path"`
+	Added      int    `json:"added_files"`    // files that did not exist before
+	Modified   int    `json:"modified_files"` // completed mutations of an existing file
+	Failed     int    `json:"failed_attempts"`
+	Restored   int    `json:"restores"`
+	LastSeq    uint64 `json:"last_seq"`
 	LastAction string `json:"last_action"`
 }
 
 // Summary summarizes one session's journal, optionally up to a cursor.
 type Summary struct {
-	Session     string        `json:"session"`
-	Cursor      string        `json:"cursor"`       // echoed cursor or newest cursor
-	Observed    int           `json:"observed"`     // folded entries considered
-	Completed   int           `json:"completed"`
-	Failed      int           `json:"failed"`
-	Unknown     int           `json:"unknown"`      // prepared without terminal status
-	Restored    int           `json:"restored_ops"`
-	Files       []PathSummary `json:"files"`
-	TruncatedPaths bool       `json:"truncated_paths"`
+	Session        string        `json:"session"`
+	Cursor         string        `json:"cursor"`   // echoed cursor or newest cursor
+	Observed       int           `json:"observed"` // folded entries considered
+	Completed      int           `json:"completed"`
+	Failed         int           `json:"failed"`
+	Unknown        int           `json:"unknown"` // prepared without terminal status
+	Restored       int           `json:"restored_ops"`
+	Files          []PathSummary `json:"files"`
+	TruncatedPaths bool          `json:"truncated_paths"`
 	// Coverage note: the journal records file-tool mutations only.
 	Coverage string `json:"coverage"`
 }

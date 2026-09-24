@@ -209,6 +209,9 @@ func TestWorkspaceDeltaSummarizesAndDiffs(t *testing.T) {
 	if !strings.Contains(summary, "unobserved") {
 		t.Fatalf("coverage note missing: %s", summary)
 	}
+	if !strings.Contains(summary, "Journal cursor:") || !strings.Contains(summary, "inclusive as-of sequence") {
+		t.Fatalf("latest cursor hint missing from summary: %s", summary)
+	}
 	diffOutput, err := runDelta(store, testJournalSession(), `{"diff":true,"path":"notes.md"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -259,8 +262,48 @@ func TestWorkspaceDeltaCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(summary, "a.txt") || strings.Contains(summary, "b.txt") {
+	if !strings.Contains(summary, "a.txt") || strings.Contains(summary, "b.txt") || !strings.Contains(summary, "Journal cursor: "+afterFirst) {
 		t.Fatalf("cursor should show only ops up to the cursor: %s", summary)
+	}
+}
+
+func TestWorkspaceDeltaDiffHonorsAsOfCursor(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := workspacejournal.Open(t.TempDir(), workspacejournal.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := "one"
+	if _, err := runJournaledJob(t, workspace, store, request{Action: "WriteFile", Args: args{Path: "a.txt", Content: &first}}); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := store.List(testJournalSession())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSeq := fmt.Sprint(ops[0].Seq)
+	second := "two"
+	if _, err := runJournaledJobWithID(t, "test-op-2", workspace, store, request{Action: "EditFile", Args: args{Path: "a.txt", OldString: "one", NewString: &second}}); err != nil {
+		t.Fatal(err)
+	}
+	ops, err = store.List(testJournalSession())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDelta(store, testJournalSession(), fmt.Sprintf(`{"diff":true,"path":"a.txt","cursor":%q}`, firstSeq)); err == nil || !strings.Contains(err.Error(), "created file") {
+		t.Fatalf("diff did not select the as-of create at cursor %s: %v", firstSeq, err)
+	}
+	latest, err := runDelta(store, testJournalSession(), `{"diff":true,"path":"a.txt"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSeq := fmt.Sprint(ops[len(ops)-1].Seq)
+	asOfSecond, err := runDelta(store, testJournalSession(), fmt.Sprintf(`{"diff":true,"path":"a.txt","cursor":%q}`, secondSeq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != asOfSecond || !strings.Contains(asOfSecond, "journal seq "+secondSeq) {
+		t.Fatalf("cursor did not select the inclusive journal diff: latest=%q as-of=%q", latest, asOfSecond)
 	}
 }
 
@@ -275,6 +318,40 @@ func TestWorkspaceDeltaEmptyJournalMentionsCoverage(t *testing.T) {
 	}
 	if !strings.Contains(out, "No file-tool changes recorded") || !strings.Contains(out, "unobserved") {
 		t.Fatalf("empty summary must state coverage: %s", out)
+	}
+	cutoff, err := runDelta(store, testJournalSession(), `{"cursor":"9"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cutoff, "No file-tool changes recorded as of cursor 9") || strings.Contains(cutoff, "since cursor 9") || !strings.Contains(cutoff, "Journal cursor: 9") {
+		t.Fatalf("empty as-of summary should state cutoff and return its cursor: %s", cutoff)
+	}
+}
+
+func TestWorkspaceDeltaToolDescriptionExplainsWhenAndHowToUseCursor(t *testing.T) {
+	definition := DeltaDefinition().Tool
+	if !strings.Contains(definition.Description, "After WriteFile/EditFile edits") || !strings.Contains(definition.Description, "not a changes-since cursor") {
+		t.Fatalf("WorkspaceDelta does not explain its use or cursor semantics: %q", definition.Description)
+	}
+	cursor := definition.Parameters["properties"].(map[string]any)["cursor"].(map[string]any)["description"].(string)
+	if !strings.Contains(cursor, "Inclusive as-of sequence") || !strings.Contains(cursor, "latest full retained summary") {
+		t.Fatalf("cursor parameter guidance is incomplete: %q", cursor)
+	}
+	if len(definition.Description) > 500 {
+		t.Fatalf("tool discoverability guidance is unexpectedly verbose: %d bytes", len(definition.Description))
+	}
+}
+
+func TestWorkspaceDeltaRejectsTrailingJSONValues(t *testing.T) {
+	store, err := workspacejournal.Open(t.TempDir(), workspacejournal.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDelta(store, testJournalSession(), `{"cursor":"0"} {"cursor":"1"}`); err == nil || !strings.Contains(err.Error(), "one JSON value") {
+		t.Fatalf("expected trailing JSON to be rejected, got %v", err)
+	}
+	if _, err := runDelta(store, testJournalSession(), "  {\"cursor\":\"0\"} \n"); err != nil {
+		t.Fatalf("valid JSON with trailing whitespace rejected: %v", err)
 	}
 }
 

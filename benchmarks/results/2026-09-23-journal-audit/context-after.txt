@@ -1,0 +1,11 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/pkyanam/pk/internal/benchcontext
+cpu: Apple M3
+BenchmarkMeasureRequest1MiBMixed-8   	    1701	    716946 ns/op	1462.56 MB/s	   12099 B/op	     251 allocs/op
+BenchmarkMeasureRequest1MiBMixed-8   	    1627	    729384 ns/op	1437.62 MB/s	   12094 B/op	     251 allocs/op
+BenchmarkMeasureRequest1MiBMixed-8   	    1522	    871070 ns/op	1203.78 MB/s	   12087 B/op	     251 allocs/op
+BenchmarkMeasureRequest1MiBMixed-8   	    1281	    844653 ns/op	1241.43 MB/s	   12096 B/op	     251 allocs/op
+BenchmarkMeasureRequest1MiBMixed-8   	    1670	    728112 ns/op	1440.13 MB/s	   12087 B/op	     251 allocs/op
+PASS
+ok  	github.com/pkyanam/pk/internal/benchcontext	6.630s

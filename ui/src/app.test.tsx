@@ -130,6 +130,43 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("Esc close")
   })
 
+  test("previews the recorded journal diff before restore and ignores stale previews", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" initialSession="journal-session" />, { width: 80, height: 24 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { session_id: "journal-session", workspace: "/tmp/pk" } }))
+    await act(async () => { await setup.mockInput.typeText("/journal") })
+    act(() => setup.mockInput.pressEnter())
+    const listRequest = fake.sent.find((item) => item.type === "journal")!
+    act(() => fake.emit({ version: 1, id: listRequest.id, type: "journal", payload: {
+      available: true, session_id: "journal-session", summary: { observed: 1, completed: 1, failed: 0, unknown: 0, coverage: "WriteFile/EditFile only" },
+      ops: [{ seq: 7, id: "op-7", action: "EditFile", path: "src/file.txt", status: "completed" }],
+    } }))
+    const listFrame = await setup.waitForFrame((frame) => frame.includes("src/file.txt") && frame.includes("completed"))
+    const row = listFrame.split("\n").findIndex((line) => line.includes("src/file.txt"))
+    await act(async () => setup.mockMouse.click(listFrame.split("\n")[row]!.indexOf("src/file.txt"), row))
+    const previewRequest = fake.sent.filter((item) => item.type === "journal").at(-1)!
+    expect(previewRequest.payload).toEqual({ diff: true, path: "src/file.txt", op_id: "op-7" })
+    expect(fake.sent.some((item) => item.type === "journal_restore")).toBe(false)
+    act(() => fake.emit({ version: 1, id: "stale-journal-preview", type: "journal_diff", payload: { diff: "stale diff" } }))
+    await setup.waitForFrame((frame) => frame.includes("Loading bounded checkpoint diff"))
+    act(() => fake.emit({ version: 1, id: previewRequest.id, type: "journal_diff", payload: { diff: "--- a/src/file.txt\n+++ b/src/file.txt\n-old line\n+new line\n context\n another context" } }))
+    const previewFrame = await setup.waitForFrame((frame) => frame.includes("Original edit") && frame.includes("+new line") && frame.includes("1 more diff lines omitted"))
+    expect(previewFrame).toContain("Original edit")
+    expect(previewFrame).toContain("restore reverses it")
+    expect(previewFrame).toContain("1 more diff lines omitted")
+    await act(async () => setup.mockInput.pressEnter())
+    const restore = fake.sent.find((item) => item.type === "journal_restore")!
+    expect(restore.payload).toEqual({ ops: ["op-7"] })
+    act(() => fake.emit({ version: 1, id: restore.id, type: "restore_started", payload: { session_id: "journal-session" } }))
+    act(() => fake.emit({ version: 1, id: restore.id, type: "journal_restore_completed", payload: {
+      restored: ["src/file.txt"], skipped: [{ path: "src/other.txt", reason: "changed" }],
+      partial: true, message: "one file changed", note_error: "note unavailable", session_unlock_error: "lock cleanup failed",
+    } }))
+    await setup.waitForFrame((frame) => frame.includes("Partial restore") && frame.includes("note was not saved"))
+  })
+
   test("stream status becomes explicitly stale after silence and resumes on a fresh update", () => {
     const started = 1_000
     expect(streamProgressStatus({ label: "Model is thinking", updatedAt: started }, started + 14_999)).toBe("Model is thinking")

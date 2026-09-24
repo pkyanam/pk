@@ -185,6 +185,53 @@ func TestGetUsesValidatedSummaryAndRefreshesActiveState(t *testing.T) {
 	}
 }
 
+func TestListAndGetPinResolvedDirectoryAcrossAliasReplacement(t *testing.T) {
+	root := t.TempDir()
+	firstRoot := filepath.Join(root, "first")
+	secondRoot := filepath.Join(root, "second")
+	firstDir := filepath.Join(firstRoot, "sessions")
+	secondDir := filepath.Join(secondRoot, "sessions")
+	if err := os.MkdirAll(firstDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secondDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createSession(t, firstDir, "session-alias", "First root", "First answer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createSession(t, secondDir, "session-alias", "Second root", "Second answer"); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "current")
+	if err := os.Symlink(firstRoot, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	manager := Manager{SessionDir: filepath.Join(alias, "sessions"), TrashDir: filepath.Join(root, "trash")}
+	listed, err := manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Title != "First root" {
+		t.Fatalf("list through first alias target: %+v err=%v", listed, err)
+	}
+	got, err := manager.Get(context.Background(), "session-alias", nil)
+	if err != nil || got.Title != "First root" {
+		t.Fatalf("get through first alias target: %+v err=%v", got, err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = manager.List(context.Background(), ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].Title != "Second root" {
+		t.Fatalf("list after alias replacement reused stale metadata: %+v err=%v", listed, err)
+	}
+	got, err = manager.Get(context.Background(), "session-alias", nil)
+	if err != nil || got.Title != "Second root" {
+		t.Fatalf("get after alias replacement reused stale metadata: %+v err=%v", got, err)
+	}
+}
+
 func TestMetadataChangedDuringReadIsNotCached(t *testing.T) {
 	for _, test := range []struct {
 		name   string

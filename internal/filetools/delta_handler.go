@@ -185,13 +185,13 @@ func (deltaTranslator) TranslateResult(callID string, status tool.CallStatus, op
 // DeltaDefinition returns the model-visible WorkspaceDelta tool definition.
 func DeltaDefinition() tool.Definition {
 	return tool.Definition{Tool: llm.Tool{
-		Type: llm.ToolFunction,
-		Name: "WorkspaceDelta",
-		Description: "Summarize file changes this session recorded through WriteFile/EditFile. Returns counts and paths since a cursor by default. Set diff=true with path or op_id for a bounded unified diff of one recorded change. Coverage is limited to WriteFile/EditFile; shell and external edits are unobserved and an empty result never means the workspace is clean.",
+		Type:        llm.ToolFunction,
+		Name:        "WorkspaceDelta",
+		Description: "After WriteFile/EditFile edits, call before finalizing to audit recorded changes. Default returns a bounded summary and latest cursor; cursor is an inclusive as-of sequence, not a changes-since cursor. Use diff=true with path or op_id for one bounded unified diff. Only WriteFile/EditFile are recorded; Bash and external edits are unobserved, so an empty result never means the workspace is clean.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"cursor": map[string]any{"type": "string", "description": "Decimal journal sequence from a previous WorkspaceDelta reply; omit for all retained entries."},
+				"cursor": map[string]any{"type": "string", "description": "Inclusive as-of sequence from a previous reply; omit for the latest full retained summary."},
 				"diff":   map[string]any{"type": "boolean", "description": "Return a bounded unified diff instead of a summary."},
 				"path":   map[string]any{"type": "string", "description": "Workspace-relative path; required with diff=true unless op_id is given."},
 				"op_id":  map[string]any{"type": "string", "description": "Specific journal operation ID to diff."},

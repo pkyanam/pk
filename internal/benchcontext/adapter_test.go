@@ -133,3 +133,64 @@ func TestAdapterPreservesExplicitZeroUsageAndResponseOnCancellation(t *testing.T
 		t.Fatalf("cancelled response lost explicit usage availability: %+v", record)
 	}
 }
+
+func TestMeasureRequestEncoderMatchesMarshalByteCounts(t *testing.T) {
+	request := llm.Request{
+		Input: []llm.Item{
+			{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "<tag> & quotes \" and \u2028 separator"}},
+			{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "id&", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "line\n<safe>"}}}},
+		},
+		Tools: []llm.Tool{{Type: llm.ToolFunction, Name: "look&up", Description: "<description>", Parameters: map[string]any{"const": "x&y"}}},
+	}
+	record, err := MeasureRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedSize := func(value any) int64 {
+		t.Helper()
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int64(len(encoded))
+	}
+	if record.InputValueBytes != encodedSize(request.Input[0].Data)+encodedSize(request.Input[1].Data) {
+		t.Fatalf("input byte count=%d, want json.Marshal byte total", record.InputValueBytes)
+	}
+	if record.ToolSchemas.Bytes != encodedSize(request.Tools[0]) {
+		t.Fatalf("tool schema byte count=%d, want json.Marshal byte total", record.ToolSchemas.Bytes)
+	}
+}
+
+func BenchmarkMeasureRequest1MiBMixed(b *testing.B) {
+	request := syntheticMixedRequest()
+	b.ReportAllocs()
+	if _, err := MeasureRequest(request); err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(1 << 20)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MeasureRequest(request); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func syntheticMixedRequest() llm.Request {
+	request := llm.Request{}
+	message := strings.Repeat("context words with escaped \\\"quotes\\\" and unicode λ ", 64)
+	result := strings.Repeat("tool output line with ordinary structured data ", 128)
+	callArgs := strings.Repeat(`{"path":"src/file.go","old":"value","new":"updated"}`, 32)
+	for i := 0; i < 144; i++ {
+		request.Input = append(request.Input, llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: message}})
+	}
+	for i := 0; i < 48; i++ {
+		request.Input = append(request.Input,
+			llm.Item{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call", Name: "Bash", Arguments: callArgs}},
+			llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: "call", Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: result}}}},
+		)
+	}
+	request.Tools = []llm.Tool{{Type: llm.ToolFunction, Name: "Bash", Description: "Run a command", Parameters: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}}}}
+	return request
+}

@@ -1,0 +1,2 @@
+bun test v1.3.14 (0d9b296a)
+PK_UI_PERF {"width":120,"height":40,"historyEntries":300,"ingestMs":46.42,"appendMs":[36.18,35.56,37.22,37.62,37.61,37.05,37.55,36.99,37.6,37.05,37.14,37.82],"medianAppendMs":37.22,"heapDeltaBytes":11748947,"renderTreeNodes":914}

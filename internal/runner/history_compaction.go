@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -629,7 +630,7 @@ func (adapter *historyCompactionAdapter) summarize(ctx context.Context, request 
 }
 
 func chooseHistoryCut(request llm.Request, baseCut int, usable int64, policy HistoryCompactionOptions) (int, []int) {
-	if len(request.Input) < 3 {
+	if len(request.Input) < 3 || baseCut >= len(request.Input)-1 {
 		return baseCut, nil
 	}
 	lastUser := -1
@@ -641,10 +642,16 @@ func chooseHistoryCut(request llm.Request, baseCut int, usable int64, policy His
 	candidates := safeHistoryCuts(request.Input)
 	target := int64(float64(usable) * policy.TargetRatio)
 	placeholder := llm.Message{Role: llm.RoleUser, Text: strings.Repeat("x", int(min(int64(maxHistorySummaryBytes), policy.MaxSummaryTokens*3)))}
-	for _, cut := range candidates {
-		if cut <= baseCut || cut >= len(request.Input) {
-			continue
-		}
+	// Advancing a safe cut only removes unprotected items; retained system/user
+	// items and the summary placeholder remain constant. Estimated size therefore
+	// cannot increase. Search the first fitting cut instead of rescanning every
+	// suffix (O(n log n) policy work instead of O(n²)).
+	first := sort.SearchInts(candidates, baseCut+1)
+	last := sort.SearchInts(candidates, len(request.Input))
+	candidates = candidates[first:last]
+	var selectedProtected []int
+	index := sort.Search(len(candidates), func(candidate int) bool {
+		cut := candidates[candidate]
 		protected := []int(nil)
 		for index := 1; index < cut; index++ {
 			if message, ok := request.Input[index].Data.(llm.Message); ok && message.Role == llm.RoleSystem {
@@ -672,8 +679,13 @@ func chooseHistoryCut(request llm.Request, baseCut int, usable int64, policy His
 		input = append(input, request.Input[cut:]...)
 		estimate := contextbudget.EstimateRequest(llm.Request{Model: request.Model, Input: input, Tools: request.Tools})
 		if estimate.Tokens != nil && *estimate.Tokens <= target {
-			return cut, protected
+			selectedProtected = protected
+			return true
 		}
+		return false
+	})
+	if index < len(candidates) {
+		return candidates[index], selectedProtected
 	}
 	return baseCut, nil
 }

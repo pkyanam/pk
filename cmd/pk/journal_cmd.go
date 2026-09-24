@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/pkyanam/pk/internal/filetools"
+	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/pkyanam/pk/internal/workspacejournal"
 )
 
@@ -197,13 +198,34 @@ func runJournalRestore(store *workspacejournal.Store, ctx context.Context, args 
 		fmt.Fprintf(stderr, "pk journal restore: %v\n", err)
 		return 1
 	}
-	report, err := store.Restore(ctx, session, absWorkspace, opIDs)
+	sessionDir := filepath.Join(pkHome(), "sessions")
+	lease, err := sessionlock.Acquire(sessionDir, session)
+	if err != nil {
+		fmt.Fprintf(stderr, "pk journal restore: cannot safely restore this session: %v\n", err)
+		return 1
+	}
+	defer lease.Release()
+	ops, err := store.List(session)
 	if err != nil {
 		fmt.Fprintf(stderr, "pk journal restore: %v\n", err)
 		return 1
 	}
-	printRestoreReport(stdout, report)
-	if len(report.Restored) == 0 {
+	report, err := store.Restore(ctx, session, absWorkspace, opIDs)
+	items := restoredJournalItems(report, ops)
+	note := restoreReportNote(report, absWorkspace, items, err)
+	noteRecorded, noteErr := appendJournalNote(context.Background(), sessionDir, session, note)
+	printRestoreReport(stdout, report, items)
+	if err != nil {
+		fmt.Fprintf(stderr, "pk journal restore: %v\n", err)
+	}
+	if noteErr != nil {
+		fmt.Fprintf(stderr, "pk journal restore: file restore report could not be added to the saved session: %v\n", noteErr)
+	} else if noteRecorded {
+		fmt.Fprintln(stdout, "Restore report added to the saved session.")
+	} else {
+		fmt.Fprintln(stdout, "No saved session was found; the restore report was not added to session history.")
+	}
+	if err != nil || noteErr != nil || len(items) == 0 {
 		return 1
 	}
 	return 0
@@ -225,17 +247,21 @@ func printRestorePlan(stdout io.Writer, actions []workspacejournal.RestoreAction
 	}
 }
 
-func printRestoreReport(stdout io.Writer, report workspacejournal.RestoreReport) {
+func printRestoreReport(stdout io.Writer, report workspacejournal.RestoreReport, items []restoredJournalItem) {
 	if report.Snapshot != "" {
 		fmt.Fprintf(stdout, "Safety snapshot: %s\n", report.SnapshotDir)
 	}
-	for _, path := range report.Restored {
-		fmt.Fprintf(stdout, "restored: %s\n", path)
+	for _, item := range items {
+		if item.Path == "" {
+			fmt.Fprintf(stdout, "restored operation %s (path unavailable)\n", shortOpID(item.OperationID))
+			continue
+		}
+		fmt.Fprintf(stdout, "restored: %s (op %s)\n", item.Path, shortOpID(item.OperationID))
 	}
 	for _, skip := range report.Skipped {
 		fmt.Fprintf(stdout, "skipped: %s: %s\n", skip.Path, skip.Reason)
 	}
-	if len(report.Restored) == 0 {
+	if len(items) == 0 {
 		fmt.Fprintln(stdout, "No changes were applied.")
 	}
 }
@@ -244,4 +270,3 @@ func printRestoreReport(stdout io.Writer, report workspacejournal.RestoreReport)
 func runDiffRequest(store *workspacejournal.Store, session, path, opID string) (string, error) {
 	return filetools.RenderDiff(store, session, path, opID)
 }
-

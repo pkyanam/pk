@@ -15,7 +15,7 @@ Never print, log, or pass keys as command arguments. Provider keys saved by pk a
 
 ## Workspace journal
 
-WriteFile/EditFile changes are journaled (WriteFile/EditFile only; Bash and external edits are unobserved, so no entries never means the workspace is clean). `WorkspaceDelta` summarizes or diffs those changes read-only. `pk journal list|diff|plan|restore SESSION` and the `/journal` panel are user-initiated recovery: restore refuses files that changed since, snapshots current content first, and never overwrites user edits. It is not a sandbox or a backup. See docs/workspace-journal.md.
+WriteFile/EditFile changes are journaled. After a batch of those edits, call `WorkspaceDelta` before reporting completion to audit recorded paths and outcomes; omit `cursor` for the latest summary, or use one as an inclusive as-of checkpoint (not a changes-since cursor). `diff=true` with `path` or `op_id` returns one bounded diff. Bash and external edits are unobserved, so an empty result never means the workspace is clean. `pk journal list|diff|plan|restore SESSION` and the `/journal` panel are user-initiated recovery: restore refuses files that changed since, snapshots current content first, and never overwrites user edits. It is not a sandbox or a backup. See docs/workspace-journal.md.
 
 ## Develop and update
 

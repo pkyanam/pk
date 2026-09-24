@@ -24,12 +24,15 @@ const maxRestoreFingerprintBytes = 64 << 20
 // maxSnapshotFiles bounds how many files one safety snapshot materializes.
 const maxSnapshotFiles = 4096
 
+// maxRestorePreimageBytes bounds memory retained while preflighting a batch.
+const maxRestorePreimageBytes = 256 << 20
+
 // RestoreAction is one planned, reversible change.
 type RestoreAction struct {
-	OpID   string `json:"op_id"`
-	Path   string `json:"path"`
-	Kind   string `json:"kind"` // write or delete
-	ToSHA  string `json:"to_sha256,omitempty"`
+	OpID    string `json:"op_id"`
+	Path    string `json:"path"`
+	Kind    string `json:"kind"` // write or delete
+	ToSHA   string `json:"to_sha256,omitempty"`
 	FromSHA string `json:"from_sha256,omitempty"`
 }
 
@@ -223,10 +226,13 @@ func (s *Store) Restore(ctx context.Context, session, workspace string, ids []st
 	// Re-read current state under the session lock so the fingerprint checks
 	// and the safety snapshot cover the same instant.
 	var targets []snapshotTarget
+	conflict := false
+	var preimageBytes int64
 	for _, op := range selected {
 		current, exists, err := currentFileDigest(root, op.Path)
 		if err != nil {
 			skipped = append(skipped, SkippedRestore{OpID: op.ID, Path: op.Path, Reason: errorMessage(err)})
+			conflict = true
 			continue
 		}
 		if op.Pre == nil {
@@ -234,6 +240,7 @@ func (s *Store) Restore(ctx context.Context, session, workspace string, ids []st
 		}
 		if !exists {
 			skipped = append(skipped, SkippedRestore{OpID: op.ID, Path: op.Path, Reason: "file is currently missing; nothing to restore onto"})
+			conflict = true
 			continue
 		}
 		expected := ""
@@ -246,13 +253,28 @@ func (s *Store) Restore(ctx context.Context, session, workspace string, ids []st
 			// nor the recorded preimage (an already-restored state): it holds
 			// unrecognized content, so refuse rather than overwrite it.
 			skipped = append(skipped, SkippedRestore{OpID: op.ID, Path: op.Path, Reason: fmt.Sprintf("file changed since this mutation (%s now, %s expected); refusing without a matching state", shortDigest(current.SHA256), shortDigest(expected))})
+			conflict = true
 			continue
 		}
 		mode := os.FileMode(0o644)
 		if info, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(op.Path))); statErr == nil {
 			mode = info.Mode().Perm()
 		}
-		targets = append(targets, snapshotTarget{op: op, current: current, mode: mode})
+		preBytes, err := s.readObject(*op.Pre)
+		if err != nil {
+			return report, fmt.Errorf("preflight restore object for %s: %w", op.Path, err)
+		}
+		preimageBytes += int64(len(preBytes))
+		if preimageBytes > maxRestorePreimageBytes {
+			return report, fmt.Errorf("restore preimages exceed the %d-byte batch limit", maxRestorePreimageBytes)
+		}
+		targets = append(targets, snapshotTarget{op: op, current: current, mode: mode, preBytes: preBytes})
+	}
+	// Restore is atomic with respect to detected conflicts: do not restore a
+	// safe subset while leaving another selected path untouched.
+	if conflict {
+		report.Skipped = skipped
+		return report, nil
 	}
 	if len(targets) == 0 {
 		report.Skipped = skipped
@@ -266,13 +288,7 @@ func (s *Store) Restore(ctx context.Context, session, workspace string, ids []st
 	report.Snapshot = snapshotName
 	report.SnapshotDir = filepath.Join(s.sessionDir(session), "restores", snapshotName)
 
-	applied := 0
 	for _, item := range targets {
-		preBytes, err := s.readObject(*item.op.Pre)
-		if err != nil {
-			skipped = append(skipped, SkippedRestore{OpID: item.op.ID, Path: item.op.Path, Reason: errorMessage(err)})
-			continue
-		}
 		// The file may have changed between snapshot and apply; refuse rather
 		// than overwrite a state the snapshot did not capture.
 		again, exists, err := currentFileDigest(root, item.op.Path)
@@ -280,29 +296,31 @@ func (s *Store) Restore(ctx context.Context, session, workspace string, ids []st
 			skipped = append(skipped, SkippedRestore{OpID: item.op.ID, Path: item.op.Path, Reason: "file changed during restore; skipped"})
 			continue
 		}
-		if err := atomicRestoreWrite(root, item.op.Path, preBytes, item.mode); err != nil {
+		if err := atomicRestoreWrite(root, item.op.Path, item.preBytes, item.mode); err != nil {
 			skipped = append(skipped, SkippedRestore{OpID: item.op.ID, Path: item.op.Path, Reason: errorMessage(err)})
 			continue
 		}
+		// Report the filesystem mutation as soon as it succeeds, even if the
+		// following journal append fails. Callers must not mistake a recording
+		// failure for an unapplied restore.
+		report.Restored = append(report.Restored, item.op.ID)
 		note := restoreNote{PreSHA256: item.op.Pre.SHA256, SnapshotRef: snapshotName}
 		line := preparedLine{Kind: "restore", ID: item.op.ID, Restore: &note, Reason: "restored by user", Time: time.Now().UTC()}
 		if err := s.appendLine(session, line); err != nil {
 			skipped = append(skipped, SkippedRestore{OpID: item.op.ID, Path: item.op.Path, Reason: "restored but the journal could not record it: " + errorMessage(err)})
 			continue
 		}
-		report.Restored = append(report.Restored, item.op.ID)
-		applied++
 	}
-	_ = applied
 	report.Skipped = append(skipped, report.Skipped...)
 	s.gcAsync()
 	return report, nil
 }
 
 type snapshotTarget struct {
-	op      Op
-	current Content
-	mode    os.FileMode
+	op       Op
+	current  Content
+	mode     os.FileMode
+	preBytes []byte
 }
 
 func targetPaths(targets []snapshotTarget) []string {

@@ -877,7 +877,8 @@ func (m Manager) List(ctx context.Context, opts ListOptions) ([]Session, error) 
 	if err != nil {
 		return nil, err
 	}
-	store, err := localfile.New(sessionsDir)
+	cacheDir := canonicalMetadataDir(sessionsDir)
+	store, err := localfile.New(cacheDir)
 	if err != nil {
 		return nil, err
 	}
@@ -892,13 +893,17 @@ func (m Manager) List(ctx context.Context, opts ListOptions) ([]Session, error) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		key, files, cacheable := metadataCacheIdentity(sessionsDir, string(info.ID), info.LastUpdatedAt)
+		logInfo, logErr := os.Lstat(filepath.Join(cacheDir, string(info.ID)+".session.jsonl"))
+		key, files, cacheable := metadataCacheIdentityForLogResolved(cacheDir, string(info.ID), logInfo, info.LastUpdatedAt)
+		if logErr != nil {
+			cacheable = false
+		}
 		meta, hit := Session{}, false
 		if cacheable {
 			meta, hit = cachedMetadata(key, files)
 		}
 		if !hit {
-			meta, err = readMetadata(ctx, store, sessionsDir, info)
+			meta, err = readMetadata(ctx, store, cacheDir, info)
 			if err != nil {
 				// An unreadable or corrupt session should remain addressable for recovery.
 				meta = Session{ID: string(info.ID), UpdatedAt: info.LastUpdatedAt}
@@ -911,7 +916,7 @@ func (m Manager) List(ctx context.Context, opts ListOptions) ([]Session, error) 
 		}
 		meta.Active = opts.ActiveIDs[meta.ID]
 		if !meta.Active {
-			busy, lockErr := sessionlock.IsBusy(sessionsDir, meta.ID)
+			busy, lockErr := sessionlock.IsBusy(cacheDir, meta.ID)
 			if lockErr != nil {
 				return nil, fmt.Errorf("inspect active session %s: %w", meta.ID, lockErr)
 			}
@@ -941,14 +946,15 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 	if err != nil {
 		return Session{}, err
 	}
-	store, err := localfile.New(sessionsDir)
+	cacheDir := canonicalMetadataDir(sessionsDir)
+	store, err := localfile.New(cacheDir)
 	if err != nil {
 		return Session{}, err
 	}
 	// Capture the log and sidecar identities before validating/reading session
 	// data. The same baseline is compared after Items so a replacement during
 	// Inspect or Items cannot seed the cache with a mixed summary.
-	logPath := filepath.Join(sessionsDir, id+".session.jsonl")
+	logPath := filepath.Join(cacheDir, id+".session.jsonl")
 	logInfo, statErr := os.Lstat(logPath)
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 		return Session{}, statErr
@@ -957,7 +963,7 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 	var cacheFiles metadataFiles
 	cacheable := false
 	if statErr == nil {
-		cacheKey, cacheFiles, cacheable = metadataCacheIdentityForLog(sessionsDir, id, logInfo, logInfo.ModTime().UTC())
+		cacheKey, cacheFiles, cacheable = metadataCacheIdentityForLogResolved(cacheDir, id, logInfo, logInfo.ModTime().UTC())
 		if cacheable {
 			if meta, hit := cachedMetadata(cacheKey, cacheFiles); hit {
 				if err := ctx.Err(); err != nil {
@@ -965,7 +971,7 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 				}
 				meta.Active = activeIDs[id]
 				if !meta.Active {
-					meta.Active, err = sessionlock.IsBusy(sessionsDir, id)
+					meta.Active, err = sessionlock.IsBusy(cacheDir, id)
 				}
 				return meta, err
 			}
@@ -984,7 +990,7 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 		}
 	}
 	infoForMetadata := sessionstore.SessionInfo{ID: session.ID(id), LastUpdatedAt: logInfo.ModTime().UTC()}
-	meta, err := readMetadataFromSnapshot(ctx, store, sessionsDir, infoForMetadata, info)
+	meta, err := readMetadataFromSnapshot(ctx, store, cacheDir, infoForMetadata, info)
 	if err != nil {
 		return Session{}, err
 	}
@@ -993,7 +999,7 @@ func (m Manager) Get(ctx context.Context, id string, activeIDs map[string]bool) 
 	}
 	meta.Active = activeIDs[id]
 	if !meta.Active {
-		meta.Active, err = sessionlock.IsBusy(sessionsDir, id)
+		meta.Active, err = sessionlock.IsBusy(cacheDir, id)
 	}
 	if err == nil && cacheable && ctx.Err() == nil {
 		cacheMetadataIfUnchanged(cacheKey, cacheFiles, meta)

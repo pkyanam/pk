@@ -31,6 +31,9 @@ func PreviewToolCatalog(ctx context.Context, options Options) ([]SavedToolSummar
 		return nil, nil, errors.New("tool registry factory returned nil")
 	}
 	registry = filetools.Decorator(options.Workspace)(registry)
+	if strings.TrimSpace(options.WorkspaceJournalRoot) != "" {
+		registry = filetools.DeltaDecorator()(registry)
+	}
 	if options.DecorateRegistry != nil {
 		registry = options.DecorateRegistry(registry)
 		if registry == nil {

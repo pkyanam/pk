@@ -133,6 +133,37 @@ func TestTornTailLineIsIgnored(t *testing.T) {
 	}
 }
 
+func TestAppendRepairsTornTailBeforeWritingNextLine(t *testing.T) {
+	store := openStore(t)
+	session := testSession(t)
+	if err := store.Begin(session, "op-1", "", "WriteFile", "first.txt", nil, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(store.Root(), "sessions", session, "journal.jsonl")
+	if err := os.WriteFile(journal, appendMustRead(t, journal, []byte(`{"kind":"pre`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Begin(session, "op-2", "", "WriteFile", "second.txt", nil, []byte("two"), 0o644); err != nil {
+		t.Fatalf("append after crash-style torn tail: %v", err)
+	}
+	ops, err := store.List(session)
+	if err != nil {
+		t.Fatalf("journal unreadable after repaired append: %v", err)
+	}
+	if len(ops) != 2 || ops[0].Seq != 1 || ops[1].Seq != 2 || ops[1].ID != "op-2" {
+		t.Fatalf("unexpected operations after tail repair: %+v", ops)
+	}
+}
+
+func appendMustRead(t *testing.T, path string, suffix []byte) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, suffix...)
+}
+
 func TestCorruptInteriorLineFailsClosed(t *testing.T) {
 	store := openStore(t)
 	session := testSession(t)
@@ -256,6 +287,93 @@ func TestRestoreRejectsChangedFile(t *testing.T) {
 	if string(current) != "user edit" {
 		t.Fatalf("user edit must survive: %q", current)
 	}
+}
+
+func TestRestoreConflictDoesNotApplyOtherSelectedTargets(t *testing.T) {
+	store := openStore(t)
+	session := testSession(t)
+	workspace := t.TempDir()
+	for _, file := range []struct{ name, before, after string }{
+		{"a.txt", "a-before", "a-after"}, {"b.txt", "b-before", "b-after"},
+	} {
+		path := filepath.Join(workspace, file.name)
+		if err := os.WriteFile(path, []byte(file.after), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		opID := "op-" + file.name
+		if err := store.Begin(session, opID, "", "WriteFile", file.name, []byte(file.before), []byte(file.after), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Complete(session, opID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "b.txt"), []byte("user-edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Restore(context.Background(), session, workspace, []string{"op-a.txt", "op-b.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Restored) != 0 || report.Snapshot != "" || len(report.Skipped) != 1 {
+		t.Fatalf("conflicting batch must make no changes: %+v", report)
+	}
+	for name, want := range map[string]string{"a.txt": "a-after", "b.txt": "user-edit"} {
+		got, err := os.ReadFile(filepath.Join(workspace, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s changed to %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestRestorePreflightsAllObjectsBeforeApplying(t *testing.T) {
+	store := openStore(t)
+	session := testSession(t)
+	workspace := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte("after"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		opID := "op-" + name
+		if err := store.Begin(session, opID, "", "WriteFile", name, []byte("before"), []byte("after"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Complete(session, opID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops, err := store.List(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := objectPathMust(t, store.Root(), ops[1].Pre.SHA256)
+	if err := os.Remove(missing); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Restore(context.Background(), session, workspace, []string{"op-a.txt", "op-b.txt"}); err == nil {
+		t.Fatal("restore must fail before applying when any preimage object is unavailable")
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		got, err := os.ReadFile(filepath.Join(workspace, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "after" {
+			t.Fatalf("%s partially restored to %q", name, got)
+		}
+	}
+}
+
+func objectPathMust(t *testing.T, root, digest string) string {
+	t.Helper()
+	path, err := objectPath(root, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestRestoreRevertsCompletedMutation(t *testing.T) {
@@ -547,6 +665,30 @@ func TestGCObjectsRemovesUnreferenced(t *testing.T) {
 	}
 	if _, err := store.ReadObject(*ops[0].Pre); err != nil {
 		t.Fatalf("referenced object must survive GC: %v", err)
+	}
+}
+
+func TestGCRefusesIncompleteSessionScan(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root, Limits{MaxSessionsScanned: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []string{testSession(t), testSession2()} {
+		if err := os.MkdirAll(store.sessionDir(session), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := store.writeObject([]byte("may be referenced by unscanned session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := store.GCObjects()
+	if err == nil || removed != 0 {
+		t.Fatalf("incomplete scan must remove nothing, removed=%d err=%v", removed, err)
+	}
+	if _, err := store.ReadObject(content); err != nil {
+		t.Fatalf("object must survive skipped GC: %v", err)
 	}
 }
 

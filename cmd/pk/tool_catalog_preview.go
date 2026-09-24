@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sort"
 
 	"github.com/pkyanam/pk/internal/helperregistry"
@@ -19,7 +20,7 @@ func (s *rpcServer) previewModelToolCatalog(ctx context.Context, workspace, sess
 	if err := ctx.Err(); err != nil {
 		return savedToolCatalogPayload{}, err
 	}
-	options := runner.Options{Workspace: workspace, SessionDir: sessionDir, SkillsDirs: skillsDirs}
+	options := runner.Options{Workspace: workspace, SessionDir: sessionDir, SkillsDirs: skillsDirs, WorkspaceJournalRoot: filepath.Join(pkHome(), "journal")}
 	broker := interaction.NewBroker(ctx, "")
 	defer broker.Close()
 	manager, err := subagents.New(subagents.Config{

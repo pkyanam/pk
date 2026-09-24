@@ -11,9 +11,8 @@ import (
 	"strings"
 )
 
-// gcAsync starts one background garbage-collection pass per Store. GC is best
-// effort: it never blocks writes and never deletes an object it could not
-// prove unreferenced.
+// gcAsync starts one best-effort reference scan per Store. It does not delete
+// objects or compact append-only journals.
 func (s *Store) gcAsync() {
 	s.gcMu.Lock()
 	if s.gcStarted {
@@ -27,9 +26,8 @@ func (s *Store) gcAsync() {
 	}()
 }
 
-// gc scans session journals and removes objects referenced by no scanned
-// journal. It also caps per-session journal growth by rewriting the readable
-// fold when it exceeds the retention bound.
+// gc scans session journals to validate the object-reference set. It currently
+// leaves both object files and append-only journals untouched.
 func (s *Store) gc() error {
 	sessionsDir := filepath.Join(s.root, "sessions")
 	entries, err := os.ReadDir(sessionsDir)
@@ -47,7 +45,7 @@ func (s *Store) gc() error {
 	}
 	sort.Strings(sessionNames)
 	if len(sessionNames) > s.limits.MaxSessionsScanned {
-		sessionNames = sessionNames[:s.limits.MaxSessionsScanned]
+		return fmt.Errorf("GC scan requires %d sessions, over the configured limit of %d; pass skipped", len(sessionNames), s.limits.MaxSessionsScanned)
 	}
 	referenced := map[string]bool{}
 	scanFailed := false
@@ -101,7 +99,7 @@ func (s *Store) GCObjects() (int, error) {
 	}
 	sort.Strings(sessionNames)
 	if len(sessionNames) > s.limits.MaxSessionsScanned {
-		sessionNames = sessionNames[:s.limits.MaxSessionsScanned]
+		return 0, fmt.Errorf("GC scan requires %d sessions, over the configured limit of %d; no objects removed", len(sessionNames), s.limits.MaxSessionsScanned)
 	}
 	referenced := map[string]bool{}
 	for _, session := range sessionNames {

@@ -37,23 +37,31 @@ var listMetadataCache = struct {
 }{entries: make(map[metadataCacheKey]metadataCacheEntry)}
 
 func metadataCacheIdentity(sessionsDir, id string, updatedAt time.Time) (metadataCacheKey, metadataFiles, bool) {
-	dir := filepath.Clean(sessionsDir)
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = filepath.Clean(resolved)
-	}
+	dir := canonicalMetadataDir(sessionsDir)
 	logPath := filepath.Join(dir, id+".session.jsonl")
 	logInfo, err := os.Lstat(logPath)
 	if err != nil {
 		return metadataCacheKey{}, metadataFiles{}, false
 	}
-	return metadataCacheIdentityForLog(dir, id, logInfo, updatedAt)
+	return metadataCacheIdentityForLogResolved(dir, id, logInfo, updatedAt)
 }
 
 func metadataCacheIdentityForLog(sessionsDir, id string, logInfo os.FileInfo, updatedAt time.Time) (metadataCacheKey, metadataFiles, bool) {
+	return metadataCacheIdentityForLogResolved(canonicalMetadataDir(sessionsDir), id, logInfo, updatedAt)
+}
+
+func canonicalMetadataDir(sessionsDir string) string {
 	dir := filepath.Clean(sessionsDir)
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = filepath.Clean(resolved)
+		return filepath.Clean(resolved)
 	}
+	return dir
+}
+
+// metadataCacheIdentityForLogResolved accepts an already canonical directory.
+// List resolves its shared root once rather than walking identical symlink
+// components for each session and again during post-read cache validation.
+func metadataCacheIdentityForLogResolved(dir, id string, logInfo os.FileInfo, updatedAt time.Time) (metadataCacheKey, metadataFiles, bool) {
 	if logInfo == nil || logInfo.Mode()&os.ModeSymlink != 0 || !logInfo.Mode().IsRegular() || !logInfo.ModTime().UTC().Equal(updatedAt.UTC()) {
 		return metadataCacheKey{}, metadataFiles{}, false
 	}
@@ -122,7 +130,11 @@ func cacheMetadata(key metadataCacheKey, files metadataFiles, value Session) {
 }
 
 func cacheMetadataIfUnchanged(key metadataCacheKey, before metadataFiles, value Session) {
-	currentKey, after, cacheable := metadataCacheIdentity(key.dir, key.id, before.updatedAt)
+	logInfo, err := os.Lstat(filepath.Join(key.dir, key.id+".session.jsonl"))
+	if err != nil {
+		return
+	}
+	currentKey, after, cacheable := metadataCacheIdentityForLogResolved(key.dir, key.id, logInfo, before.updatedAt)
 	if !cacheable || currentKey != key || !sameMetadataFiles(before, after) {
 		return
 	}

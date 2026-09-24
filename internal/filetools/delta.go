@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 
 	"github.com/pkyanam/pk/internal/workspacejournal"
@@ -57,7 +59,11 @@ func runDelta(store *workspacejournal.Store, session, raw string) (string, error
 		if err := decoder.Decode(&parsed); err != nil {
 			return "", fmt.Errorf("invalid arguments: %w", err)
 		}
-		if decoder.More() {
+		var trailing any
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			if err == nil {
+				return "", errors.New("arguments must contain one JSON value")
+			}
 			return "", errors.New("arguments must contain one JSON value")
 		}
 	}
@@ -68,7 +74,7 @@ func runDelta(store *workspacejournal.Store, session, raw string) (string, error
 		if parsed.Path == "" && parsed.OpID == "" {
 			return "", errors.New("diff=true requires path or op_id")
 		}
-		return renderDiff(store, session, parsed.Path, parsed.OpID)
+		return renderDiffAsOf(store, session, parsed.Path, parsed.OpID, parsed.Cursor)
 	}
 	if parsed.Path != "" || parsed.OpID != "" {
 		return "", errors.New("path and op_id require diff=true")
@@ -77,7 +83,14 @@ func runDelta(store *workspacejournal.Store, session, raw string) (string, error
 	if err != nil {
 		return "", err
 	}
-	return workspacejournal.FormatSummary(summary, ""), nil
+	formatted := workspacejournal.FormatSummary(summary, "")
+	if parsed.Cursor != "" {
+		formatted = strings.Replace(formatted, " since cursor "+parsed.Cursor, " as of cursor "+parsed.Cursor, 1)
+	}
+	if summary.Cursor != "" {
+		formatted = strings.TrimRight(formatted, "\n") + fmt.Sprintf("\nJournal cursor: %s (inclusive as-of sequence; omit cursor for the latest summary).\n", summary.Cursor)
+	}
+	return formatted, nil
 }
 
 // RenderDiff exposes one bounded journal diff for CLI and RPC callers.
@@ -88,6 +101,18 @@ func RenderDiff(store *workspacejournal.Store, session, path, opID string) (stri
 // renderDiff renders a bounded unified diff for one path's latest recorded
 // mutation or one specific operation.
 func renderDiff(store *workspacejournal.Store, session, path, opID string) (string, error) {
+	return renderDiffAsOf(store, session, path, opID, "")
+}
+
+func renderDiffAsOf(store *workspacejournal.Store, session, path, opID, cursor string) (string, error) {
+	var cutoff uint64
+	if cursor != "" {
+		parsed, err := strconv.ParseUint(cursor, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid cursor %q: expected a decimal sequence number", cursor)
+		}
+		cutoff = parsed
+	}
 	ops, err := store.List(session)
 	if err != nil {
 		return "", err
@@ -95,6 +120,9 @@ func renderDiff(store *workspacejournal.Store, session, path, opID string) (stri
 	var chosen *workspacejournal.Op
 	for index := len(ops) - 1; index >= 0; index-- {
 		op := ops[index]
+		if cursor != "" && op.Seq > cutoff {
+			continue
+		}
 		if opID != "" && op.ID == opID {
 			chosen = &ops[index]
 			break
@@ -106,7 +134,13 @@ func renderDiff(store *workspacejournal.Store, session, path, opID string) (stri
 	}
 	if chosen == nil {
 		if opID != "" {
+			if cursor != "" {
+				return "", fmt.Errorf("no retained journal entry for operation %q at or before cursor %q", opID, cursor)
+			}
 			return "", fmt.Errorf("no retained journal entry for operation %q", opID)
+		}
+		if cursor != "" {
+			return "", fmt.Errorf("no retained completed mutation recorded for path %q at or before cursor %q", path, cursor)
 		}
 		return "", fmt.Errorf("no retained completed mutation recorded for path %q", path)
 	}
