@@ -8,6 +8,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"github.com/pkyanam/pk/internal/imagehint"
 	"io"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func (r *imageRegistry) StaticDefinitions() []tool.Definition {
 
 func (r *imageRegistry) Resolve(name string) (tool.Translator, bool) {
 	if name == ToolName {
-		return imageTranslator{root: r.root, config: r.config}, true
+		return imagehint.Wrap(imageTranslator{root: r.root, config: r.config}), true
 	}
 	return r.base.Resolve(name)
 }

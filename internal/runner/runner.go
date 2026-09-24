@@ -23,6 +23,7 @@ import (
 	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/pkyanam/pk/internal/contextbudget"
 	"github.com/pkyanam/pk/internal/filetools"
+	"github.com/pkyanam/pk/internal/imagehint"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/pkyanam/pk/internal/workspacejournal"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
@@ -1506,7 +1507,7 @@ func newToolRegistryBaseWithSkills(workspace, operationDir string, includeSkillU
 	}
 	return tool.NewRegistry(tool.StaticTranslators{
 		Bash:      bash.New(bash.Config{Shell: "/bin/sh", Directory: workspace, BaseDirectory: operationDir}),
-		ViewImage: viewimage.New(viewimage.Config{Directory: workspace}),
+		ViewImage: imagehint.Wrap(viewimage.New(viewimage.Config{Directory: workspace})),
 	}, enabled...)
 }
 
