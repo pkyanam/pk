@@ -478,9 +478,10 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("Refresh · R")
     expect(frame).not.toContain("$")
     let responseHeaderFrame = frame
-    if (width < 96) {
-      await act(async () => { for (let index = 0; index < 8; index++) setup.mockInput.pressKey("ARROW_UP") })
-      responseHeaderFrame = await setup.waitForFrame((value) => value.includes("3 recorded responses"))
+    for (let step = 0; step < 20 && !responseHeaderFrame.includes("3 recorded responses"); step++) {
+      await act(async () => { setup.mockInput.pressKey("ARROW_UP") })
+      await setup.flush()
+      responseHeaderFrame = setup.captureCharFrame()
     }
     expect(responseHeaderFrame).toContain("3 recorded responses")
     await act(async () => { for (let index = 0; index < 30; index++) setup.mockInput.pressKey("ARROW_DOWN") })
