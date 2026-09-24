@@ -684,7 +684,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		for _, issue := range pluginIssues {
 			fmt.Fprintf(s.diagnostics, "pk: plugin warning: %v\n", issue)
 		}
-		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, ImageGenFingerprint: imageGenDriver, CompactCapturedOutput: cfg.ContextPolicy == config.ContextPolicyCompact, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true}
+		s.opts = runner.Options{Workspace: workspace, Model: model, Effort: effort, ProviderID: providerID, ImageGenFingerprint: imageGenDriver, CompactCapturedOutput: cfg.ContextPolicy == config.ContextPolicyCompact, SessionDir: s.sessionDir, SkillsDirs: defaultSkillDirs(), ToolEvents: true, WorkspaceJournalRoot: filepath.Join(pkHome(), "journal")}
 		if err := applyConfiguredContextManagement(&s.opts, cfg, provider.BaseURL); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": "resolve context budget: " + err.Error(), "recoverable": true})
 			return
@@ -1038,7 +1038,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				return
 			}
 			subagentManager, err := configureSubagents(broker.Context(), &opts, subagentRuntimeConfig{
-				Workspace: opts.Workspace, SessionDir: opts.SessionDir, SkillsDirs: opts.SkillsDirs,
+				Workspace: opts.Workspace, SessionDir: opts.SessionDir, SkillsDirs: opts.SkillsDirs, WorkspaceJournalRoot: opts.WorkspaceJournalRoot,
 				PluginManifests: pluginPaths, MCPServers: mcpServers,
 				InheritPlugins: len(pluginPaths) > 0, InheritMCP: len(mcpServers) > 0,
 				ProviderID: providerID, ProviderConfig: selectedProvider,

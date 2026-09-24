@@ -35,6 +35,9 @@ type RunnerFactory func(context.Context, runner.Options) (runner.RunResult, erro
 
 type Config struct {
 	Workspace, SessionDir, Model, Effort, SystemPrompt string
+	// WorkspaceJournalRoot, when set, journals child file-tool mutations under
+	// the same root as the parent. Entries are keyed by the child session ID.
+	WorkspaceJournalRoot string
 	SkillsDirs                                         []string
 	MaxConcurrent                                      int
 	Depth                                              int
@@ -278,7 +281,7 @@ func (m *Manager) run(c *child) {
 	readDone := make(chan struct{})
 	go m.readEvents(c, r, readDone)
 	prompt := buildChildPrompt(c.info.Task, c.info.Files, c.info.TaskOnly)
-	opts := runner.Options{Prompt: prompt, PromptID: "subagent-" + c.info.ID, Workspace: m.cfg.Workspace, SessionDir: m.cfg.SessionDir, Model: c.info.Model, Effort: c.info.Effort, SystemPrompt: m.cfg.SystemPrompt, SkillsDirs: append([]string(nil), m.cfg.SkillsDirs...), JSONL: true, ToolEvents: true, Output: w, OnSession: func(id string) {
+	opts := runner.Options{Prompt: prompt, PromptID: "subagent-" + c.info.ID, Workspace: m.cfg.Workspace, SessionDir: m.cfg.SessionDir, Model: c.info.Model, Effort: c.info.Effort, SystemPrompt: m.cfg.SystemPrompt, SkillsDirs: append([]string(nil), m.cfg.SkillsDirs...), JSONL: true, ToolEvents: true, Output: w, WorkspaceJournalRoot: m.cfg.WorkspaceJournalRoot, OnSession: func(id string) {
 		m.mu.Lock()
 		c.info.SessionID = id
 		c.info.UpdatedAt = time.Now().UTC()

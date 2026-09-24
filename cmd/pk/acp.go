@@ -116,7 +116,7 @@ func runACPCommandWithRunnerAdapter(ctx context.Context, args []string, input io
 					cleanup()
 				}
 			}()
-			options := runner.Options{Prompt: prompt, PromptID: promptID, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, ProviderID: selected.ProviderID, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Output: &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}, Diagnostics: diagnostics, JSONL: true, BeforeInputPersist: beforePersist, AfterInputPersist: func(sessionID, inputID string) {
+			options := runner.Options{Prompt: prompt, PromptID: promptID, SessionID: turn.SessionID, Workspace: turn.Workspace, Model: turn.Model, Effort: turn.Effort, ProviderID: selected.ProviderID, SessionDir: sessionDir, SkillsDirs: defaultSkillDirs(), Output: &acpRunnerWriter{emit: emit, seenTools: make(map[string]bool)}, Diagnostics: diagnostics, JSONL: true, WorkspaceJournalRoot: filepath.Join(pkHome(), "journal"), BeforeInputPersist: beforePersist, AfterInputPersist: func(sessionID, inputID string) {
 				persisted = true
 				if afterPersist != nil {
 					afterPersist(sessionID, inputID)

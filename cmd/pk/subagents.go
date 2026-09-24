@@ -23,6 +23,7 @@ import (
 type subagentRuntimeConfig struct {
 	Workspace               string
 	SessionDir              string
+	WorkspaceJournalRoot    string
 	Model                   string
 	Effort                  string
 	CompactCapturedOutput   bool
@@ -127,6 +128,7 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 	}
 	manager, err := subagents.New(subagents.Config{
 		Workspace: cfg.Workspace, SessionDir: cfg.SessionDir,
+		WorkspaceJournalRoot: cfg.WorkspaceJournalRoot,
 		Model: model, Effort: effort,
 		SystemPrompt: cfg.SystemPrompt, SkillsDirs: append([]string(nil), cfg.SkillsDirs...),
 		MaxConcurrent: cfg.MaxConcurrent, Depth: 0, Events: cfg.Events,

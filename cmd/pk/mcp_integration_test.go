@@ -17,6 +17,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// pk sessions export PK_MODEL/PK_EFFORT; tests must pin defaults instead of
+	// inheriting the ambient session model (a @cf/ model without its provider
+	// makes RPC start/prompt tests fail through the Workers-AI model gate).
+	os.Unsetenv("PK_MODEL")
+	os.Unsetenv("PK_EFFORT")
 	if os.Getenv("PK_TEST_MCP_SERVER") == "1" {
 		server := mcp.NewServer(&mcp.Implementation{Name: "pk-mcp-cli-fixture", Version: "1"}, nil)
 		mcp.AddTool(server, &mcp.Tool{Name: "echo", Description: "Echo text", InputSchema: map[string]any{
