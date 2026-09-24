@@ -61,6 +61,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runConfigCommand(args[1:], stdout, stderr)
 	case "task", "tasks":
 		return runTaskCommand(ctx, args[1:], stdout, stderr)
+	case "journal":
+		return runJournalCommand(ctx, args[1:], stdout, stderr)
 	case "__task-worker":
 		return runTaskWorker(ctx, args[1:], stderr)
 	case "login":
@@ -556,7 +558,6 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 		return runner.Options{}, false, "", nil, nil, "", fmt.Errorf("resolve workspace: %w", err)
 	}
 	options.Workspace = workspace
-	options.SessionDir = filepath.Join(pkHome(), "sessions")
 	if len(skills) == 0 {
 		options.SkillsDirs = defaultSkillDirs()
 	} else {
@@ -569,6 +570,8 @@ func parseCommandArgsWithInputs(args []string, stderr io.Writer, requirePrompt b
 		}
 		codexAuth = filepath.Join(codexHome, "auth.json")
 	}
+	options.SessionDir = filepath.Join(pkHome(), "sessions")
+	options.WorkspaceJournalRoot = filepath.Join(pkHome(), "journal")
 	return options, useCodex, codexAuth, files, extensionPaths, imageDriver, nil
 }
 
@@ -649,6 +652,7 @@ Tools and integrations:
   pk acp                        serve the supported Agent Client Protocol v1 subset over stdio
 
 Maintenance and automation:
+  pk journal list|diff|plan|restore ...  inspect or restore journaled file-tool changes
   pk update [--source DIR]      install the latest official paired release; DIR builds local source
   pk --update                   alias for pk update
   pk rollback | version

@@ -23,6 +23,7 @@ import (
 	"github.com/pkyanam/pk/internal/benchcontext"
 	"github.com/pkyanam/pk/internal/contextbudget"
 	"github.com/pkyanam/pk/internal/filetools"
+	"github.com/pkyanam/pk/internal/workspacejournal"
 	"github.com/pkyanam/pk/internal/sessionlock"
 	"github.com/unreallabsai/unreal-agent/harness/contextbuilder"
 	"github.com/unreallabsai/unreal-agent/harness/coordinator"
@@ -121,6 +122,14 @@ type Options struct {
 	// this runner has settled and tears down the operation manager.
 	RemoteJobHandlers func(context.Context) []operation.RemoteJobHandler
 	CaptureLimit      int
+	// WorkspaceJournalRoot opts file tools into durable change journaling under
+	// the given root (normally PK_HOME/journal). Empty disables journaling and
+	// WorkspaceDelta. The session ID keys journal entries; file-tool coverage
+	// only, never a sandbox or completeness claim.
+	WorkspaceJournalRoot string
+	// WorkspaceJournalLimits bounds per-session retention and object-store
+	// growth. Zero selects package defaults.
+	WorkspaceJournalLimits workspacejournal.Limits
 	// MCPFingerprint binds an MCP tool schema/configuration set to the saved
 	// session prefix. Resumes must provide the same fingerprint.
 	MCPFingerprint string
@@ -309,7 +318,16 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 		return RunResult{}, fmt.Errorf("create session inbox: %w", err)
 	}
 	var remoteJobHandlers []operation.RemoteJobHandler
-	remoteJobHandlers = append(remoteJobHandlers, filetools.HandlerFactory(options.Workspace)(runCtx)...)
+	if strings.TrimSpace(options.WorkspaceJournalRoot) != "" {
+		store, journalErr := workspacejournal.Open(options.WorkspaceJournalRoot, options.WorkspaceJournalLimits)
+		if journalErr != nil {
+			return RunResult{}, fmt.Errorf("open workspace journal: %w", journalErr)
+		}
+		workspaceJournal := filetools.HandlerFactoryWithJournal(options.Workspace, store, string(id))
+		remoteJobHandlers = append(remoteJobHandlers, workspaceJournal(runCtx)...)
+	} else {
+		remoteJobHandlers = append(remoteJobHandlers, filetools.HandlerFactory(options.Workspace)(runCtx)...)
+	}
 	if options.RemoteJobHandlers != nil {
 		remoteJobHandlers = append(remoteJobHandlers, options.RemoteJobHandlers(runCtx)...)
 	}
@@ -416,6 +434,9 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 		return RunResult{SessionID: string(id)}, errors.New("tool registry factory returned nil")
 	}
 	registry = filetools.Decorator(options.Workspace)(registry)
+	if strings.TrimSpace(options.WorkspaceJournalRoot) != "" {
+		registry = filetools.DeltaDecorator()(registry)
+	}
 	warnings = append(skillDiscoveryWarnings, warnings...)
 	if options.DecorateRegistry != nil {
 		registry = options.DecorateRegistry(registry)

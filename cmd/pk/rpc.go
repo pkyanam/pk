@@ -1659,6 +1659,21 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		s.handleContextBudgetConfigure(msg.ID, msg.Payload)
 	case "compact":
 		s.startManualContextCompaction(msg.ID)
+	case "journal":
+		var cursor string
+		_ = json.Unmarshal(payload["cursor"], &cursor)
+		var includeDiffs bool
+		_ = json.Unmarshal(payload["diff"], &includeDiffs)
+		diffPath := get("path")
+		diffOpID := get("op_id")
+		s.journalStatus(msg.ID, cursor, includeDiffs, diffPath, diffOpID)
+	case "journal_restore":
+		var opIDs []string
+		_ = json.Unmarshal(payload["ops"], &opIDs)
+		var sessionID, workspace string
+		_ = json.Unmarshal(payload["session_id"], &sessionID)
+		_ = json.Unmarshal(payload["workspace"], &workspace)
+		s.startJournalRestore(msg.ID, sessionID, opIDs, workspace)
 	case "provider_presets_list":
 		_ = s.emit(msg.ID, "provider_presets", map[string]any{"presets": rpcProviderPresets()})
 	case "provider_preset_add":

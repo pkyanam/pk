@@ -18,6 +18,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/pkyanam/pk/internal/workspacejournal"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/operation"
 	"github.com/unreallabsai/unreal-agent/harness/tool"
@@ -26,6 +27,8 @@ import (
 const (
 	planType         operation.RemoteJobPlanType    = "pk.filetools"
 	planVersion      operation.RemoteJobPlanVersion = 1
+	deltaPlanType    operation.RemoteJobPlanType    = "pk.filetools.delta"
+	deltaPlanVersion operation.RemoteJobPlanVersion = 1
 	maxArgumentBytes                                = 16 << 20
 	maxFileBytes                                    = 2 << 20
 )
@@ -129,6 +132,7 @@ func (t translator) TranslateResult(callID string, status tool.CallStatus, ops [
 	return textResult(callID, state.TerminalResult), nil
 }
 
+// textResult is the standard single-text tool result.
 func textResult(callID, text string) llm.ToolResult {
 	return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: text}}}
 }
@@ -208,6 +212,29 @@ func Decorator(workspace string) func(tool.Registry) tool.Registry {
 	}
 }
 
+// DeltaDecorator adds the read-only WorkspaceDelta tool. The caller must also
+// install the matching delta remote-job handler; without it, WorkspaceDelta
+// calls fail with an unsupported-operation error, so this decorator is only
+// used when a journal store is active.
+func DeltaDecorator() func(tool.Registry) tool.Registry {
+	return func(base tool.Registry) tool.Registry {
+		if base == nil {
+			return base
+		}
+		if _, found := base.Resolve("WorkspaceDelta"); found {
+			return base
+		}
+		def := DeltaDefinition()
+		defs := append([]tool.Definition(nil), base.StaticDefinitions()...)
+		defs = append(defs, def)
+		return &registry{
+			base:   base,
+			defs:   defs,
+			byName: map[string]tool.Translator{"WorkspaceDelta": deltaTranslator{}},
+		}
+	}
+}
+
 func (r *registry) StaticDefinitions() []tool.Definition {
 	return append([]tool.Definition(nil), r.defs...)
 }
@@ -231,39 +258,22 @@ func definitions() []tool.Definition {
 }
 
 func HandlerFactory(workspace string) func(context.Context) []operation.RemoteJobHandler {
+	return HandlerFactoryWithJournal(workspace, nil, "")
+}
+
+// HandlerFactoryWithJournal is the journaling variant. A nil store or empty
+// session ID disables journaling; the returned handlers then behave exactly
+// like the plain factory.
+func HandlerFactoryWithJournal(workspace string, store *workspacejournal.Store, sessionID string) func(context.Context) []operation.RemoteJobHandler {
 	return func(ctx context.Context) []operation.RemoteJobHandler {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return []operation.RemoteJobHandler{newHandler(ctx, workspace)}
-	}
-}
-
-func (h *handler) execute(ctx context.Context, id operation.ID, j *workerJob, request request) {
-	defer h.wg.Done()
-	result, err := apply(ctx, h.workspace, request)
-	h.mu.Lock()
-	// A nil apply error means the atomic write has already committed. A late
-	// cancellation must not report that successful mutation as canceled.
-	canceled := shouldReportCanceled(j.canceled || ctx.Err() != nil, err)
-	delete(h.jobs, id)
-	h.mu.Unlock()
-	var step operation.Step
-	if canceled {
-		step, err = operation.CancelRemoteJob(j.operation)
-	} else if err != nil {
-		step, err = operation.FailRemoteJob(j.operation, err)
-	} else {
-		state, stateErr := operation.DecodeRemoteJobState(j.operation)
-		if stateErr != nil {
-			step, err = operation.FailRemoteJob(j.operation, stateErr)
-		} else {
-			state.TerminalResult = result
-			step, err = operation.UpdateRemoteJob(j.operation, state, operation.StatusCompleted)
+		handlers := []operation.RemoteJobHandler{newHandler(ctx, workspace, store, sessionID)}
+		if store != nil && sessionID != "" {
+			handlers = append(handlers, newDeltaHandler(ctx, store, sessionID))
 		}
-	}
-	if err == nil && step.Operation != nil {
-		_ = h.publish(*step.Operation)
+		return handlers
 	}
 }
 
@@ -529,6 +539,167 @@ func atomicWrite(ctx context.Context, root *os.Root, rel string, contents []byte
 	return errors.New("could not allocate a unique temporary file")
 }
 
+// journalContext identifies the session a mutation belongs to. The runner
+// supplies it; a nil context disables journaling (tests, previews).
+type journalContext struct {
+	store     *workspacejournal.Store
+	sessionID string
+}
+
+func (h *handler) execute(ctx context.Context, id operation.ID, j *workerJob, request request) {
+	defer h.wg.Done()
+	result, err := h.applyJournaled(ctx, id, request)
+	h.mu.Lock()
+	// A nil apply error means the atomic write has already committed. A late
+	// cancellation must not report that successful mutation as canceled.
+	canceled := shouldReportCanceled(j.canceled || ctx.Err() != nil, err)
+	delete(h.jobs, id)
+	h.mu.Unlock()
+	var step operation.Step
+	if canceled {
+		step, err = operation.CancelRemoteJob(j.operation)
+	} else if err != nil {
+		step, err = operation.FailRemoteJob(j.operation, err)
+	} else {
+		state, stateErr := operation.DecodeRemoteJobState(j.operation)
+		if stateErr != nil {
+			step, err = operation.FailRemoteJob(j.operation, stateErr)
+		} else {
+			state.TerminalResult = result
+			step, err = operation.UpdateRemoteJob(j.operation, state, operation.StatusCompleted)
+		}
+	}
+	if err == nil && step.Operation != nil {
+		_ = h.publish(*step.Operation)
+	}
+}
+
+// applyJournaled wraps apply() with the durable journal contract: prepare
+// (preimage + postimage stored, "prepared" line fsynced) happens before the
+// workspace mutation; the terminal status line is recorded afterward. If the
+// prepare step fails, the mutation is refused and nothing is journaled.
+func (h *handler) applyJournaled(ctx context.Context, id operation.ID, request request) (string, error) {
+	if h.journal == nil || h.sessionID == "" {
+		return apply(ctx, h.workspace, request)
+	}
+	opID := string(id)
+	preimage, postimage, mode, paths, prepareErr := prepareImages(ctx, h.workspace, request)
+	if prepareErr != nil {
+		// The prepare phase reads workspace state and mirrors apply() errors
+		// before any mutation. Invalid arguments and precondition failures are
+		// not journaled: nothing changed and the model already receives the
+		// same error the unjournaled path produces.
+		return "", prepareErr
+	}
+	if err := h.journal.Begin(h.sessionID, opID, "", request.Action, paths, preimage, postimage, mode); err != nil {
+		return "", fmt.Errorf("journal prepare failed; file was not changed: %w", err)
+	}
+	result, err := apply(ctx, h.workspace, request)
+	if err != nil {
+		_ = h.journal.Fail(h.sessionID, opID, errorMessage(err))
+		return "", err
+	}
+	if commitErr := h.journal.Complete(h.sessionID, opID); commitErr != nil {
+		return "", fmt.Errorf("file was changed but the journal could not record completion: %w", commitErr)
+	}
+	return result, nil
+}
+
+func errorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ReplaceAll(err.Error(), "\n", " ")
+	if len(message) > 240 {
+		message = message[:240]
+	}
+	return message
+}
+
+
+// prepareImages reads the preimage and computes the postimage for one file
+// mutation without touching the workspace. It mirrors validateArgs plus the
+// read/patch logic of writeFile/editFile, returning:
+//
+//   - preimage bytes (nil when the file does not exist yet)
+//   - postimage bytes (nil when the operation cannot be prepared)
+//   - the mode the post-state file should carry
+//   - the normalized workspace-relative path
+func prepareImages(ctx context.Context, workspace string, request request) (pre, post []byte, mode os.FileMode, path string, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, nil, 0, "", err
+	}
+	if err = validateArgs(request.Action, request.Args); err != nil {
+		return nil, nil, 0, "", err
+	}
+	rootPath, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("resolve workspace: %w", err)
+	}
+	rootPath, err = filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("resolve workspace: %w", err)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("open workspace: %w", err)
+	}
+	defer root.Close()
+	rel, err := relativePath(rootPath, request.Args.Path)
+	if err != nil {
+		return nil, nil, 0, "", err
+	}
+	if err := validatePath(root, rel); err != nil {
+		return nil, nil, 0, "", err
+	}
+	switch request.Action {
+	case "WriteFile":
+		old, oldMode, exists, readErr := readFile(root, rel)
+		if readErr != nil {
+			return nil, nil, 0, "", readErr
+		}
+		if exists && !request.Args.Overwrite {
+			return nil, nil, 0, "", errors.New("file already exists; set overwrite=true to replace it")
+		}
+		contents := []byte(*request.Args.Content)
+		perm := os.FileMode(0o644)
+		if exists {
+			perm = oldMode
+			pre = old
+		}
+		return pre, contents, perm, rel, nil
+	case "EditFile":
+		original, originalMode, exists, readErr := readFile(root, rel)
+		if readErr != nil {
+			return nil, nil, 0, "", readErr
+		}
+		if !exists {
+			return nil, nil, 0, "", errors.New("file does not exist")
+		}
+		digest := sha256.Sum256(original)
+		if request.Args.ExpectedSHA256 != "" && !strings.EqualFold(request.Args.ExpectedSHA256, hex.EncodeToString(digest[:])) {
+			return nil, nil, 0, "", errors.New("file changed since expected_sha256 was computed")
+		}
+		count := bytes.Count(original, []byte(request.Args.OldString))
+		if count == 0 {
+			return nil, nil, 0, "", errors.New("old_string was not found; file was not changed")
+		}
+		if count > 1 && !request.Args.ReplaceAll {
+			return nil, nil, 0, "", fmt.Errorf("old_string matched %d locations; set replace_all=true to replace all", count)
+		}
+		removedBytes := int64(count) * int64(len(request.Args.OldString))
+		addedBytes := int64(count) * int64(len(*request.Args.NewString))
+		resultBytes := int64(len(original)) - removedBytes + addedBytes
+		if resultBytes < 0 || resultBytes > maxFileBytes {
+			return nil, nil, 0, "", errors.New("edited file would exceed the 2 MiB file limit")
+		}
+		updated := bytes.ReplaceAll(original, []byte(request.Args.OldString), []byte(*request.Args.NewString))
+		return original, updated, originalMode, rel, nil
+	default:
+		return nil, nil, 0, "", errors.New("unsupported file action")
+	}
+}
+
 type workerJob struct {
 	operation operation.Operation
 	cancel    context.CancelFunc
@@ -538,6 +709,8 @@ type workerJob struct {
 type handler struct {
 	ctx       context.Context
 	workspace string
+	journal   *workspacejournal.Store
+	sessionID string
 	mu        sync.Mutex
 	jobs      map[operation.ID]*workerJob
 	updates   chan operation.Operation
@@ -545,8 +718,8 @@ type handler struct {
 	done      chan struct{}
 }
 
-func newHandler(ctx context.Context, workspace string) *handler {
-	h := &handler{ctx: ctx, workspace: workspace, jobs: make(map[operation.ID]*workerJob), updates: make(chan operation.Operation, 32), done: make(chan struct{})}
+func newHandler(ctx context.Context, workspace string, journal *workspacejournal.Store, sessionID string) *handler {
+	h := &handler{ctx: ctx, workspace: workspace, journal: journal, sessionID: sessionID, jobs: make(map[operation.ID]*workerJob), updates: make(chan operation.Operation, 32), done: make(chan struct{})}
 	go func() {
 		<-ctx.Done()
 		h.mu.Lock()

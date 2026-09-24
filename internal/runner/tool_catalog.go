@@ -61,6 +61,8 @@ func toolCatalogSource(name string) string {
 	switch name {
 	case "Bash", "ViewImage", "SkillUse", "WriteFile", "EditFile":
 		return "built-in"
+	case "WorkspaceDelta":
+		return "workspace journal"
 	case "AskUser":
 		return "interaction"
 	case "ImageGen":

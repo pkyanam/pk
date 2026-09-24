@@ -161,7 +161,7 @@ func TestDecoratorRegistersToolsAndPreservesBase(t *testing.T) {
 func TestRemoteJobPublishesAwaitingBeforeCompleted(t *testing.T) {
 	workspace := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
-	h := newHandler(ctx, workspace)
+	h := newHandler(ctx, workspace, nil, "")
 	defer func() { cancel(); h.Wait() }()
 	content := "done"
 	data, err := json.Marshal(request{Action: "WriteFile", Args: args{Path: "result.txt", Content: &content}})

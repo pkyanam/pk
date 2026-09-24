@@ -300,7 +300,7 @@ func runTaskWorker(ctx context.Context, args []string, diagnostics io.Writer) in
 				}
 			}
 		}()
-		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, ContextBudget: taskOptions.ContextBudget, HistoryCompaction: taskOptions.HistoryCompaction, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: onSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive}
+		o := runner.Options{Prompt: taskOptions.Prompt, PromptID: taskOptions.PromptID, SessionID: taskOptions.SessionID, Workspace: taskOptions.Workspace, Model: taskOptions.Model, Effort: taskOptions.Effort, ProviderID: taskOptions.ProviderID, ContextBudget: taskOptions.ContextBudget, HistoryCompaction: taskOptions.HistoryCompaction, CompactCapturedOutput: taskOptions.ContextPolicy == config.ContextPolicyCompact, SystemPrompt: taskOptions.SystemPrompt, SessionDir: taskOptions.SessionDir, SkillsDirs: taskOptions.SkillsDirs, JSONL: taskOptions.JSONL, ToolEvents: taskOptions.ToolEvents, Output: output, Diagnostics: diagnostics, OnSession: onSession, Inputs: inputs, KeepAlive: taskOptions.KeepAlive, WorkspaceJournalRoot: filepath.Join(pkHome(), "journal")}
 		client, providerSnapshot, err := prepareCLIAdapter(ctx, &o, taskOptions.UseCodex, taskOptions.CodexPath)
 		if err != nil {
 			return err

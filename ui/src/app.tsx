@@ -34,7 +34,7 @@ type StreamProgress = { outerId: string; requestId: string; label: string; updat
 type ProviderReasoning = { outerId: string; requestId: string; attempt: number; text: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; taskID?: string; dismissed?: boolean; answerRequestID?: string; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "theme" | "plugin_commands" | "history" | "usage" | "compact" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "theme" | "plugin_commands" | "history" | "usage" | "compact" | "journal" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type CompactionUsage = {
   attempts: number
@@ -66,6 +66,9 @@ type ExtensionCommand = { name: string; extension_id: string; command_name: stri
 type MCPServerOption = { id: string; command: string; arguments_count: number; environment_keys: string[]; working_directory?: string; transport?: string; url?: string; auth_mode?: string; auth_status?: string; credential_env?: string[] }
 type MCPToolOption = { server_id: string; server_tool_name: string; name: string; description: string; input_schema?: Record<string, unknown> }
 type ModelToolOption = { name: string; description: string; source?: string }
+type JournalOp = { seq: number; id: string; call_id?: string; action: string; path: string; status: string; reason?: string }
+type JournalPathSummary = { path: string; added_files: number; modified_files: number; failed_attempts: number; restores: number; last_seq: number; last_action: string }
+type JournalSummary = { session: string; cursor: string; observed: number; completed: number; failed: number; unknown: number; restored_ops: number; truncated_paths?: boolean; coverage: string; files?: JournalPathSummary[] }
 type ProviderOption = { id: string; protocol: string; base_url: string; api_key_configured: boolean; api_key_env?: string; default_model?: string; default_effort?: string; supports_reasoning_effort: boolean; is_default: boolean }
 type ProviderPreset = { id: string; label: string; base_url: string; protocol: string; api_style: string; api_key_env: string; default_effort: string; supports_reasoning_effort: boolean; requires_account_id?: boolean; docs_url: string; compatibility_note: string }
 type ProviderModelOption = { id: string; object?: string; owned_by?: string; task?: string; description?: string; capabilities?: string[] }
@@ -235,6 +238,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/history", description: "Browse saved conversation entries from earlier in this session", action: "history" },
   { name: "/usage", description: "Inspect token totals, context budget, and compaction", action: "usage" },
   { name: "/compact", description: "Compact saved conversation context while idle", action: "compact" },
+  { name: "/journal", description: "Inspect journaled file changes or restore a checkpoint · WriteFile/EditFile only", action: "journal" },
   { name: "/provider", description: "Connect a named provider, inspect models, or select one for a new session", action: "provider" },
   { name: "/providers", description: "Open the provider connection and setup menu", action: "provider" },
   { name: "/image", description: "Opt in to ImageGen for new sessions · disabled by default", action: "image" },
@@ -821,7 +825,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [everConnected, setEverConnected] = useState(false)
   const [steeringEnabled, setSteeringEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_presets" | "provider_models" | "image" | "theme" | "extension_commands" | "history" | "usage" | null>(null)
+  const [selector, setSelector] = useState<"model" | "effort" | "tasks" | "skills" | "plugins" | "plugin_candidates" | "mcp" | "tools" | "providers" | "provider_presets" | "provider_models" | "image" | "theme" | "extension_commands" | "history" | "usage" | "journal" | null>(null)
   const [themeSaving, setThemeSaving] = useState(false)
   const [themeNotice, setThemeNotice] = useState("")
   const pendingThemeSets = useRef(new Map<string, { theme: ThemeID; previous: ThemeID }>())
@@ -913,6 +917,11 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [modelToolsPreview, setModelToolsPreview] = useState(false)
   const [modelToolsNotice, setModelToolsNotice] = useState("")
   const [modelToolsLoading, setModelToolsLoading] = useState(false)
+  const [journalOps, setJournalOps] = useState<JournalOp[]>([])
+  const [journalSummary, setJournalSummary] = useState<JournalSummary | null>(null)
+  const [journalNotice, setJournalNotice] = useState("")
+  const [journalLoading, setJournalLoading] = useState(false)
+  const [journalConfirmIndex, setJournalConfirmIndex] = useState<number | null>(null)
   const [historyEntries, setHistoryEntries] = useState<SavedHistoryEntry[]>([])
   const [historyHasEarlier, setHistoryHasEarlier] = useState(false)
   const [historyBeforeSequence, setHistoryBeforeSequence] = useState(0)
@@ -946,6 +955,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const pendingClipboardWrites = useRef(new Map<string, string>())
   const latestClipboardWriteID = useRef("")
   const pendingToolsRequest = useRef("")
+  const pendingJournalRequest = useRef("")
   const pendingHistoryRequest = useRef("")
   const pendingProviderModelsRequest = useRef("")
   const pendingProviderPresetsRequest = useRef("")
@@ -1093,8 +1103,42 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     setSessionId(nextSessionId)
   }
 
-  const openSessionUsage = () => {
-    cancelSessionUsageRequest()
+  const refreshJournal = () => {
+    if (!sessionIdentity.current) {
+      setJournalNotice("No journal before the first prompt.")
+      return
+    }
+    const requestID = transport.send("journal" as any, {})
+    pendingJournalRequest.current = requestID ?? ""
+    setJournalLoading(true)
+    if (!requestID) {
+      setJournalLoading(false)
+      setJournalNotice("pk is disconnected; journal unavailable.")
+    }
+  }
+
+  const openJournal = () => {
+    setJournalOps([])
+    setJournalSummary(null)
+    setJournalNotice("")
+    setJournalConfirmIndex(null)
+    setSelector("journal")
+    setSelectionIndex(0)
+    refreshJournal()
+  }
+
+  const restoreJournalSelection = (index: number) => {
+    const selected = journalRestoreCandidates()
+    const op = selected[index]
+    if (!op) return
+    transport.send("journal_restore" as any, { ops: [op.id] })
+    setJournalNotice("Restore requested…")
+  }
+
+  const journalRestoreCandidates = (): JournalOp[] =>
+    journalOps.filter((op) => (op.status === "completed" || op.status === "restored") && op.path)
+
+  const openSessionUsage = () => {    cancelSessionUsageRequest()
     setContextBudgetEditing(false)
     setContextBudgetExpanded(false)
     const requestedSession = sessionIdentity.current
@@ -2499,6 +2543,37 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         }
         break
       }
+      case "journal": {
+        pendingJournalRequest.current = ""
+        setJournalLoading(false)
+        if (data.available === false) {
+          setJournalOps([])
+          setJournalSummary(null)
+          setJournalNotice("No journal for this session.")
+          break
+        }
+        setJournalOps(Array.isArray(data.ops) ? data.ops : [])
+        setJournalSummary(data.summary ?? null)
+        break
+      }
+      case "journal_restore_started": {
+        setJournalNotice("Restoring journaled files…")
+        break
+      }
+      case "journal_restore_completed": {
+        const restoredCount = Array.isArray(data.restored) ? data.restored.length : 0
+        const skippedCount = Array.isArray(data.skipped) ? data.skipped.length : 0
+        setJournalNotice(restoredCount ? `Restored ${restoredCount} file${restoredCount === 1 ? "" : "s"}${skippedCount ? ` · skipped ${skippedCount}` : ""}.` : "Nothing was restored; see the transcript note.")
+        addEntry("system", typeof data.snapshot === "string" && data.snapshot ? `Journal restore recorded; safety snapshot kept for recovery.` : "Journal restore completed.")
+        setJournalConfirmIndex(null)
+        refreshJournal()
+        break
+      }
+      case "journal_restore_failed": {
+        setJournalNotice(`Restore failed: ${String(data.message ?? "unknown error")}`)
+        setJournalConfirmIndex(null)
+        break
+      }
       case "tool_catalog": {
         if (!event.id || event.id !== pendingToolsRequest.current) break
         pendingToolsRequest.current = ""
@@ -3455,6 +3530,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       case "status": transport.send("status"); addEntry("system", `Session ${sessionId || "not started"} · ${model} · ${effort} reasoning`); break
       case "usage": openSessionUsage(); break
+      case "journal": openJournal(); break
       case "compact": compactContext(); break
       case "login": transport.send("login"); break
       case "task": {
@@ -3676,7 +3752,23 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     } else if (selector === "tools") {
       const tool = modelTools[index]
       if (tool) addEntry("system", `${tool.name}${tool.source ? ` · ${tool.source}` : ""}${tool.description ? ` · ${tool.description}` : ""}`)
+    } else if (selector === "journal") {
+      const op = journalRestoreCandidates()[index]
+      if (op) {
+        setJournalConfirmIndex(index)
+      }
     } else commitSelector(index)
+  }
+
+  const confirmJournalRestore = () => {
+    if (journalConfirmIndex === null) return
+    const op = journalRestoreCandidates()[journalConfirmIndex]
+    if (!op) return
+    transport.send("journal_restore" as any, { ops: [op.id] })
+  }
+
+  const cancelJournalRestore = () => {
+    setJournalConfirmIndex(null)
   }
 
   const submitQuestionAnswer = (answer: string) => {
@@ -3881,7 +3973,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
       return
     }
     if (selector) {
-      const count = selector === "usage" ? 0 : selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 2 : selector === "provider_presets" ? filteredProviderPresets.length : selector === "provider_models" ? filteredProviderModels.length : selector === "image" ? 1 : selector === "theme" ? Object.keys(themeDefinitions).length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
+      const count = selector === "usage" ? 0 : selector === "journal" ? journalRestoreCandidates().length : selector === "model" ? models.length : selector === "effort" ? efforts.length : selector === "tasks" ? tasks.length : selector === "skills" ? skills.length : selector === "plugins" ? plugins.length + 1 : selector === "plugin_candidates" ? pluginCandidates.length : selector === "mcp" ? mcpServers.length : selector === "providers" ? providers.length + 2 : selector === "provider_presets" ? filteredProviderPresets.length : selector === "provider_models" ? filteredProviderModels.length : selector === "image" ? 1 : selector === "theme" ? Object.keys(themeDefinitions).length : selector === "extension_commands" ? extensionCommands.length : selector === "history" ? historyEntries.length + (historyHasEarlier ? 1 : 0) : modelTools.length
       if (selector === "plugin_candidates" && pluginSourceOperation && isCancel) {
         if (isCtrlC) key.preventDefault()
         transport.send("plugin_source_cancel" as any)
@@ -3900,6 +3992,18 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         key.preventDefault()
         installReviewedPlugin()
         return
+      }
+      if (selector === "journal" && journalConfirmIndex !== null) {
+        if (isCancel) {
+          if (isCtrlC) key.preventDefault()
+          cancelJournalRestore()
+          return
+        }
+        if (key.name === "return" || key.name === "kpenter") {
+          key.preventDefault()
+          confirmJournalRestore()
+          return
+        }
       }
       if (selector === "skills" && skillOperation && isCancel) {
         if (isCtrlC) key.preventDefault()
@@ -4102,6 +4206,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
     return providerModels.filter((item) => !query || `${item.id} ${item.owned_by ?? ""} ${item.object ?? ""} ${item.task ?? ""} ${item.description ?? ""} ${item.capabilities?.join(" ") ?? ""}`.toLowerCase().includes(query))
   }, [providerModels, providerModelQuery])
   const selectedOptions = selector === "usage" || selector === "provider_presets" ? []
+    : selector === "journal" ? journalRestoreCandidates().map((op) => ({ label: `${op.path} · ${op.action} · seq ${op.seq}`, value: op.id, description: `${op.status}${op.reason ? ` · ${op.reason}` : ""} · Enter to restore this checkpoint`, state: op.status }))
     : selector === "theme" ? (Object.keys(themeDefinitions) as ThemeID[]).map((id) => ({ label: themeDefinitions[id].label, value: id, description: themeDefinitions[id].description, state: id === getThemeID() ? "selected" : id === "dark-mint" ? "default" : "" }))
     : selector === "model" ? models.map((item) => ({ label: item.label, value: item.id, description: item.id, state: item.id === model ? "current" : "" }))
     : selector === "history" ? [
@@ -4255,7 +4360,28 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         const direction = event.scroll.direction === "down" ? 1 : event.scroll.direction === "up" ? -1 : 0
         if (direction) setSelectionIndex((index) => Math.max(0, Math.min(filteredProviderModels.length - 1, index + direction * Math.max(1, Math.round(event.scroll!.delta)))))
       } : undefined} style={{ position: "absolute", left: selector === "theme" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", right: selector === "theme" ? "5%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "provider_models" || selector === "extension_commands" || selector === "history" || selector === "usage" ? "8%" : "25%", top: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "6%" : selector === "skills" || selector === "plugins" || selector === "plugin_candidates" || selector === "mcp" || selector === "tools" || selector === "providers" || selector === "extension_commands" || selector === "history" ? "10%" : "25%", bottom: selector === "theme" || selector === "provider_models" ? "5%" : selector === "usage" ? "8%" : undefined, border: true, borderColor: palette.line, backgroundColor: palette.raised, padding: selector === "provider_models" || selector === "theme" ? 1 : 2, flexDirection: "column", minHeight: selector === "usage" || selector === "provider_models" || selector === "theme" ? 0 : undefined, overflow: selector === "usage" || selector === "provider_models" || selector === "theme" ? "hidden" : undefined }}>
-        <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "theme" ? "Color theme" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+        <text fg={palette.text} content={selector === "usage" ? "Session token usage · provider-reported" : selector === "journal" ? "Workspace journal · WriteFile/EditFile changes · restore is user-initiated" : selector === "theme" ? "Color theme" : selector === "model" ? "Select model" : selector === "effort" ? "Reasoning effort" : selector === "tasks" ? "Saved sessions" : selector === "skills" ? skillsView === "installed" ? "Installed skills" : skillsView === "results" ? "skills.sh search results" : skillsView === "candidates" ? "Review a skill source" : skillsView === "review" ? `Review ${skillReview?.name ?? "skill"}` : "Available skills" : selector === "plugins" ? "Plugins · Add or manage" : selector === "plugin_candidates" ? pluginCandidateReview ? `Review ${pluginCandidateReview.id}` : "Review plugin source · no plugin starts while browsing" : selector === "image" ? "Image generation · opt-in" : selector === "mcp" ? "MCP servers · safe configuration summary" : selector === "providers" ? "Providers · credentials redacted" : selector === "provider_models" ? providerSetupModelID ? `Choose a model · ${providerSetupModelID}` : "Discovered provider models · informational" : selector === "extension_commands" ? "Namespaced plugin commands · no worker starts while browsing" : selector === "history" ? `Saved conversation · ${historyRequestMode} page` : "Model-visible tools"} />
+        {selector === "journal" && <>
+          <text fg={palette.muted} content={journalLoading ? "Loading journal…" : journalSummary ? `${journalSummary.observed} entr${journalSummary.observed === 1 ? "y" : "ies"} · ${journalSummary.completed} completed · ${journalSummary.failed} failed · ${journalSummary.unknown} unknown${journalSummary.truncated_paths ? " · path list truncated" : ""}` : journalNotice || "No file-tool changes recorded."} />
+          {journalSummary?.coverage && <text fg={palette.dim} content={`Coverage: ${journalSummary.coverage}`} />}
+          {journalConfirmIndex !== null && (() => {
+            const op = journalRestoreCandidates()[journalConfirmIndex]
+            return op ? (
+              <box style={{ flexDirection: "row", gap: 2, marginTop: 1 }}>
+                <text fg={palette.accent} onMouseDown={(event) => leftMouseDown(event, confirmJournalRestore)} content={`[ Restore ${op.path} ]`} />
+                <text fg={palette.muted} onMouseDown={(event) => leftMouseDown(event, cancelJournalRestore)} content="[ Cancel ]" />
+                <text fg={palette.amber} content={`Enter confirms · Esc cancels · current file must match the recorded state`} />
+              </box>
+            ) : null
+          })()}
+          {journalNotice && <text fg={palette.amber} content={journalNotice} />}
+          <scrollbox id="journal-scroll" focused style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 1 }}>
+            {journalRestoreCandidates().map((op, index) => (
+              <text key={op.id + ":" + op.seq} fg={index === selectionIndex ? palette.accent : palette.text} content={`${index === selectionIndex ? "›" : " "} ${op.path} · ${op.action} · ${op.status} · seq ${op.seq}${op.reason ? ` · ${op.reason}` : ""}`} onMouseDown={(event) => leftMouseDown(event, () => { setSelectionIndex(index); setJournalConfirmIndex(index) })} />
+            ))}
+            {journalRestoreCandidates().length === 0 && !journalLoading && <text fg={palette.muted} content="No restorable WriteFile/EditFile changes. Bash and external edits are unobserved." />}
+          </scrollbox>
+        </>}
         {selector === "usage" && <>
           {usage?.tokensPerSecond !== undefined && <text fg={palette.muted} content={`Latest response · ${usage.tokensPerSecond.toFixed(1)} output tokens/sec · average includes provider wait; excludes tools`} />}
           <scrollbox id="usage-scroll" ref={usageScroll} focused style={{ flexGrow: 1, minHeight: 0, height: 0, paddingTop: 1 }}>

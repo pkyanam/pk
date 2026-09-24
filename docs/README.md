@@ -12,6 +12,7 @@ Start with [getting started](getting-started.md) for installation and the TUI. U
 - [Tasks and questions](task-questions.md) — durable tasks and foreground or detached questions.
 - [Attachments](attachments-design.md) — explicit file inputs, supported formats, and bounds.
 - [Context management](context-management.md) — context budgets, `/usage`, automatic compaction, and `/compact`.
+- [Workspace journal](workspace-journal.md) — journaled file-tool changes, `WorkspaceDelta`, and user-initiated restore.
 - [Token usage](usage.md) — provider counters and request composition.
 - [Web search](web-search.md) — TinyFish configuration, data flow, and limits.
 - [Privacy](privacy.md) — local storage and network boundaries.

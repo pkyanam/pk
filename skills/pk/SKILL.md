@@ -13,6 +13,10 @@ Configure through these CLI families: `pk config`, `pk provider`, `pk mcp`, `pk 
 
 Never print, log, or pass keys as command arguments. Provider keys saved by pk are local and not encrypted. Configuration, skills, and extensions apply to new sessions where noted; existing sessions retain snapshots. Use `/new` when needed.
 
+## Workspace journal
+
+WriteFile/EditFile changes are journaled (WriteFile/EditFile only; Bash and external edits are unobserved, so no entries never means the workspace is clean). `WorkspaceDelta` summarizes or diffs those changes read-only. `pk journal list|diff|plan|restore SESSION` and the `/journal` panel are user-initiated recovery: restore refuses files that changed since, snapshots current content first, and never overwrites user edits. It is not a sandbox or a backup. See docs/workspace-journal.md.
+
 ## Develop and update
 
 The source is [`pkyanam/pk`](https://github.com/pkyanam/pk). Locate the intended checkout with `git rev-parse --show-toplevel`; read `AGENTS.md`, `docs/README.md`, and `git status --short` before editing. Preserve user changes and keep a recoverable checkpoint. Prefer WriteFile for new files and EditFile for exact changes when available; inspect existing content first. Go code is in `cmd/pk/` and `internal/`; OpenTUI is in `ui/src/`.

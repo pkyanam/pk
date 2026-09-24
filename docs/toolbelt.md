@@ -16,15 +16,17 @@ That distinction matters: a new schema is easy; a new durable operation requires
 
 ## Toolbelt design
 
-Keep a short eager set for frequent work and make specialized tools discoverable as the catalog grows. Prefer tools that expose a bounded observation or a narrow edit over generic wrappers that hide broad authority. Keep translation pure: validate arguments, form a serializable operation spec, and let the coordinator persist and dispatch it.
+Keep a short eager set for frequent work and make specialized tools discoverable as the catalog grows. Prefer tools that expose a bounded observation or a narrow edit over generic wrappers that hide broad authority. Keep translation pure: validate arguments, form a serializable operation spec, and let the coordinator persist and dispatch it. See [the workspace journal](workspace-journal.md) for the shipped `WorkspaceDelta` behavior, its cursor semantics, and the user-initiated `pk journal` restore commands.
 
 | Status | Primitive | What it contributes | Runtime requirement |
 | --- | --- | --- | --- |
 | Available through Unreal | `Bash` | General command execution with durable process tracking and bounded returned output. | Existing shell operation. Its configured process access is broad; output limits are not a security boundary. |
 | Available through Unreal | `ViewImage` | Image inspection through an asynchronous operation. | Existing image operation. |
 | Available through Unreal | `SkillUse` | Load a registered instruction set when needed. | Existing registry behavior. |
+| Shipped (pk v0.1.16+) | `WriteFile` / `EditFile` | Atomic, bounded UTF-8 workspace edits, journaled when a workspace journal root is configured. | Existing remote-job file operation. |
+| Shipped (pk v0.1.16+) | `WorkspaceDelta` | Read-only bounded summaries and diffs of journaled file-tool changes, with cursor semantics. Coverage is WriteFile/EditFile only; unobserved work is never called clean. | Requires the journal store and the delta remote-job handler; sessions without a journal keep their saved schemas. |
 | Proposed | `ArtifactSlice` | Return a byte-bounded slice with stable line/byte offsets, a content hash, and a continuation cursor. If the file changes, the next read reports a stale cursor instead of silently mixing revisions. | Needs a pk registry and a filesystem operation that resolves paths beneath an explicit workspace root. A quoted shell command is neither a root policy nor a sandbox. |
-| Proposed | `WorkspaceDelta` | Summarize changed paths and compact diff hunks, with explicit truncation and a base revision. | Can run as a fixed read-only command over the existing shell operation, but needs a pk registry and should require a Git checkout with an explicit root. |
+| Proposed | `WorkspaceDelta` (full) | Summarize changed paths and compact diff hunks against arbitrary base revisions, including Bash-observed work. | The shipped tool covers journaled file-tool mutations only; broader coverage needs a Git checkout or an unobserved-work disclosure policy. |
 | Proposed | `PatchApply` | Apply a unified diff only if the target's expected content hash still matches, then return the resulting hash and diff. | Requires an atomic compare-and-swap file operation; the current local manager has no such operation. Do not emulate it with a check followed by an unrelated shell write. |
 | Proposed | `EventWait` | Wait for the next matching session or operation event after a cursor and return a compact delta. | Needs a cursor-aware event API. Unreal's coordinator already selects on events internally, but it does not expose that subscription as a tool. |
 | Proposed | `RunBudget` | Give a tool call an explicit deadline, output budget, and cancellation reason; report which limit ended it. | Unreal has output bounds and cancellation, but no common per-call deadline/budget envelope across tool types. |
