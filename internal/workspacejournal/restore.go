@@ -240,7 +240,11 @@ func (s *Store) Restore(ctx context.Context, session, workspace string, ids []st
 		if op.Post != nil {
 			expected = op.Post.SHA256
 		}
-		if expected != "" && op.Status != StatusRestored && current.SHA256 != expected {
+		currentMatchesPreimage := current.SHA256 == op.Pre.SHA256
+		if expected != "" && !currentMatchesPreimage && current.SHA256 != expected {
+			// The file is neither the recorded postimage (an undo candidate)
+			// nor the recorded preimage (an already-restored state): it holds
+			// unrecognized content, so refuse rather than overwrite it.
 			skipped = append(skipped, SkippedRestore{OpID: op.ID, Path: op.Path, Reason: fmt.Sprintf("file changed since this mutation (%s now, %s expected); refusing without a matching state", shortDigest(current.SHA256), shortDigest(expected))})
 			continue
 		}

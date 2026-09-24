@@ -640,3 +640,49 @@ func TestErrorMessageFlattensAndBounds(t *testing.T) {
 		t.Fatal("nil must map to empty")
 	}
 }
+
+func TestRestoreRefusesUnrecognizedState(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := testSession(t)
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "f.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Begin(session, "op-1", "", "EditFile", "f.txt", []byte("original"), []byte("edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete(session, "op-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Restore(context.Background(), session, workspace, nil); err != nil {
+		t.Fatal(err)
+	}
+	// After a restore the file holds the preimage; restore is idempotent.
+	first, err := os.ReadFile(path)
+	if err != nil || string(first) != "original" {
+		t.Fatalf("restore should write preimage: %q %v", first, err)
+	}
+	// A novel user edit must be refused, not overwritten.
+	if err := os.WriteFile(path, []byte("novel"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Restore(context.Background(), session, workspace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Restored) != 0 {
+		t.Fatalf("novel state must not restore: %+v", report)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || string(current) != "novel" {
+		t.Fatalf("novel content must survive: %q %v", current, err)
+	}
+	if len(report.Skipped) != 1 || !strings.Contains(report.Skipped[0].Reason, "file changed since this mutation") {
+		t.Fatalf("expected an explicit conflict skip: %+v", report)
+	}
+}
