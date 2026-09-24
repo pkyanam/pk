@@ -3329,6 +3329,15 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             break
           }
           setModelPreference(selectedModel, selectedEffort)
+        } else if (providerID !== "native") {
+          setProviderSetupModelID(providerID)
+          setProviderModelQuery("")
+          setProviderModelHoverIndex(null)
+          setSelectionIndex(0)
+          setProviderModels([])
+          pendingProviderModelsRequest.current = transport.send("provider_models", { provider_id: providerID }) ?? ""
+          setProviderModelsLoading(Boolean(pendingProviderModelsRequest.current))
+          setSelector("provider_models")
         } else { setSelector("model"); setSelectionIndex(Math.max(0, models.findIndex((item) => item.id === model))) }
         break
       case "effort":

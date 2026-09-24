@@ -3397,6 +3397,24 @@ describe("OpenTUI application", () => {
     expect(frame).not.toContain("late-model")
   })
 
+  test("/model discovers models for the active Cloudflare provider", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { provider_id: "cloudflare-workers-ai", model: "@cf/zai-org/glm-5.3-flash", effort: "medium" } }))
+    await act(async () => { await setup.mockInput.typeText("/model") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const request = fake.sent.find((item) => item.type === "provider_models")!
+    expect(request?.payload?.provider_id).toBe("cloudflare-workers-ai")
+    act(() => fake.emit({ version: 1, id: request.id, type: "provider_models", payload: { provider_id: "cloudflare-workers-ai", models: [{ id: "@cf/test-model" }] } }))
+    await setup.waitForFrame((frame) => frame.includes("@cf/test-model"))
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    expect(fake.sent.filter((item) => item.type === "provider_select").at(-1)?.payload).toEqual({ provider_id: "cloudflare-workers-ai", model: "@cf/test-model" })
+  })
+
   test("provider model hover stays put while wheel scroll and click navigate the picker", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 80, height: 24 })
