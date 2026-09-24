@@ -145,12 +145,12 @@ func TestFilePathConfinesWorkspaceAndRejectsSymlinks(t *testing.T) {
 func TestDecoratorRegistersToolsAndPreservesBase(t *testing.T) {
 	base := tool.NewRegistry(tool.StaticTranslators{}, "Bash")
 	registry := Decorator(t.TempDir())(base)
-	for _, name := range []string{"WriteFile", "EditFile", "Bash"} {
+	for _, name := range []string{"Read", "WriteFile", "EditFile", "Bash"} {
 		if _, ok := registry.Resolve(name); !ok {
 			t.Fatalf("missing tool %s", name)
 		}
 	}
-	if len(registry.StaticDefinitions()) != 3 {
+	if len(registry.StaticDefinitions()) != 4 {
 		t.Fatalf("definitions = %d", len(registry.StaticDefinitions()))
 	}
 	if Decorator("")(base) != base {

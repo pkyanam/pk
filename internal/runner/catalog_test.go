@@ -178,7 +178,7 @@ func TestEmptySkillCatalogOmitsSkillUseWithoutRewritingSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Skills) != 0 || len(snapshot.Tools) != 4 {
+	if len(snapshot.Skills) != 0 || len(snapshot.Tools) != 5 {
 		t.Fatalf("empty-catalog snapshot changed unexpectedly: skills=%d tools=%v", len(snapshot.Skills), snapshot.Tools)
 	}
 	for _, definition := range snapshot.Tools {

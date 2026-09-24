@@ -31,3 +31,5 @@ Start with [getting started](getting-started.md) for installation and the TUI. U
 - [Unreal foundation audit](unreal-foundation-audit.md) — inherited runtime behavior and local integration evidence.
 
 Performance and benchmark material is exploratory: [findings](benchmark-findings.md), [measurement notes](performance.md), and [context-compaction research](research/context-compaction.md). It does not establish universal speed, cost, or token savings.
+
+- [Read tool](read-tool.md): bounded local file reads, continuation, and performance scope.

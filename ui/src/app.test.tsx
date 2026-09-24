@@ -469,7 +469,6 @@ describe("OpenTUI application", () => {
     if (width >= 105) expect(contextPage).toContain("cache-write tokens —")
     await act(async () => { for (let index = 0; index < 12; index++) setup.mockInput.pressKey("ARROW_DOWN") })
     const frame = await setup.waitForFrame((value) => value.includes("2/3 responses"))
-    expect(frame).toContain("3 recorded responses")
     expect(frame).toContain("Input tokens")
     expect(frame).toContain("300 · 2/3 responses")
     expect(frame).toContain("Output tokens")
@@ -478,6 +477,12 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("120 · 1/3 responses")
     expect(frame).toContain("Refresh · R")
     expect(frame).not.toContain("$")
+    let responseHeaderFrame = frame
+    if (width < 96) {
+      await act(async () => { for (let index = 0; index < 8; index++) setup.mockInput.pressKey("ARROW_UP") })
+      responseHeaderFrame = await setup.waitForFrame((value) => value.includes("3 recorded responses"))
+    }
+    expect(responseHeaderFrame).toContain("3 recorded responses")
     await act(async () => { for (let index = 0; index < 30; index++) setup.mockInput.pressKey("ARROW_DOWN") })
     await setup.flush()
     const scrolled = setup.captureCharFrame()
@@ -2431,12 +2436,18 @@ describe("OpenTUI application", () => {
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 300, height: 36 })
     openRenderers.push(setup)
     await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { session_id: "currency-session" } }))
+    await act(async () => { await setup.mockInput.typeText("Render this pricing summary") })
+    act(() => setup.mockInput.pressEnter())
+    const prompt = fake.sent.find((item) => item.type === "prompt")!
+    await setup.waitForFrame((frame) => frame.includes("Render this pricing summary"))
     const text = "Bitcoin (BTC) is **about $84,094 USD** right now, according to CoinDesk’s live price page. CoinMarketCap showed **$84,190**, so prices vary slightly by source and update time.\n\n[CoinDesk](https://www.coindesk.com/price/bitcoin) · [CoinMarketCap](https://coinmarketcap.com/currencies/bitcoin/)"
     const parsed = await getTreeSitterClient().highlightOnce(text, "markdown")
     expect(parsed.error).toBeUndefined()
     expect(parsed.highlights?.some(([, , scope]) => scope === "markup.strong")).toBe(true)
     expect(parsed.highlights?.some(([, , scope]) => scope === "markup.link.label")).toBe(true)
-    act(() => fake.emit({ version: 1, id: "currency-markdown", type: "assistant", payload: { text } }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: { session_id: "currency-session" } }))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "assistant", payload: { text } }))
     await setup.waitForFrame((frame) => frame.includes("Bitcoin (BTC) is") && frame.includes("CoinMarketCap"))
     const findMarkdownBlock = () => findDescendant(setup.renderer.root, (renderable) => /^markdown-\d+-block-0$/.test(renderable.id ?? ""))
     let markdownBlock = findMarkdownBlock()
@@ -2468,6 +2479,8 @@ describe("OpenTUI application", () => {
     await setup.flush()
     const copied = fake.sent.filter((item) => item.type === "clipboard_write").at(-1)
     expect(copied?.payload?.text).toBe(line.slice(start, end + 1))
+    act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_finished", payload: { session_id: "currency-session" } }))
+    await setup.waitForFrame((value) => value.includes("Ready ·"))
   })
 
   test("keeps live activity visible through tool and model gaps until turn_finished", async () => {

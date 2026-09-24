@@ -62,7 +62,7 @@ func PreviewToolCatalog(ctx context.Context, options Options) ([]SavedToolSummar
 
 func toolCatalogSource(name string) string {
 	switch name {
-	case "Bash", "ViewImage", "SkillUse", "WriteFile", "EditFile":
+	case "Bash", "ViewImage", "SkillUse", "Read", "WriteFile", "EditFile":
 		return "built-in"
 	case "WorkspaceDelta":
 		return "workspace journal"
