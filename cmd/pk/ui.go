@@ -12,6 +12,16 @@ import (
 )
 
 func launchOpenTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	resumePicker := false
+	filtered := args[:0]
+	for _, arg := range args {
+		if arg == "--pk-resume-picker" {
+			resumePicker = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	args = filtered
 	executable, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "pk: locate executable: %v\n", err)
@@ -46,6 +56,9 @@ func launchOpenTUI(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 		// Bun enables anonymous crash reports by default. Keep the frontend's
 		// runtime opt-out explicit regardless of the caller's environment.
 		"DO_NOT_TRACK": "1",
+	}
+	if resumePicker {
+		values["PK_RESUME_PICKER"] = "1"
 	}
 	for name, flagName := range map[string]string{"PK_MODEL": "--model", "PK_EFFORT": "--effort", "PK_WORKSPACE": "--workspace", "PK_SESSION": "--session", "PK_PROVIDER": "--provider"} {
 		for i, arg := range args {

@@ -119,6 +119,18 @@ func TestParseRunHelpIsNotAUsageError(t *testing.T) {
 	}
 }
 
+func TestResumePickerAliasesAreConsumedBeforeNormalTUIArguments(t *testing.T) {
+	for _, alias := range []string{"-r", "-resume", "--resume"} {
+		got, ok := removeResumePickerAlias([]string{alias, "--workspace", "/tmp/work"})
+		if !ok || !reflect.DeepEqual(got, []string{"--workspace", "/tmp/work"}) {
+			t.Fatalf("%s parsed as (%v, %v)", alias, got, ok)
+		}
+	}
+	if got, ok := removeResumePickerAlias([]string{"--plain"}); ok || !reflect.DeepEqual(got, []string{"--plain"}) {
+		t.Fatalf("ordinary flags parsed as (%v, %v)", got, ok)
+	}
+}
+
 func TestEnsurePrivateDirectoryCreatesPrivatePkHome(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pk-home")
 	if err := ensurePrivateDirectory(path); err != nil {

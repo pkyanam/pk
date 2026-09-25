@@ -42,6 +42,36 @@ func TestListSearchesBoundedSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestListSeparatesExplicitSubagentsAndKeepsUnknownLegacySessionsInMain(t *testing.T) {
+	manager, sessionDir := fixtureManager(t)
+	for _, id := range []string{"session-parent", "session-child", "session-legacy"} {
+		if _, err := createSession(t, sessionDir, id, "same title", "same preview"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	childContext, err := json.Marshal(map[string]string{"ParentSessionID": "session-parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contextSnapshotPath(sessionDir, "session-child"), childContext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	main, err := manager.List(context.Background(), ListOptions{Kind: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(main) != 2 {
+		t.Fatalf("main sessions = %#v, want parent and unclassified legacy session", main)
+	}
+	children, err := manager.List(context.Background(), ListOptions{Kind: "subagents"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 || children[0].ID != "session-child" || children[0].ParentSessionID != "session-parent" {
+		t.Fatalf("subagent sessions = %#v", children)
+	}
+}
+
 func TestListSummaryCacheInvalidatesLogContextAndCorruptReplacement(t *testing.T) {
 	manager, sessionDir := fixtureManager(t)
 	const id = "session-cache"

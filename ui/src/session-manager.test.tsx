@@ -222,6 +222,40 @@ describe("SessionManager", () => {
     expect(frame).not.toContain("First line 0\n")
   })
 
+  test("heterogeneous missing metadata and control characters cannot expand row height", async () => {
+    const setup = await setupPanel(100, 40)
+    const list = sent.find((item) => item.type === "sessions_list")!
+    emit(list.id, "sessions", {
+      sessions: [
+        { ...sampleSession, id: "long", title: "long title ".repeat(30), preview: `first\nsecond\u001b[31mred\u001b[0m ${"x".repeat(500)}` },
+        { id: "sparse", item_count: 0, active: false },
+        { ...sampleSession, id: "after", title: "Following row", preview: "last line" },
+      ],
+    })
+    const frame = await setup.waitForFrame((value) => value.includes("Following row"))
+    const rows = frame.split("\n").map((line, index) => ({ line, index })).filter(({ line }) => /\[(?:x| )\] /.test(line))
+    expect(rows.map(({ line }) => line.match(/\[(?:x| )\] /g)?.length ?? 0)).toEqual([1, 1, 1])
+    expect(rows[1]?.line).toContain("Untitled session")
+    expect(frame).not.toContain("\u001b")
+    expect(rows[2]?.index).toBeGreaterThan(rows[1]?.index ?? 0)
+    await act(async () => setup.mockInput.pressKey("ARROW_DOWN"))
+    await act(async () => setup.mockInput.pressKey("ARROW_DOWN"))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("[ ] Following row")
+  })
+
+  test("main and subagent tabs request explicit relationship filters", async () => {
+    const setup = await setupPanel()
+    expect(sent.find((item) => item.type === "sessions_list")?.payload?.kind).toBe("main")
+    await act(async () => setup.mockInput.pressKey("3"))
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("Subagents · [3]")
+    expect(sent.filter((item) => item.type === "sessions_list").at(-1)?.payload?.kind).toBe("subagents")
+    await act(async () => setup.mockInput.pressKey("1"))
+    await setup.flush()
+    expect(sent.filter((item) => item.type === "sessions_list").at(-1)?.payload?.kind).toBe("main")
+  })
+
   test("select all and clear work from keyboard and mouse; P explains archive-first", async () => {
     const setup = await setupPanel()
     const list = sent.find((item) => item.type === "sessions_list")!

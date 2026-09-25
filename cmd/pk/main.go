@@ -27,12 +27,16 @@ import (
 func main() { os.Exit(runMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 
 func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	args, resumePicker := removeResumePickerAlias(args)
 	if len(args) > 0 && (args[0] == "--update" || args[0] == "-update") {
 		args = append([]string{"update"}, args[1:]...)
 	}
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		usage(stdout)
 		return 0
+	}
+	if resumePicker {
+		return launchOpenTUI(append(args, "--pk-resume-picker"), stdin, stdout, stderr)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -117,6 +121,13 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return runInteractiveCommand(ctx, args, stdin, stdout, stderr)
 	}
+}
+
+func removeResumePickerAlias(args []string) ([]string, bool) {
+	if len(args) > 0 && (args[0] == "-r" || args[0] == "-resume" || args[0] == "--resume") {
+		return args[1:], true
+	}
+	return args, false
 }
 
 func hasPromptFlag(args []string) bool {
@@ -665,6 +676,7 @@ v2 daemon (experimental, see docs/v2-architecture.md):
   pk daemon stop | status       stop or check the daemon via its PK_HOME pidfile
 
 Run options:
+  -r, -resume, --resume        open the saved-session picker in the TUI
   --model MODEL                 model ID (default gpt-6-luna)
   --effort EFFORT               reasoning effort (default medium)
   --context-policy POLICY       full tool output or compact large Bash results

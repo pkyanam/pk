@@ -2449,7 +2449,9 @@ describe("OpenTUI application", () => {
     expect(parsed.highlights?.some(([, , scope]) => scope === "markup.link.label")).toBe(true)
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: { session_id: "currency-session" } }))
     act(() => fake.emit({ version: 1, id: prompt.id, type: "assistant", payload: { text } }))
-    await setup.waitForFrame((frame) => frame.includes("Bitcoin (BTC) is") && frame.includes("CoinMarketCap"))
+    // Highlighting runs in a worker; renderer frames can finish before its
+    // reply on a busy CI runner. Await highlighting before asserting text.
+    await setup.flush()
     const findMarkdownBlock = () => findDescendant(setup.renderer.root, (renderable) => /^markdown-\d+-block-0$/.test(renderable.id ?? ""))
     let markdownBlock = findMarkdownBlock()
     const deadline = Date.now() + 1000
@@ -3632,7 +3634,7 @@ describe("OpenTUI application", () => {
     expect(frame).toContain("session with /new to apply.")
   })
 
-  test("subagent progress stays chronological and never renders child arguments or analysis", async () => {
+  test("subagent transcript keeps lifecycle and final output, suppressing child commentary and tool calls", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 120, height: 36 })
     openRenderers.push(setup)
@@ -3642,14 +3644,20 @@ describe("OpenTUI application", () => {
       fake.emit({ version: 1, type: "subagent", payload: { type: "assistant", child_id: "child-7", sequence: 2, phase: "analysis", text: "private chain of thought" } })
       fake.emit({ version: 1, type: "subagent", payload: { type: "assistant", child_id: "child-7", sequence: 3, phase: "commentary", text: "Checking the requested files." } })
       fake.emit({ version: 1, type: "subagent", payload: { type: "tool_call", child_id: "child-7", sequence: 4, call_id: "call-1", name: "Bash", state: "running", payload: { arguments: { command: "echo private-argument" } } } })
-      fake.emit({ version: 1, type: "subagent", payload: { type: "subagent", child_id: "child-7", sequence: 5, state: "completed", text: "" } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "tool_call", child_id: "child-7", sequence: 5, call_id: "call-1", name: "Bash", state: "completed", payload: { arguments: { command: "echo private-argument" } } } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "tool_call", child_id: "child-7", sequence: 6, call_id: "call-2", name: "Bash", state: "running", payload: { arguments: { command: "go test ./..." } } } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "assistant", child_id: "child-7", sequence: 7, phase: "final_answer", text: "The requested files are valid." } })
+      fake.emit({ version: 1, type: "subagent", payload: { type: "subagent", child_id: "child-7", sequence: 8, state: "completed", text: "The requested files are valid." } })
     })
-    const frame = await setup.waitForFrame((value) => value.includes("Checking the requested files."))
+    const frame = await setup.waitForFrame((value) => value.includes("The requested files are valid."))
     expect(frame).toContain("agent child-7")
-    expect(frame).toContain("Bash")
     expect(frame).toContain("completed")
+    expect(frame).toContain("The requested files are valid.")
+    expect(frame).not.toContain("Checking the requested files.")
     expect(frame).not.toContain("private chain of thought")
     expect(frame).not.toContain("private-argument")
+    expect(frame).not.toContain("go test")
+    expect(frame).not.toContain("Bash")
     expect(frame).not.toContain("[object Object]")
   })
 
@@ -3672,7 +3680,8 @@ describe("OpenTUI application", () => {
     })
     let frame = await setup.waitForFrame((value) => value.includes("The file is valid."))
     expect(frame).toContain("Waiting for model")
-    expect(frame).toContain("Checking the file now.")
+    expect(frame).not.toContain("Checking the file now.")
+    expect(frame).toContain("completed")
 
     act(() => fake.emit({ version: 1, id: prompt.id, type: "assistant", payload: { text: "The delegated check passed." } }))
     await setup.flush()

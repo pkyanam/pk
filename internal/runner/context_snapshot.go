@@ -26,6 +26,8 @@ const outputCompactionSnapshotVersion = 1
 type ContextSnapshot struct {
 	Version                 int
 	Workspace               string
+	ParentSessionID         string `json:",omitempty"`
+	SessionRole             string `json:",omitempty"`
 	SystemPrompt            string
 	IdentityTemplate        string `json:",omitempty"`
 	ExplicitSystemPrompt    string
