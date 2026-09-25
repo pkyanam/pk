@@ -2033,7 +2033,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
           addEntry("system", `${status === "active" ? "Starting" : "Resuming"} saved goal: ${objective}`)
           transport.send("prompt", { text: `[pk goal start] ${objective}` })
         } else if (status === "none") addEntry("system", "There is no saved goal for this session.")
-        else if (goal) addEntry("system", `Goal ${status}${goal.awaiting_user ? " · waiting for your input" : ""}${data.resume_required ? " · use /goal resume to continue" : ""}: ${objective}`)
+        else if (goal) addEntry("system", `Goal ${status}${goal.awaiting_user ? " · waiting for your input" : ""}${data.resume_required ? " · use /goal resume to continue" : ""}${status === "complete" ? "" : `: ${objective}`}`)
         break
       }
       case "turn_finished":

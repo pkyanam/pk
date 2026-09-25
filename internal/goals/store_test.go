@@ -2,9 +2,67 @@ package goals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 )
+
+func TestRunDoesNotApplyOldTurnResultsToReplacementGoal(t *testing.T) {
+	for _, runErr := range []error{nil, errors.New("old goal runner failed")} {
+		t.Run(fmt.Sprint(runErr), func(t *testing.T) {
+			ctx := context.Background()
+			store := NewStore(t.TempDir())
+			old, err := store.Set(ctx, "thread-race", "Finish the old verification task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			got, err := store.Run(ctx, "thread-race", func(goal Goal, _ int, _ string) (bool, error) {
+				calls++
+				if goal.ID != old.ID {
+					t.Fatalf("runner received generation %q, want %q", goal.ID, old.ID)
+				}
+				if _, err := store.Set(ctx, "thread-race", "Build the replacement runnable beta task"); err != nil {
+					t.Fatal(err)
+				}
+				return true, runErr
+			})
+			if err != nil {
+				t.Fatalf("Run returned old-generation error: %v", err)
+			}
+			current, ok, getErr := store.Get(ctx, "thread-race")
+			if getErr != nil || !ok {
+				t.Fatalf("replacement missing: ok=%t err=%v", ok, getErr)
+			}
+			if calls != 1 || got.ID != current.ID || got.ID == old.ID || got.Status != Active || got.Turns != 0 || got.AwaitingUser {
+				t.Fatalf("old run mutated or retried replacement: calls=%d result=%#v current=%#v", calls, got, current)
+			}
+		})
+	}
+}
+
+func TestGenerationScopedCompletionAndBlockerRejectStaleGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(t.TempDir())
+	old, err := store.Set(ctx, "thread-stale", "Verify the old milestone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Set(ctx, "thread-stale", "Build the new runnable beta task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteGeneration(ctx, "thread-stale", old.ID, "old task test output was successful"); !errors.Is(err, ErrGoalGenerationChanged) {
+		t.Fatalf("stale completion error=%v, want generation mismatch", err)
+	}
+	if _, err := store.ReportBlockerGeneration(ctx, "thread-stale", old.ID, "old-turn", "old provider unavailable"); !errors.Is(err, ErrGoalGenerationChanged) {
+		t.Fatalf("stale blocker error=%v, want generation mismatch", err)
+	}
+	got, ok, err := store.Get(ctx, "thread-stale")
+	if err != nil || !ok || got.ID != current.ID || got.Status != Active || got.BlockerTurns != 0 || got.Turns != 0 {
+		t.Fatalf("stale operations changed replacement: %#v, ok=%t err=%v", got, ok, err)
+	}
+}
 
 func TestGoalSurvivesRestartPauseAndResume(t *testing.T) {
 	ctx := context.Background()

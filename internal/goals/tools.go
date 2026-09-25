@@ -11,19 +11,19 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/tool"
 )
 
-func Decorator(store *Store, sessionID, turnID string) func(tool.Registry) tool.Registry {
+func Decorator(store *Store, sessionID, generationID, turnID string) func(tool.Registry) tool.Registry {
 	return func(base tool.Registry) tool.Registry {
 		if base == nil || store == nil || sessionID == "" {
 			return base
 		}
-		return &goalRegistry{base: base, store: store, sessionID: sessionID, turnID: turnID}
+		return &goalRegistry{base: base, store: store, sessionID: sessionID, generationID: generationID, turnID: turnID}
 	}
 }
 
 type goalRegistry struct {
-	base              tool.Registry
-	store             *Store
-	sessionID, turnID string
+	base                            tool.Registry
+	store                           *Store
+	sessionID, generationID, turnID string
 }
 
 func (r *goalRegistry) StaticDefinitions() []tool.Definition {
@@ -36,7 +36,7 @@ func (r *goalRegistry) StaticDefinitions() []tool.Definition {
 }
 func (r *goalRegistry) Resolve(name string) (tool.Translator, bool) {
 	if name == "GoalComplete" || name == "GoalBlocker" {
-		return goalTranslator{store: r.store, sessionID: r.sessionID, turnID: r.turnID, name: name}, true
+		return goalTranslator{store: r.store, sessionID: r.sessionID, generationID: r.generationID, turnID: r.turnID, name: name}, true
 	}
 	return r.base.Resolve(name)
 }
@@ -47,8 +47,8 @@ func (r *goalRegistry) UnregisterSkill(id tool.RegistrationID) { r.base.Unregist
 func (r *goalRegistry) Skills() []tool.Skill                   { return r.base.Skills() }
 
 type goalTranslator struct {
-	store                   *Store
-	sessionID, turnID, name string
+	store                                 *Store
+	sessionID, generationID, turnID, name string
 }
 
 func (t goalTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallStatus {
@@ -56,11 +56,15 @@ func (t goalTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.Call
 		return tool.CallStatus{Error: "goal tool context unavailable"}
 	}
 	var args struct {
-		Evidence string `json:"evidence"`
-		Blocker  string `json:"blocker"`
+		Evidence     string `json:"evidence"`
+		Blocker      string `json:"blocker"`
+		GenerationID string `json:"generation_id"`
 	}
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		return tool.CallStatus{Error: "invalid goal tool arguments: " + err.Error()}
+	}
+	if t.generationID == "" {
+		return tool.CallStatus{Error: "goal generation is unavailable; do not report completion or blocker"}
 	}
 	if t.name == "GoalComplete" && len(args.Evidence) < 16 {
 		return tool.CallStatus{Error: "completion requires concrete verification evidence"}
@@ -68,6 +72,7 @@ func (t goalTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.Call
 	if t.name == "GoalBlocker" && (t.turnID == "" || len(args.Blocker) < 8 || len(args.Blocker) > 1000) {
 		return tool.CallStatus{Error: "a goal turn ID and concise blocker reason are required"}
 	}
+	args.GenerationID = t.generationID
 	payload, err := json.Marshal(args)
 	if err != nil {
 		return tool.CallStatus{Error: "encode goal tool operation: " + err.Error()}
@@ -97,18 +102,22 @@ func (t goalTranslator) TranslateResult(callID string, status tool.CallStatus, o
 		return llm.ToolResult{CallID: callID}, err
 	}
 	var args struct {
-		Evidence string `json:"evidence"`
-		Blocker  string `json:"blocker"`
+		Evidence     string `json:"evidence"`
+		Blocker      string `json:"blocker"`
+		GenerationID string `json:"generation_id"`
 	}
 	if err := json.Unmarshal(value, &args); err != nil {
 		return llm.ToolResult{CallID: callID}, fmt.Errorf("decode goal operation: %w", err)
 	}
+	if args.GenerationID == "" || args.GenerationID != t.generationID {
+		return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "This goal operation is stale; the saved goal has changed."}}}, nil
+	}
 	var result string
 	if t.name == "GoalComplete" {
-		_, err = t.store.Complete(context.Background(), t.sessionID, args.Evidence)
+		_, err = t.store.CompleteGeneration(context.Background(), t.sessionID, args.GenerationID, args.Evidence)
 		result = "Goal marked complete after verification."
 	} else {
-		_, err = t.store.ReportBlocker(context.Background(), t.sessionID, t.turnID, args.Blocker)
+		_, err = t.store.ReportBlockerGeneration(context.Background(), t.sessionID, args.GenerationID, t.turnID, args.Blocker)
 		result = "Goal blocker recorded for this turn."
 	}
 	if err != nil {

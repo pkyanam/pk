@@ -3,6 +3,7 @@ package goals
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,7 @@ const (
 )
 
 type Goal struct {
+	ID              string    `json:"id"`
 	SessionID       string    `json:"session_id"`
 	Objective       string    `json:"objective"`
 	Status          Status    `json:"status"`
@@ -72,6 +74,9 @@ func (s *Store) Get(ctx context.Context, sessionID string) (Goal, bool, error) {
 	if goal.SessionID != sessionID || strings.TrimSpace(goal.Objective) == "" {
 		return Goal{}, false, errors.New("goal record is invalid")
 	}
+	if goal.ID == "" {
+		goal.ID = legacyGenerationID(goal)
+	}
 	return goal, true, nil
 }
 
@@ -81,7 +86,11 @@ func (s *Store) Set(ctx context.Context, sessionID, objective string) (Goal, err
 		return Goal{}, errors.New("goal objective must be between 8 and 4000 characters")
 	}
 	return s.update(ctx, sessionID, func() (Goal, error) {
-		return Goal{SessionID: sessionID, Objective: objective, Status: Active, UpdatedAt: time.Now().UTC()}, nil
+		id, err := newGenerationID()
+		if err != nil {
+			return Goal{}, fmt.Errorf("create goal generation: %w", err)
+		}
+		return Goal{ID: id, SessionID: sessionID, Objective: objective, Status: Active, UpdatedAt: time.Now().UTC()}, nil
 	}, true)
 }
 
@@ -128,6 +137,21 @@ func (s *Store) Complete(ctx context.Context, sessionID, evidence string) (Goal,
 	})
 }
 
+// CompleteGeneration rejects a completion produced by an earlier goal that
+// was replaced while its model/tool call was still in flight.
+func (s *Store) CompleteGeneration(ctx context.Context, sessionID, generationID, evidence string) (Goal, error) {
+	if len(strings.TrimSpace(evidence)) < 16 {
+		return Goal{}, errors.New("completion requires concrete verification evidence")
+	}
+	return s.changeGeneration(ctx, sessionID, generationID, func(g *Goal) error {
+		if g.Status != Active {
+			return fmt.Errorf("cannot complete a %s goal", g.Status)
+		}
+		g.Status, g.AwaitingUser = Complete, false
+		return nil
+	})
+}
+
 // ReportBlocker counts one identical blocker per distinct goal turn. Three
 // consecutive reports are required before the goal becomes blocked.
 func (s *Store) ReportBlocker(ctx context.Context, sessionID, turnID, blocker string) (Goal, error) {
@@ -155,10 +179,48 @@ func (s *Store) ReportBlocker(ctx context.Context, sessionID, turnID, blocker st
 	})
 }
 
+// ReportBlockerGeneration only applies a blocker to the goal generation that
+// issued the tool call.
+func (s *Store) ReportBlockerGeneration(ctx context.Context, sessionID, generationID, turnID, blocker string) (Goal, error) {
+	blocker = strings.TrimSpace(blocker)
+	if turnID == "" || len(blocker) < 8 || len(blocker) > 1000 {
+		return Goal{}, errors.New("a goal turn ID and concise blocker reason are required")
+	}
+	return s.changeGeneration(ctx, sessionID, generationID, func(g *Goal) error {
+		if g.Status != Active {
+			return fmt.Errorf("cannot report a blocker for a %s goal", g.Status)
+		}
+		if g.LastBlockerTurn == turnID {
+			return nil
+		}
+		if strings.EqualFold(g.LastBlocker, blocker) {
+			g.BlockerTurns++
+		} else {
+			g.LastBlocker, g.BlockerTurns = blocker, 1
+		}
+		g.LastBlockerTurn = turnID
+		if g.BlockerTurns >= 3 {
+			g.Status, g.AwaitingUser = Blocked, true
+		}
+		return nil
+	})
+}
+
 // EndTurn tolerates brief no-tool stops, then waits for the user. Productive
 // work resets the consecutive no-progress bound and has no arbitrary turn cap.
 func (s *Store) EndTurn(ctx context.Context, sessionID, turnID string, toolWork bool) (Goal, bool, error) {
-	g, err := s.change(ctx, sessionID, func(g *Goal) error {
+	goal, ok, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return goal, false, err
+	}
+	if !ok {
+		return Goal{}, false, errors.New("there is no goal for this session")
+	}
+	return s.EndTurnGeneration(ctx, sessionID, goal.ID, turnID, toolWork)
+}
+
+func (s *Store) EndTurnGeneration(ctx context.Context, sessionID, generationID, turnID string, toolWork bool) (Goal, bool, error) {
+	g, err := s.changeGeneration(ctx, sessionID, generationID, func(g *Goal) error {
 		if g.Status != Active {
 			return nil
 		}
@@ -183,6 +245,7 @@ func (s *Store) EndTurn(ctx context.Context, sessionID, turnID string, toolWork 
 // executor is called once for the initial user-authorized turn, then again only
 // after a tool-work turn; errors, no-tool turns, user pause, and hard limits stop.
 func (s *Store) Run(ctx context.Context, sessionID string, execute func(Goal, int, string) (bool, error)) (Goal, error) {
+	generationID := ""
 	for index := 0; ; index++ {
 		if err := ctx.Err(); err != nil {
 			return Goal{}, err
@@ -193,6 +256,11 @@ func (s *Store) Run(ctx context.Context, sessionID string, execute func(Goal, in
 		}
 		if !ok {
 			return Goal{}, errors.New("there is no goal for this session")
+		}
+		if generationID == "" {
+			generationID = goal.ID
+		} else if goal.ID != generationID {
+			return goal, nil
 		}
 		if goal.Status != Active || goal.AwaitingUser {
 			return goal, nil
@@ -208,8 +276,11 @@ func (s *Store) Run(ctx context.Context, sessionID string, execute func(Goal, in
 				return goal, ctx.Err()
 			}
 			latest, exists, getErr := s.Get(context.Background(), sessionID)
-			if getErr == nil && exists && latest.Status == Active {
-				_, _ = s.change(context.Background(), sessionID, func(g *Goal) error {
+			if getErr == nil && exists && latest.ID != generationID {
+				return latest, nil
+			}
+			if getErr == nil && exists && latest.ID == generationID && latest.Status == Active {
+				_, _ = s.changeGeneration(context.Background(), sessionID, generationID, func(g *Goal) error {
 					g.AwaitingUser = true
 					return nil
 				})
@@ -224,8 +295,20 @@ func (s *Store) Run(ctx context.Context, sessionID string, execute func(Goal, in
 		if !exists || latest.Status != Active {
 			return latest, nil
 		}
-		latest, again, err := s.EndTurn(ctx, sessionID, turnID, worked)
+		if latest.ID != generationID {
+			return latest, nil
+		}
+		latest, again, err := s.EndTurnGeneration(ctx, sessionID, generationID, turnID, worked)
 		if err != nil {
+			if errors.Is(err, ErrGoalGenerationChanged) {
+				current, ok, getErr := s.Get(ctx, sessionID)
+				if getErr != nil {
+					return Goal{}, getErr
+				}
+				if ok {
+					return current, nil
+				}
+			}
 			return Goal{}, err
 		}
 		if !again {
@@ -267,6 +350,28 @@ func (s *Store) change(ctx context.Context, sessionID string, mutate func(*Goal)
 	}, false)
 }
 
+var ErrGoalGenerationChanged = errors.New("goal was replaced before this operation completed")
+
+func (s *Store) changeGeneration(ctx context.Context, sessionID, generationID string, mutate func(*Goal) error) (Goal, error) {
+	return s.update(ctx, sessionID, func() (Goal, error) {
+		g, ok, err := s.getUnlocked(sessionID)
+		if err != nil {
+			return Goal{}, err
+		}
+		if !ok {
+			return Goal{}, errors.New("there is no goal for this session")
+		}
+		if g.ID != generationID {
+			return Goal{}, ErrGoalGenerationChanged
+		}
+		if err := mutate(&g); err != nil {
+			return Goal{}, err
+		}
+		g.UpdatedAt = time.Now().UTC()
+		return g, nil
+	}, false)
+}
+
 func (s *Store) getUnlocked(sessionID string) (Goal, bool, error) {
 	data, err := os.ReadFile(s.path(sessionID))
 	if errors.Is(err, os.ErrNotExist) {
@@ -282,7 +387,24 @@ func (s *Store) getUnlocked(sessionID string) (Goal, bool, error) {
 	if g.SessionID != sessionID {
 		return Goal{}, false, errors.New("goal session ID mismatch")
 	}
+	if g.ID == "" {
+		g.ID = legacyGenerationID(g)
+	}
 	return g, true, nil
+}
+
+func legacyGenerationID(g Goal) string {
+	data := []byte(g.SessionID + "\n" + g.Objective + "\n" + g.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	sum := sha256.Sum256(data)
+	return "legacy-" + hex.EncodeToString(sum[:16])
+}
+
+func newGenerationID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(id[:]), nil
 }
 
 func (s *Store) update(ctx context.Context, sessionID string, create func() (Goal, error), replace bool) (Goal, error) {

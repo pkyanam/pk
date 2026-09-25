@@ -910,6 +910,16 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "prompt" && item.payload?.text === "[pk goal start] finish the verification")).toBe(true)
   })
 
+  test("goal completion status does not repeat the full objective", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "goal_state", payload: { status: "complete", goal: { status: "complete", objective: "A long sensitive task description that should not be repeated after completion" } } }))
+    const frame = await setup.waitForFrame((value) => value.includes("Goal complete"))
+    expect(frame).not.toContain("A long sensitive task description")
+  })
+
   test("Enter activates the highlighted no-argument slash command", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })

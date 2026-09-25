@@ -1168,7 +1168,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 						if baseDecorator != nil {
 							registry = baseDecorator(registry)
 						}
-						return goals.Decorator(goalStore, sessionID, goalTurnID)(registry)
+						return goals.Decorator(goalStore, sessionID, goal.ID, goalTurnID)(registry)
 					}
 					var runErr error
 					result, runErr = runner.Run(broker.Context(), opts)
