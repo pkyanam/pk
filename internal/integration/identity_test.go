@@ -119,6 +119,9 @@ func TestLegacySnapshotKeepsOriginalHarnessIdentity(t *testing.T) {
 	const integrationRelevanceClause = " Use only tools and integrations relevant to the request; availability alone is not a reason to invoke them."
 	integrationClauseFound := strings.Contains(newSuffix, integrationRelevanceClause)
 	newSuffix = strings.Replace(newSuffix, integrationRelevanceClause, "", 1)
+	const nextActionClause = " When you announce a next action, perform it before ending the turn; finish with results only when the work is complete or a necessary user decision blocks it."
+	nextActionClauseFound := strings.Contains(newSuffix, nextActionClause)
+	newSuffix = strings.Replace(newSuffix, nextActionClause, "", 1)
 	// New identity-aware sessions correct scheduling claims; legacy snapshots
 	// retain their original preamble. Normalize only those documented changes.
 	for _, pair := range [][2]string{
@@ -130,7 +133,7 @@ func TestLegacySnapshotKeepsOriginalHarnessIdentity(t *testing.T) {
 		}
 		newSuffix = strings.Replace(newSuffix, pair[0], pair[1], 1)
 	}
-	if !newFound || !legacyFound || !clauseFound || !integrationClauseFound || newSuffix != legacySuffix {
+	if !newFound || !legacyFound || !clauseFound || !integrationClauseFound || !nextActionClauseFound || newSuffix != legacySuffix {
 		t.Fatal("replacing the product identity changed the remainder of the inherited prompt")
 	}
 }

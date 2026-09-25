@@ -5,20 +5,23 @@ import (
 	"strings"
 )
 
-// A narrow fallback for models that announce a next action but return a final
-// text-only response. The observer permits one recovery, then rearms only
-// after subsequent real tool work. Ordinary answers and questions incur
-// no extra request.
-var nextActionSignoff = regexp.MustCompile(`(?i)(?:^|[.!—]\s+)(?:let me|i['’]ll|i will|next,? i['’]ll)\s+(?:now\s+)?(?:examine|inspect|verify|check|read|investigate|compare|run|gather|trace|confirm|audit|search|review|locate|test)\b[^.!?]*[.!:]?$`)
-var announcedSuite = regexp.MustCompile(`(?i)(?:^|[.!—]\s+)now\s+(?:the\s+)?(?:full\s+)?(?:verification|test|check)\s+suite\b[^.!?]*:`)
-var committedActionPromise = regexp.MustCompile(`(?i)(?:^|[.!—]\s+)(?:let me(?: just| now)?|i['’]ll(?: just| now)?|i will(?: just| now)?|continuing:?|next,?)\s+(?:go ahead and\s+)?(?:push(?:ing)?|create|upload|publish|release|commit|build|rerun|resume|verify|inspect|check|run|test|confirm|apply|install|send)\b[^.!?]*[.!:]?$`)
+// The fallback only considers the final sentence, so an earlier promise does
+// not override a later factual result. Dots inside paths, URLs, and versions
+// are allowed in that sentence.
+var sentenceBoundary = regexp.MustCompile(`[.!—]\s+`)
+var nextActionPromise = regexp.MustCompile(`(?i)^(?:let me(?: just| now)?|i['’]ll(?: just| now)?|i will(?: just| now)?|continuing:?|next,? i['’]ll|next,?)\s+(?:go ahead and\s+)?(?:examine|inspect|verify|check|read|investigate|compare|run|gather|trace|confirm|audit|search|review|locate|test|push(?:ing)?|create|upload|publish|release|commit|build|rerun|resume|apply|install|send)\b[^!?]*[.!:]?$`)
+var announcedSuite = regexp.MustCompile(`(?i)^now\s+(?:the\s+)?(?:full\s+)?(?:verification|test|check)\s+suite\b[^!?]*:`)
 
 func unfinishedProgress(text, phase string) bool {
 	text = strings.TrimSpace(text)
-	if len(text) == 0 || len(text) > 800 || strings.Contains(text, "?") {
+	if len(text) == 0 || phase == "final_answer" || strings.Contains(text, "?") {
 		return false
 	}
-	return phase == "commentary" || phase == "" && (nextActionSignoff.MatchString(text) || announcedSuite.MatchString(text) || committedActionPromise.MatchString(text))
+	boundaries := sentenceBoundary.FindAllStringIndex(text, -1)
+	if len(boundaries) > 0 {
+		text = strings.TrimSpace(text[boundaries[len(boundaries)-1][1]:])
+	}
+	return announcedSuite.MatchString(text) || nextActionPromise.MatchString(text)
 }
 
 func resetProgressRecoveryForExternalInput(external, internalRecovery bool, sawToolWork, recoveredProgress *bool) {

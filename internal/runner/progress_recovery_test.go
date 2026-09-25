@@ -22,9 +22,14 @@ func TestUnfinishedProgressIsNarrow(t *testing.T) {
 		{"The merge completed cleanly — git auto-merged main.go. Let me verify the cases, then re-run the full verification suite:", true},
 		{"Merge verified clean. Now the full verification suite on the merged tree, in parallel with the investigation:", true},
 		{"The tag already exists. Let me just push it and create the release with the harness asset:", true},
+		{"Now the true end-to-end proof: test self-update against the live release. I'll install a deliberately stale version, then self-update to v0.1.0 from GitHub:", true},
+		{"I'll run the self-update test from /tmp/pk/v0.1.0/release.tar.gz now.", true},
 		{"You're right — continuing: pushing the existing tag and creating the release:", true},
 		{"Done. All tests pass.", false},
 		{"The tag was pushed and the release was created successfully.", false},
+		{"I installed v0.1.0 and verified the updater. The update is complete.", false},
+		{"I'll run the updater test. The test passes and the release is complete.", false},
+		{"The final URL is https://example.com/release/v0.1.0 and the release is live.", false},
 		{"Would you like me to inspect it?", false},
 		{"If you want, I’ll inspect it.", false},
 		{"The docs say: Let me inspect it.", false},
@@ -123,7 +128,7 @@ func (a *repeatedProgressAdapter) Respond(_ context.Context, req llm.Request, _ 
 		id := "read-" + string(rune('0'+a.calls))
 		return llm.Response{ID: id, Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: "Read", Arguments: `{"path":"sample.txt"}`}}}}, nil
 	}
-	text := "Let me inspect the next part."
+	text := "Now the true end-to-end proof: test self-update against the live release. I'll install a deliberately stale version, then self-update to v0.1.0 from GitHub:"
 	if a.calls == 5 {
 		text = "All requested checks passed."
 	}

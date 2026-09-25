@@ -3,6 +3,7 @@ package goals
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 
 	"github.com/unreallabsai/unreal-agent/harness/llm"
@@ -50,7 +51,10 @@ type goalTranslator struct {
 	sessionID, turnID, name string
 }
 
-func (t goalTranslator) Translate(_ tool.Context, call llm.ToolCall) tool.CallStatus {
+func (t goalTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallStatus {
+	if ctx == nil {
+		return tool.CallStatus{Error: "goal tool context unavailable"}
+	}
 	var args struct {
 		Evidence string `json:"evidence"`
 		Blocker  string `json:"blocker"`
@@ -58,21 +62,57 @@ func (t goalTranslator) Translate(_ tool.Context, call llm.ToolCall) tool.CallSt
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		return tool.CallStatus{Error: "invalid goal tool arguments: " + err.Error()}
 	}
-	var err error
+	if t.name == "GoalComplete" && len(args.Evidence) < 16 {
+		return tool.CallStatus{Error: "completion requires concrete verification evidence"}
+	}
+	if t.name == "GoalBlocker" && (t.turnID == "" || len(args.Blocker) < 8 || len(args.Blocker) > 1000) {
+		return tool.CallStatus{Error: "a goal turn ID and concise blocker reason are required"}
+	}
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return tool.CallStatus{Error: "encode goal tool operation: " + err.Error()}
+	}
+	spec, err := operation.NewValueSpec(jsontext.Value(payload))
+	if err != nil {
+		return tool.CallStatus{Error: "create goal tool operation: " + err.Error()}
+	}
+	return tool.CallStatus{WaitingFor: []operation.ID{ctx.Submit(spec)}}
+}
+func (t goalTranslator) TranslateResult(callID string, status tool.CallStatus, ops []operation.Operation) (llm.ToolResult, error) {
+	if status.Error != "" {
+		return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: status.Error}}}, nil
+	}
+	if len(ops) != 1 || len(status.WaitingFor) != 1 || ops[0].ID != status.WaitingFor[0] {
+		return llm.ToolResult{CallID: callID}, fmt.Errorf("%s expected one goal operation, got %d", t.name, len(ops))
+	}
+	op := ops[0]
+	if op.Status != operation.StatusCompleted {
+		if op.Status == operation.StatusFailed || op.Status == operation.StatusCanceled {
+			return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "Goal operation did not complete."}}}, nil
+		}
+		return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "Goal operation is running."}}}, nil
+	}
+	value, err := operation.DecodeValue(op)
+	if err != nil {
+		return llm.ToolResult{CallID: callID}, err
+	}
+	var args struct {
+		Evidence string `json:"evidence"`
+		Blocker  string `json:"blocker"`
+	}
+	if err := json.Unmarshal(value, &args); err != nil {
+		return llm.ToolResult{CallID: callID}, fmt.Errorf("decode goal operation: %w", err)
+	}
+	var result string
 	if t.name == "GoalComplete" {
 		_, err = t.store.Complete(context.Background(), t.sessionID, args.Evidence)
+		result = "Goal marked complete after verification."
 	} else {
 		_, err = t.store.ReportBlocker(context.Background(), t.sessionID, t.turnID, args.Blocker)
+		result = "Goal blocker recorded for this turn."
 	}
 	if err != nil {
-		return tool.CallStatus{Error: err.Error()}
+		return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: err.Error()}}}, nil
 	}
-	return tool.CallStatus{}
-}
-func (t goalTranslator) TranslateResult(callID string, status tool.CallStatus, _ []operation.Operation) (llm.ToolResult, error) {
-	message := fmt.Sprintf("Goal status recorded by %s.", t.name)
-	if status.Error != "" {
-		message = status.Error
-	}
-	return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: message}}}, nil
+	return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: result}}}, nil
 }
