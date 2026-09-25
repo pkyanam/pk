@@ -717,6 +717,8 @@ func checkPreallocatedSessionCollision(ctx context.Context, store sessionstore.S
 func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, responseTimings *responseTimingStore, recordOutputErr func(error), onResponseComplete func()) sessionstore.Observer {
 	var mu sync.Mutex
 	toolCalls := make(map[string]toolCallMetadata)
+	pendingTools := make(map[string]bool)
+	sawToolWork, recoveredProgress := false, false
 	return func(id session.ID, item sessionstore.Item) {
 		if item.Kind == sessionstore.ItemInput {
 			input, ok := item.Data.(inbox.Input)
@@ -758,6 +760,7 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 					mu.Lock()
 					if _, exists := toolCalls[call.CallID]; !exists {
 						toolCalls[call.CallID] = toolCallMetadata{Name: call.Name, Arguments: call.Arguments, StartedAt: time.Now()}
+						pendingTools[call.CallID] = true
 					}
 					mu.Unlock()
 				}
@@ -769,6 +772,9 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			}
 			mu.Lock()
 			metadata := toolCalls[status.CallID]
+			if toolState(status.Status, status.Operations) != "running" {
+				delete(pendingTools, status.CallID)
+			}
 			mu.Unlock()
 			name := metadata.Name
 			if toolEvents {
@@ -826,6 +832,32 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 				recordOutputErr(err)
 			}
 			mu.Unlock()
+		}
+		if hasToolCall {
+			sawToolWork = true
+		}
+		mu.Lock()
+		hasPendingTools := len(pendingTools) > 0
+		mu.Unlock()
+		if !hasToolCall && !hasPendingTools && stopWhenIdle && sawToolWork && !recoveredProgress && response.Stop == llm.StopComplete && len(messages) == 1 && unfinishedProgress(messages[0].text, messages[0].phase) && (inputGate == nil || !inputGate.waiting()) {
+			recoveredProgress = true
+			// Persist the labeled recovery input through the ordinary inbox, outside
+			// the synchronous store observer. Never loop indefinitely on prose.
+			go func() {
+				inputID, err := newID()
+				if err == nil {
+					payload, encodeErr := json.Marshal(progressRecoveryNote)
+					err = encodeErr
+					if err == nil {
+						err = inputs.Submit(runCtx, inbox.Input{ID: inbox.ID(inputID), Kind: inbox.InputExternal, Payload: payload})
+					}
+				}
+				if err != nil {
+					recordOutputErr(err)
+					_ = submitStop(runCtx, inputs, inbox.StopWhenIdle, "progress recovery failed")
+				}
+			}()
+			return
 		}
 		if !hasToolCall && stopWhenIdle {
 			// Submit outside the observer: store callbacks are synchronous while the

@@ -119,6 +119,17 @@ func TestLegacySnapshotKeepsOriginalHarnessIdentity(t *testing.T) {
 	const integrationRelevanceClause = " Use only tools and integrations relevant to the request; availability alone is not a reason to invoke them."
 	integrationClauseFound := strings.Contains(newSuffix, integrationRelevanceClause)
 	newSuffix = strings.Replace(newSuffix, integrationRelevanceClause, "", 1)
+	// New identity-aware sessions correct scheduling claims; legacy snapshots
+	// retain their original preamble. Normalize only those documented changes.
+	for _, pair := range [][2]string{
+		{"When calls are running, ending a turn without new calls lets the harness wait for their results. The harness does not schedule periodic heartbeat turns.", "You never have to babysit a running call: harness does it for you. As a backup, if calls are active and nothing has happened for ten minutes, a heartbeat wakes you, and this is an opportunity to check that all is well."},
+		{"When no calls are running and your work is complete, finish your reply. pk returns control and saves the session so it can be resumed later.", "Ending a turn with no tool calls while calls are running means you sleep until one finishes; ending a turn with nothing running ends the session, so do that only when the task is complete."},
+	} {
+		if !strings.Contains(newSuffix, pair[0]) {
+			t.Fatalf("missing corrected scheduling clause %q", pair[0])
+		}
+		newSuffix = strings.Replace(newSuffix, pair[0], pair[1], 1)
+	}
 	if !newFound || !legacyFound || !clauseFound || !integrationClauseFound || newSuffix != legacySuffix {
 		t.Fatal("replacing the product identity changed the remainder of the inherited prompt")
 	}

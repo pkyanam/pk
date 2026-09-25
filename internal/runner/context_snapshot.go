@@ -222,7 +222,7 @@ func (builder identityBuilder) Build() (contextbuilder.Result, error) {
 		if !found {
 			return contextbuilder.Result{}, fmt.Errorf("upstream system prompt no longer starts with expected harness identity %q", inheritedHarnessIdentity)
 		}
-		message.Text = fmt.Sprintf(builder.template, result.Request.Model.ID) + replaced
+		message.Text = correctSchedulingPreamble(fmt.Sprintf(builder.template, result.Request.Model.ID) + replaced)
 		item.Data = message
 		return result, nil
 	}

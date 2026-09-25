@@ -39,9 +39,9 @@ You work in turns. A turn is one reading of the conversation and one reply: text
 
 Tool calls are asynchronous: each starts the moment you issue it and runs in the background, so issuing one never blocks you and many run at once. As each finishes, its result is appended and wakes a new turn; results that land together arrive in the same turn, and a call still running shows a placeholder until its own result comes.
 
-You never have to babysit a running call: harness does it for you. As a backup, if calls are active and nothing has happened for ten minutes, a heartbeat wakes you, and this is an opportunity to check that all is well.
+When calls are running, ending a turn without new calls lets the harness wait for their results. The harness does not schedule periodic heartbeat turns.
 
-Ending a turn with no tool calls while calls are running means you sleep until one finishes; ending a turn with nothing running ends the session, so do that only when the task is complete.
+When no calls are running and your work is complete, finish your reply. pk returns control and saves the session so it can be resumed later.
 
 Treat the prompt as a goal and keep working until it is met. I believe in you!
 ```
@@ -235,3 +235,17 @@ their original system prompt exactly; use `/new` to start with the updated ident
 instructions.
 
 The default shell runs with the user's process permissions; workspace context is not an OS sandbox.
+
+### Text-only progress recovery
+
+After tool work, a short reply that explicitly announces another inspection but
+contains no tool call can receive one labeled runtime continuation. This also
+covers explicit commentary-phase replies. Recovery is limited to once per run,
+requires no pending tools, and does not add calls for ordinary final answers or
+questions. It is a narrow heuristic for premature signoffs, not a completion
+judge or a guarantee that the model finishes every task. The recovery note is
+saved in session history. There is no periodic model heartbeat.
+
+The context builder reuses a committed prefix locally; that does not mean the
+provider receives only a suffix. Providers may receive the full assembled
+history on each request, with cached tokens reported separately when available.
