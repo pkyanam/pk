@@ -35,6 +35,47 @@ func updateBinaryDir() string {
 	return filepath.Join(userHome(), ".local", "bin")
 }
 
+// A temporary library override is commonly used for installer smoke tests.
+// Require a matching binary-dir override too, so the test cannot rewrite the
+// user's durable launcher to point at an ephemeral release tree.
+func validateInstallDirs() error {
+	libOverride := strings.TrimSpace(os.Getenv("PK_LIB_DIR"))
+	if libOverride == "" {
+		return nil
+	}
+	libIsTemp, err := isUnderTempDir(libOverride)
+	if err != nil || !libIsTemp {
+		return nil
+	}
+	if strings.TrimSpace(os.Getenv("PK_BIN_DIR")) == "" {
+		return fmt.Errorf("PK_LIB_DIR points into the temporary directory; set PK_BIN_DIR to a temporary directory too, so the durable launcher is not replaced")
+	}
+	binIsTemp, err := isUnderTempDir(updateBinaryDir())
+	if err != nil {
+		return err
+	}
+	if binIsTemp {
+		return nil
+	}
+	return fmt.Errorf("PK_LIB_DIR points into the temporary directory; set PK_BIN_DIR to a temporary directory too, so the durable launcher is not replaced")
+}
+
+func isUnderTempDir(path string) (bool, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	tempDir, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(tempDir, absolute)
+	if err != nil {
+		return false, nil
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
 func runUpdateCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: pk update [--source DIR]")
@@ -112,6 +153,10 @@ func runInstallRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "usage: pk __install-release --archive FILE --tag TAG --sha256 HEX")
 		return 2
 	}
+	if err := validateInstallDirs(); err != nil {
+		fmt.Fprintf(stderr, "pk install: %v\n", err)
+		return 1
+	}
 	info, err := os.Lstat(*archivePath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 256<<20 {
 		fmt.Fprintln(stderr, "pk install: release archive is missing or invalid")
@@ -180,6 +225,10 @@ func runInstallArtifacts(ctx context.Context, args []string, stdout, stderr io.W
 		fmt.Fprintln(stderr, "usage: pk __install-artifacts --binary FILE --ui DIR [--legacy-binary FILE --legacy-ui DIR]")
 		return 2
 	}
+	if err := validateInstallDirs(); err != nil {
+		fmt.Fprintf(stderr, "pk install: %v\n", err)
+		return 1
+	}
 	manager := updateManager()
 	status, err := manager.Status()
 	if err != nil {
@@ -244,6 +293,10 @@ func runUpdateWithProgress(ctx context.Context, args []string, stdout, stderr io
 	if flags.NArg() != 0 {
 		fmt.Fprintf(stderr, "pk update: unexpected arguments: %s\n", strings.Join(flags.Args(), " "))
 		return 2
+	}
+	if err := validateInstallDirs(); err != nil {
+		fmt.Fprintf(stderr, "pk update: %v\n", err)
+		return 1
 	}
 	manager := updateManagerWithProgress(progress)
 	var release pkupdate.Release

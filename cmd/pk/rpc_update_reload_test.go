@@ -55,7 +55,9 @@ func TestRPCUpdateRequiresIdleAndStreamsOperationLifecycle(t *testing.T) {
 }
 
 func TestRPCUpdateDefaultDispatchReachesSourceValidation(t *testing.T) {
-	t.Setenv("PK_LIB_DIR", filepath.Join(t.TempDir(), "install"))
+	installRoot := t.TempDir()
+	t.Setenv("PK_LIB_DIR", filepath.Join(installRoot, "install"))
+	t.Setenv("PK_BIN_DIR", filepath.Join(installRoot, "bin"))
 	source := t.TempDir() // exists, but lacks the required pk source files
 	payload, err := json.Marshal(map[string]string{"source_path": source})
 	if err != nil {

@@ -89,6 +89,52 @@ func TestInstallArtifactsMigratesLegacyPairAndWritesLauncher(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactsRejectsTemporaryLibraryWithDurableDefaultLauncher(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PK_HOME", filepath.Join(home, ".pk"))
+	libDir := filepath.Join(t.TempDir(), "pk-inst-check", "lib")
+	t.Setenv("PK_LIB_DIR", libDir)
+	t.Setenv("PK_BIN_DIR", "")
+	bin := filepath.Join(home, "build", "pk")
+	ui := filepath.Join(home, "build", "ui")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ui, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ui, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ui, "dist", "main.js"), []byte("// ui"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	code := runInstallArtifacts(context.Background(), []string{"--binary", bin, "--ui", ui}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "PK_LIB_DIR points into the temporary directory") {
+		t.Fatalf("runInstallArtifacts code=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "bin", "pk")); !os.IsNotExist(err) {
+		t.Fatalf("durable launcher was unexpectedly created: %v", err)
+	}
+	if _, err := os.Stat(libDir); !os.IsNotExist(err) {
+		t.Fatalf("temporary release tree was unexpectedly created: %v", err)
+	}
+}
+
+func TestValidateInstallDirsAllowsExplicitTemporaryPair(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PK_LIB_DIR", filepath.Join(root, "lib"))
+	t.Setenv("PK_BIN_DIR", filepath.Join(root, "bin"))
+	if err := validateInstallDirs(); err != nil {
+		t.Fatalf("explicit temporary install pair rejected: %v", err)
+	}
+}
+
 func TestMainDispatchesInstallReleaseHelper(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var stdout, stderr strings.Builder
