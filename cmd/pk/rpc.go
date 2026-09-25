@@ -20,6 +20,7 @@ import (
 	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
 	"github.com/pkyanam/pk/internal/extensions"
+	"github.com/pkyanam/pk/internal/goals"
 	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/interaction"
 	"github.com/pkyanam/pk/internal/mcpclient"
@@ -111,6 +112,9 @@ type rpcServer struct {
 	pluginPaths                []string
 	pluginIssues               []string
 	requestTypes               map[string]string
+	goalStore                  *goals.Store
+	goalLoopAllowed            bool
+	goalSteered                bool
 	skillManagerFactory        func() skillinstall.Manager
 	broker                     *interaction.Broker
 	loadAttachments            func(context.Context, string, string, []string) (string, []attachments.Attachment, error)
@@ -526,6 +530,73 @@ func (s *rpcServer) completeTurn(result turnDone) {
 	_ = s.emit(result.id, "turn_finished", map[string]any{"session_id": sessionID, "text": result.text})
 }
 
+func (s *rpcServer) handleGoal(requestID, action, objective string) {
+	s.mu.Lock()
+	store, sessionID, active := s.goalStore, s.session, s.active
+	if store == nil {
+		store = goals.NewStore(filepath.Join(pkHome(), "goals"))
+		s.goalStore = store
+	}
+	if action == "pause" || action == "clear" {
+		s.goalLoopAllowed = false
+	}
+	if (action == "set" || action == "resume") && active {
+		s.mu.Unlock()
+		_ = s.emit(requestID, "error", map[string]any{"message": "wait for the current turn to finish before starting or resuming a goal", "recoverable": true})
+		return
+	}
+	if sessionID == "" {
+		s.mu.Unlock()
+		_ = s.emit(requestID, "error", map[string]any{"message": "start a conversation before creating a goal", "recoverable": true})
+		return
+	}
+	cancel := s.activeCancel
+	s.mu.Unlock()
+	var goal goals.Goal
+	var err error
+	start := false
+	switch action {
+	case "set":
+		goal, err = store.Set(s.ctx, sessionID, objective)
+		start = true
+	case "status":
+		var ok bool
+		goal, ok, err = store.Get(s.ctx, sessionID)
+		if !ok && err == nil {
+			_ = s.emit(requestID, "goal_state", map[string]any{"status": "none", "session_id": sessionID})
+			return
+		}
+	case "pause":
+		goal, err = store.Pause(s.ctx, sessionID)
+		if cancel != nil {
+			cancel()
+		}
+	case "resume":
+		goal, err = store.Resume(s.ctx, sessionID)
+		start = true
+	case "clear":
+		err = store.Clear(s.ctx, sessionID)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			_ = s.emit(requestID, "goal_state", map[string]any{"status": "none", "session_id": sessionID})
+			return
+		}
+	default:
+		err = fmt.Errorf("usage: /goal [OBJECTIVE] | /goal status|pause|resume|clear")
+	}
+	if err != nil {
+		_ = s.emit(requestID, "error", map[string]any{"message": err.Error(), "recoverable": true})
+		return
+	}
+	s.mu.Lock()
+	s.goalLoopAllowed = start
+	s.goalSteered = false
+	s.mu.Unlock()
+	_ = s.emit(requestID, "goal_state", map[string]any{"goal": goal, "status": goal.Status, "start": start, "resume_required": !start && goal.Status == goals.Active && !active})
+}
+
 type turnDone struct {
 	id, text string
 	err      error
@@ -709,11 +780,18 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		s.started = true
+		s.goalStore = goals.NewStore(filepath.Join(pkHome(), "goals"))
+		s.goalLoopAllowed = false // persisted goals require an explicit /goal resume after process restart
 		s.theme = cfg.Theme
 		capabilities := rpcCapabilities(steeringEnabled)
 		_ = s.emit(msg.ID, "ready", map[string]any{"workspace": workspace, "session_id": s.session, "model": model, "effort": effort, "provider_id": providerID, "theme": cfg.Theme, "imagegen_enabled": imageGenDriver != "", "imagegen_driver": imageGenDriver, "provider_reasoning_enabled": s.providerReasoningEnabled, "capabilities": capabilities, "release_status": rpcCurrentReleaseStatus()})
 		if s.session != "" {
 			_ = s.emit(msg.ID, "session", map[string]any{"session_id": s.session})
+			if goal, ok, err := s.goalStore.Get(s.ctx, s.session); err != nil {
+				_ = s.emit(msg.ID, "error", map[string]any{"message": "load saved goal: " + err.Error(), "recoverable": true})
+			} else if ok {
+				_ = s.emit(msg.ID, "goal_state", map[string]any{"goal": goal, "status": goal.Status, "resume_required": goal.Status == goals.Active})
+			}
 		}
 	case "prompt":
 		text := get("text")
@@ -757,6 +835,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			return
 		}
 		workspace, sessionID, providerID := s.opts.Workspace, s.session, s.providerID
+		goalStore, runGoal := s.goalStore, s.goalLoopAllowed
 		model := s.opts.Model
 		if providerID == "" && isCloudflareWorkersAIModel(model) {
 			s.mu.Unlock()
@@ -768,6 +847,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.activeCancel = cancel
 		s.active = true
+		s.goalSteered = false
 		var inputStream chan runner.Input
 		var steeringRequests chan steeringRequest
 		var sessionReady chan string
@@ -1069,7 +1149,48 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				finished <- turnDone{id: msg.ID, err: fmt.Errorf("configure subagents: %w", err)}
 				return
 			}
-			result, err := runner.Run(broker.Context(), opts)
+			var result runner.RunResult
+			if runGoal && goalStore != nil {
+				baseDecorator := opts.DecorateRegistry
+				_, goalErr := goalStore.Run(broker.Context(), sessionID, func(goal goals.Goal, index int, goalTurnID string) (bool, error) {
+					s.mu.Lock()
+					keepGoal := s.goalLoopAllowed && !s.goalSteered
+					s.mu.Unlock()
+					if !keepGoal {
+						return false, nil
+					}
+					if index > 0 {
+						opts.Prompt = fmt.Sprintf("Continue this saved goal: %s\nUse GoalComplete only after verification, or GoalBlocker for a persistent concrete blocker.", goal.Objective)
+						opts.PromptID = ""
+						opts.BeforeInputPersist, opts.AfterInputPersist = nil, nil
+					}
+					opts.DecorateRegistry = func(registry tool.Registry) tool.Registry {
+						if baseDecorator != nil {
+							registry = baseDecorator(registry)
+						}
+						return goals.Decorator(goalStore, sessionID, goalTurnID)(registry)
+					}
+					var runErr error
+					result, runErr = runner.Run(broker.Context(), opts)
+					if runErr != nil {
+						return false, runErr
+					}
+					return result.ToolWork, nil
+				})
+				err = goalErr
+				if goal, ok, stateErr := goalStore.Get(context.Background(), sessionID); stateErr != nil {
+					if err == nil {
+						err = stateErr
+					}
+				} else if ok {
+					_ = s.emit(msg.ID, "goal_state", map[string]any{"goal": goal, "status": goal.Status, "resume_required": goal.Status == goals.Active && goal.AwaitingUser})
+				}
+			} else {
+				result, err = runner.Run(broker.Context(), opts)
+			}
+			s.mu.Lock()
+			s.goalLoopAllowed = false
+			s.mu.Unlock()
 			subagentManager.Close()
 			if mcpHost != nil {
 				if closeErr := mcpHost.Close(); err == nil && closeErr != nil {
@@ -1145,9 +1266,14 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 	case "cancel":
 		s.mu.Lock()
 		cancel, active, sessionID, model, effort := s.activeCancel, s.active, s.session, s.opts.Model, s.opts.Effort
+		goalStore, wasGoal := s.goalStore, s.goalLoopAllowed
+		s.goalLoopAllowed = false
 		s.activeInputs = nil
 		s.activeSteerRequests = nil
 		s.mu.Unlock()
+		if wasGoal && goalStore != nil {
+			_, _ = goalStore.AwaitUser(s.ctx, sessionID)
+		}
 		if cancel != nil {
 			cancel()
 		}
@@ -1231,6 +1357,9 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		}
 		s.mu.Lock()
 		steeringEnabled := s.steeringEnabled
+		if s.active {
+			s.goalSteered = true
+		}
 		s.mu.Unlock()
 		if !steeringEnabled {
 			s.rejectSteer(msg.ID, "foreground steering was not enabled at session start")
@@ -2404,6 +2533,8 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 		sessionID, model, effort, providerID := s.session, s.opts.Model, s.opts.Effort, s.providerID
 		s.mu.Unlock()
 		_ = s.emit(msg.ID, "status", map[string]any{"session_id": sessionID, "model": model, "effort": effort, "provider_id": providerID, "logged_in": status.LoggedIn, "expired": status.Expired, "account_id": status.AccountID})
+	case "goal":
+		s.handleGoal(msg.ID, get("action"), get("objective"))
 	case "login":
 		if err := auth.Login(s.ctx, auth.LoginOptions{Output: s.diagnostics}); err != nil {
 			_ = s.emit(msg.ID, "error", map[string]any{"message": err.Error(), "recoverable": true})

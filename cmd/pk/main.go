@@ -682,7 +682,7 @@ Run options:
   --provider ID|native          select a configured provider or native ChatGPT
   --use-codex                   reuse existing Codex credentials read-only
 
-TUI commands: /help, /exit, /new, /tasks, /sessions, /model, /effort,
+TUI commands: /help, /exit, /new, /tasks, /sessions, /goal, /model, /effort,
               /provider, /plugins, /mcp, /skills, /history, /update.
 Plain-mode commands: /help, /exit, /quit. Ctrl-C cancels the active run and exits.`)
 }

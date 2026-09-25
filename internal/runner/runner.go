@@ -178,6 +178,7 @@ type ToolRegistryOptions struct {
 type RunResult struct {
 	SessionID string
 	Text      string
+	ToolWork  bool
 }
 
 // Run executes one prompt, resuming a prior session when SessionID is set.
@@ -460,6 +461,11 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	if loadedSnapshot {
 		var missingTools []string
 		for _, definition := range snapshot.Tools {
+			if definition.Name == "GoalComplete" || definition.Name == "GoalBlocker" {
+				if _, enabled := registry.Resolve(definition.Name); !enabled {
+					continue
+				}
+			}
 			if _, ok := registry.Resolve(definition.Name); !ok {
 				missingTools = append(missingTools, definition.Name)
 			}
@@ -512,7 +518,30 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	builder.SetModel(llm.Model{ID: options.Model, ReasoningEffort: effort})
 	builder.SetSystemPrompt(snapshot.SystemPrompt)
 	for _, definition := range snapshot.Tools {
+		if definition.Name == "GoalComplete" || definition.Name == "GoalBlocker" {
+			if _, enabled := registry.Resolve(definition.Name); !enabled {
+				continue
+			}
+		}
 		builder.AddTool(definition)
+	}
+	if loadedSnapshot {
+		// Goal tools are opt-in and may be added after a conversation began.
+		// Add only this runtime-owned additive capability; keep the saved schema
+		// and every other frozen tool definition unchanged.
+		known := make(map[string]struct{}, len(snapshot.Tools))
+		for _, definition := range snapshot.Tools {
+			known[definition.Name] = struct{}{}
+		}
+		for _, definition := range registry.StaticDefinitions() {
+			if definition.Tool.Name != "GoalComplete" && definition.Tool.Name != "GoalBlocker" {
+				continue
+			}
+			if _, ok := known[definition.Tool.Name]; !ok {
+				builder.AddTool(definition.Tool)
+				known[definition.Tool.Name] = struct{}{}
+			}
+		}
 	}
 	contextUsageStore := options.ContextUsageStore
 	if contextUsageStore == nil {
@@ -577,6 +606,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	}
 	var emitted strings.Builder
 	var emittedMu sync.Mutex
+	toolWork := false
 	var inputGate *inputBoundaryGate
 	if options.QueueInputs {
 		inputGate = newInputBoundaryGate()
@@ -620,7 +650,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	// QueueInputs only governs how steering is admitted at model/tool
 	// boundaries. It must not turn a foreground prompt into an indefinitely
 	// live run: only KeepAlive suppresses the assistant-idle stop.
-	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, responseTimings, recordOutputErr, func() { lifecycle(LifecycleResponseComplete, "persisted") })
+	observer := outputObserver(options.Output, options.Diagnostics, options.JSONL, options.ToolEvents, runCtx, inputs, &emitted, &emittedMu, options.CaptureLimit, !options.KeepAlive, inputAcks, inputAcked, &inputAckMu, inputGate, responseTimings, recordOutputErr, func() { lifecycle(LifecycleResponseComplete, "persisted") }, &toolWork)
 	observerID := store.AddObserver(observer)
 	defer store.RemoveObserver(observerID)
 	current := coordinator.New(coordinator.Dependencies{
@@ -687,7 +717,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 		emittedMu.Lock()
 		text := emitted.String()
 		emittedMu.Unlock()
-		return RunResult{SessionID: string(id), Text: text}, ctx.Err()
+		return RunResult{SessionID: string(id), Text: text, ToolWork: toolWork}, ctx.Err()
 	}
 	emittedMu.Lock()
 	text := emitted.String()
@@ -698,7 +728,7 @@ func Run(ctx context.Context, options Options) (result RunResult, runErr error) 
 	if err != nil {
 		return RunResult{SessionID: string(id), Text: text}, fmt.Errorf("write output: %w", err)
 	}
-	return RunResult{SessionID: string(id), Text: text}, nil
+	return RunResult{SessionID: string(id), Text: text, ToolWork: toolWork}, nil
 }
 
 func checkPreallocatedSessionCollision(ctx context.Context, store sessionstore.Store, sessionDir string, id session.ID) error {
@@ -715,7 +745,7 @@ func checkPreallocatedSessionCollision(ctx context.Context, store sessionstore.S
 	return nil
 }
 
-func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, responseTimings *responseTimingStore, recordOutputErr func(error), onResponseComplete func()) sessionstore.Observer {
+func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx context.Context, inputs *inbox.Inbox, emitted *strings.Builder, emittedMu *sync.Mutex, captureLimit int, stopWhenIdle bool, inputAcks map[inbox.ID][]func(error), inputAcked map[inbox.ID]struct{}, inputAckMu *sync.Mutex, inputGate *inputBoundaryGate, responseTimings *responseTimingStore, recordOutputErr func(error), onResponseComplete func(), toolWork *bool) sessionstore.Observer {
 	var mu sync.Mutex
 	toolCalls := make(map[string]toolCallMetadata)
 	pendingTools := make(map[string]bool)
@@ -843,7 +873,8 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			mu.Unlock()
 		}
 		if hasToolCall {
-			sawToolWork = true
+			resetProgressRecoveryForToolWork(true, &sawToolWork, &recoveredProgress)
+			*toolWork = true
 		}
 		mu.Lock()
 		hasPendingTools := len(pendingTools) > 0

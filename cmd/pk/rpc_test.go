@@ -24,6 +24,7 @@ import (
 	"github.com/pkyanam/pk/internal/auth"
 	"github.com/pkyanam/pk/internal/clipboard"
 	"github.com/pkyanam/pk/internal/config"
+	"github.com/pkyanam/pk/internal/goals"
 	"github.com/pkyanam/pk/internal/imagegen"
 	"github.com/pkyanam/pk/internal/modelstream"
 	"github.com/pkyanam/pk/internal/runner"
@@ -33,6 +34,33 @@ import (
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore/localfile"
 )
+
+func TestGoalRPCStartPauseResumeLifecycle(t *testing.T) {
+	var output bytes.Buffer
+	server := &rpcServer{ctx: context.Background(), output: &output, session: "goal-session", requestTypes: map[string]string{}, goalStore: goals.NewStore(t.TempDir())}
+	server.handleGoal("set", "set", "Finish the integration and verify it")
+	var event rpcEvent
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "goal_state" || event.Payload.(map[string]any)["start"] != true {
+		t.Fatalf("set event = %+v", event)
+	}
+	output.Reset()
+	server.handleGoal("pause", "pause", "")
+	output.Reset()
+	server.handleGoal("resume", "resume", "")
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "goal_state" || event.Payload.(map[string]any)["start"] != true {
+		t.Fatalf("resume event = %+v", event)
+	}
+	g, ok, err := server.goalStore.Get(context.Background(), "goal-session")
+	if err != nil || !ok || g.Status != goals.Active {
+		t.Fatalf("goal after resume = %+v, %t, %v", g, ok, err)
+	}
+}
 
 type rpcEventSink struct{ events chan []byte }
 

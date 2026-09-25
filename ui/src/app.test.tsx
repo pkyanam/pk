@@ -895,6 +895,21 @@ describe("OpenTUI application", () => {
     expect(fake.sent.some((item) => item.type === "status")).toBe(true)
   })
 
+  test("starting a goal submits its first prompt and resume events restart it", async () => {
+    const fake = fakeTransport()
+    const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })
+    openRenderers.push(setup)
+    await setup.waitForFrame((frame) => frame.includes("Ask pk to inspect"))
+    act(() => fake.emit({ version: 1, type: "ready", payload: { session_id: "goal-ui-session" } }))
+    await act(async () => { await setup.mockInput.typeText("/goal finish the verification") })
+    act(() => setup.mockInput.pressEnter())
+    await setup.flush()
+    const goalCommand = fake.sent.find((item) => item.type === "goal")
+    expect(goalCommand?.payload).toEqual({ action: "set", objective: "finish the verification" })
+    act(() => fake.emit({ version: 1, id: goalCommand?.id, type: "goal_state", payload: { status: "active", start: true, goal: { objective: "finish the verification", status: "active" } } }))
+    expect(fake.sent.some((item) => item.type === "prompt" && item.payload?.text === "[pk goal start] finish the verification")).toBe(true)
+  })
+
   test("Enter activates the highlighted no-argument slash command", async () => {
     const fake = fakeTransport()
     const setup = await testRender(<PkApp transport={fake.transport} workspace="/tmp/pk" />, { width: 100, height: 30 })

@@ -34,7 +34,7 @@ type StreamProgress = { outerId: string; requestId: string; label: string; updat
 type ProviderReasoning = { outerId: string; requestId: string; attempt: number; text: string }
 type Model = { id: string; label: string }
 type PendingQuestion = { id: string; text: string; choices: string[]; kind: "question" | "confirmation"; taskID?: string; dismissed?: boolean; answerRequestID?: string; answering?: boolean; submittedAnswer?: string }
-type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "theme" | "plugin_commands" | "history" | "usage" | "compact" | "journal" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
+type SlashCommand = { name: string; description: string; action: "model" | "effort" | "tasks" | "sessions" | "skills" | "plugins" | "plugin" | "mcp" | "tools" | "provider" | "image" | "theme" | "plugin_commands" | "history" | "usage" | "compact" | "journal" | "update" | "rollback" | "reload" | "new" | "attach" | "detach" | "cancel" | "goal" | "status" | "login" | "task" | "file" | "files" | "paste" | "help" | "exit" }
 type Maintenance = { id: string; kind: "update" | "rollback"; startedAt: number; progress: string }
 type CompactionUsage = {
   attempts: number
@@ -229,6 +229,7 @@ const slashCommands: SlashCommand[] = [
   { name: "/effort", description: "Set reasoning effort", action: "effort" },
   { name: "/tasks", description: "Browse durable agent tasks", action: "tasks" },
   { name: "/sessions", description: "Search, reopen, archive, or restore saved conversations", action: "sessions" },
+  { name: "/goal", description: "Set, inspect, pause, resume, or clear this session's durable goal", action: "goal" },
   { name: "/skills", description: "Search skills.sh, review/install skills, and manage installed skills", action: "skills" },
   { name: "/plugins", description: "Browse installed plugins or discover and install from a source", action: "plugins" },
   { name: "/commands", description: "Browse namespaced plugin commands", action: "plugin_commands" },
@@ -2024,6 +2025,17 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         })
         break
       }
+      case "goal_state": {
+        const goal = data.goal && typeof data.goal === "object" ? data.goal : null
+        const status = String(data.status ?? goal?.status ?? "none")
+        const objective = typeof goal?.objective === "string" ? goal.objective : ""
+        if (data.start === true && objective) {
+          addEntry("system", `${status === "active" ? "Starting" : "Resuming"} saved goal: ${objective}`)
+          transport.send("prompt", { text: `[pk goal start] ${objective}` })
+        } else if (status === "none") addEntry("system", "There is no saved goal for this session.")
+        else if (goal) addEntry("system", `Goal ${status}${goal.awaiting_user ? " · waiting for your input" : ""}${data.resume_required ? " · use /goal resume to continue" : ""}: ${objective}`)
+        break
+      }
       case "turn_finished":
         finishPendingSteers("The turn ended before this message was accepted.")
         clearStreamDraft()
@@ -3573,6 +3585,20 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         else if (busy) transport.send("cancel")
         else addEntry("system", "No turn is running.")
         break
+      case "goal": {
+        const [action, ...rest] = args
+        const known = ["status", "pause", "resume", "clear"]
+        if (known.includes(action)) {
+          const request = transport.send("goal", { action })
+          if (!request) addEntry("system", "Goal command could not start because pk is disconnected.")
+        } else {
+          const objective = [action, ...rest].join(" ").trim()
+          if (objective.length < 8) { addEntry("system", "Usage: /goal <objective> | /goal status|pause|resume|clear"); break }
+          const request = transport.send("goal", { action: "set", objective })
+          if (!request) addEntry("system", "Goal command could not start because pk is disconnected.")
+        }
+        break
+      }
       case "status": transport.send("status"); addEntry("system", `Session ${sessionId || "not started"} · ${model} · ${effort} reasoning`); break
       case "usage": openSessionUsage(); break
       case "journal": openJournal(); break
@@ -3623,7 +3649,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         break
       }
       case "paste": requestClipboardPaste(); break
-      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · release a transcript selection to copy it to the clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /skills · /plugins · /commands · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /usage · /compact · /history older · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
+      case "help": addEntry("system", "Enter sends · Shift-Enter or Ctrl-J adds a line · Esc stops/closes panels · Ctrl-P opens commands · Ctrl/Cmd-V or /paste imports clipboard · release a transcript selection to copy it to the clipboard · Ctrl-Y copies selected text · /file PATH · /files · /task new [--workspace PATH] PROMPT · /tasks · /goal <objective>|status|pause|resume|clear · /skills · /plugins · /commands · /plugin enable MANIFEST · /plugin disable ID · /mcp · /mcp add --id ID --command PATH · /mcp remove ID · /provider list|models ID|use ID|default ID|add|remove · /tools · /usage · /compact · /history older · /update [--source PATH] · /rollback · /reload · /new · /attach ID · /detach · /status · /login · /help · /exit"); break
       case "exit": void transport.close().finally(() => renderer.destroy()); break
     }
   }

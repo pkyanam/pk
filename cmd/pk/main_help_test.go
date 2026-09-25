@@ -23,7 +23,7 @@ func TestTopLevelHelpAccuratelySeparatesInterfacesAndCommands(t *testing.T) {
 		"pk web status|setup|configure|clear  configure TinyFish Search and Fetch",
 		"pk update [--source DIR]      install the latest official paired release",
 		"pk rpc                        run the versioned JSONL backend over stdin/stdout",
-		"TUI commands: /help, /exit, /new, /tasks, /sessions, /model, /effort,",
+		"TUI commands: /help, /exit, /new, /tasks, /sessions, /goal, /model, /effort,",
 		"/provider, /plugins, /mcp, /skills, /history, /update.",
 		"Plain-mode commands: /help, /exit, /quit. Ctrl-C cancels the active run and exits.",
 	} {
