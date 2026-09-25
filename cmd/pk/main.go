@@ -57,6 +57,8 @@ func runMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runUpdateCommand(ctx, args, stdout, stderr)
 	case "rpc":
 		return rpcMain(ctx, stdin, stdout, stderr)
+	case "daemon":
+		return runDaemonCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "config":
 		return runConfigCommand(args[1:], stdout, stderr)
 	case "task", "tasks":
@@ -657,6 +659,10 @@ Maintenance and automation:
   pk --update                   alias for pk update
   pk rollback | version
   pk rpc                        run the versioned JSONL backend over stdin/stdout
+
+v2 daemon (experimental, see docs/v2-architecture.md):
+  pk daemon start               run the v2 daemon over stdio JSON-RPC
+  pk daemon stop | status       stop or check the daemon via its PK_HOME pidfile
 
 Run options:
   --model MODEL                 model ID (default gpt-6-luna)
