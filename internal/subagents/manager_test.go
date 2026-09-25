@@ -71,7 +71,7 @@ func TestManagerLaunchSteerWaitAndFinalAnswerPhase(t *testing.T) {
 			phases = append(phases, e.Phase)
 		}
 	}
-	if len(phases) != 2 || phases[0] != "commentary" || phases[1] != "final_answer" {
+	if len(phases) != 1 || phases[0] != "final_answer" {
 		t.Fatalf("assistant event phases = %v", phases)
 	}
 }
@@ -376,13 +376,13 @@ func TestCancelThenCloseDrainsChildOutputAndTerminalEvent(t *testing.T) {
 	releaseCallback := make(chan struct{})
 	delivered := make(chan Event, 8)
 	m, err := New(Config{Workspace: t.TempDir(), Events: func(e Event) {
-		if e.Type == "assistant" {
+		if e.Type == "usage" {
 			enteredCallback <- e
 			<-releaseCallback
 		}
 		delivered <- e
 	}, Runner: func(ctx context.Context, opts runner.Options) (runner.RunResult, error) {
-		if _, err := fmt.Fprintln(opts.Output, `{"type":"assistant","phase":"commentary","text":"child progress"}`); err != nil {
+		if _, err := fmt.Fprintln(opts.Output, `{"type":"usage","input_tokens":1}`); err != nil {
 			return runner.RunResult{}, err
 		}
 		<-ctx.Done()
@@ -398,7 +398,7 @@ func TestCancelThenCloseDrainsChildOutputAndTerminalEvent(t *testing.T) {
 	select {
 	case <-enteredCallback:
 	case <-time.After(time.Second):
-		t.Fatal("child progress event was not delivered")
+		t.Fatal("child usage event was not delivered")
 	}
 	if err := m.Cancel(child.ID); err != nil {
 		t.Fatal(err)
@@ -453,7 +453,7 @@ func TestConcurrentCloseWaitsForFirstCloseToDrain(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(releaseCallback) }) }
 	defer release()
 	m, err := New(Config{Workspace: t.TempDir(), Events: func(e Event) {
-		if e.Type == "assistant" {
+		if e.Type == "usage" {
 			select {
 			case <-callbackEntered:
 			default:
@@ -462,7 +462,7 @@ func TestConcurrentCloseWaitsForFirstCloseToDrain(t *testing.T) {
 			<-releaseCallback
 		}
 	}, Runner: func(ctx context.Context, opts runner.Options) (runner.RunResult, error) {
-		if _, err := fmt.Fprintln(opts.Output, `{"type":"assistant","phase":"commentary","text":"blocked callback"}`); err != nil {
+		if _, err := fmt.Fprintln(opts.Output, `{"type":"usage","input_tokens":1}`); err != nil {
 			return runner.RunResult{}, err
 		}
 		<-ctx.Done()
@@ -541,4 +541,65 @@ func TestOwnershipClaimsResolveSymlinkAliasesAndMacCaseAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Close()
+}
+
+func TestReportContainsOnlyFinalReplyAndNoChildToolEvents(t *testing.T) {
+	var events []Event
+	var mu sync.Mutex
+	started, release := make(chan struct{}), make(chan struct{})
+	m, err := New(Config{Workspace: t.TempDir(), Events: func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() }, Runner: func(ctx context.Context, opts runner.Options) (runner.RunResult, error) {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return runner.RunResult{}, ctx.Err()
+		}
+		fmt.Fprintln(opts.Output, `{"type":"assistant","text":"Intermediate investigation"}`)
+		fmt.Fprintln(opts.Output, `{"type":"tool_call","name":"Bash","state":"completed"}`)
+		fmt.Fprintln(opts.Output, `{"type":"assistant","phase":"commentary","text":"Checking more"}`)
+		fmt.Fprintln(opts.Output, `{"type":"assistant","text":"Final findings; checks pass."}`)
+		return runner.RunResult{Text: "Intermediate investigation\nChecking more\nFinal findings; checks pass."}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	c, err := m.Launch(t.Context(), LaunchRequest{Task: "inspect", TaskOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("child did not start")
+	}
+	// Launch has returned while the child is blocked: parent work is unblocked.
+	if state, ok := m.Status(c.ID); !ok || state.State != "running" {
+		t.Fatalf("state=%+v", state)
+	}
+	close(release)
+	report, err := m.Wait(t.Context(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Text != "Final findings; checks pass." {
+		t.Fatalf("report leaked progress: %q", report.Text)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	finals := 0
+	for _, e := range events {
+		if e.Type == "tool_call" {
+			t.Fatal("child tool event forwarded")
+		}
+		if e.Type == "assistant" {
+			finals++
+			if e.Phase != "final_answer" || e.Text != report.Text {
+				t.Fatalf("unexpected reply %+v", e)
+			}
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("final replies=%d", finals)
+	}
 }

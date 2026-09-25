@@ -93,7 +93,15 @@ func TestCompactSubagentToolsPreservesAllOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metrics.BeforeBytes != 2124 || metrics.AfterBytes <= 0 || metrics.AfterBytes*10 >= metrics.BeforeBytes*7 {
+	var expectedBefore int64
+	for _, definition := range base.StaticDefinitions() {
+		encoded, err := json.Marshal(definition.Tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedBefore += int64(len(encoded))
+	}
+	if metrics.BeforeBytes != expectedBefore || metrics.AfterBytes <= 0 || metrics.AfterBytes*10 >= metrics.BeforeBytes*7 {
 		t.Fatalf("unexpected serialized-size manipulation check: %+v", metrics)
 	}
 	t.Logf("serialized subagent definitions: before=%d after=%d saved=%d bytes", metrics.BeforeBytes, metrics.AfterBytes, metrics.BeforeBytes-metrics.AfterBytes)

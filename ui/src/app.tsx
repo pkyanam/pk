@@ -2528,7 +2528,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
         if (subtype === "assistant") {
           const phase = String(data.phase ?? "")
           const text = typeof data.text === "string" ? data.text.trim() : ""
-          if (text && ["commentary", "final_answer", "final"].includes(phase)) {
+          if (text && ["final_answer", "final"].includes(phase)) {
             const existingID = childAssistantEntries.current.get(childID)
             if (existingID !== undefined) updateEntry(existingID, (entry) => ({ ...entry, text: `${entry.text}\n${text}`.slice(-16 * 1024) }))
             else {
@@ -2539,22 +2539,14 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
             }
           }
         } else if (subtype === "tool_call") {
-          const name = String(data.name ?? "tool")
-          const state = String(data.state ?? "running")
-          const terminal = ["completed", "complete", "failed", "canceled", "cancelled", "succeeded", "interrupted"].includes(state.toLowerCase())
-          const callId = `child:${childID}:${String(data.call_id ?? name)}`
-          setEntries((current) => {
-            const prior = current.find((entry) => entry.callId === callId)
-            const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId, toolName: `agent ${shortChildID(childID)} · ${name}`, toolState: state, commandPreview: state, text: "", detail: `Child ID ${childID} · ${name} ${state}` }
-            return prior ? current.map((entry) => entry.callId === callId ? next : entry) : appendTranscriptEntries(current, next)
-          })
-        } else {
+          break
+        } else if (subtype === "subagent") {
           const state = String(data.state ?? "running")
           const childEntryId = `subagent:${childID}`
-          const text = typeof data.text === "string" && data.text ? data.text.slice(0, 240) : ""
+          const error = ["failed", "canceled"].includes(state) && typeof data.text === "string" ? data.text.slice(0, 1024) : ""
           setEntries((current) => {
             const prior = current.find((entry) => entry.callId === childEntryId)
-            const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId: childEntryId, toolName: `agent ${shortChildID(childID)}`, toolState: state, commandPreview: state, text, detail: `Child ID ${childID}${text ? ` · ${text}` : ` · ${state === "running" ? "Working in delegated task" : `Task ${state}`}`}` }
+            const next: Entry = { id: prior?.id ?? entryId.current++, role: "tool", callId: childEntryId, toolName: `agent ${shortChildID(childID)}`, toolState: state, commandPreview: state, text: error, detail: `Child ID ${childID} · ${state === "running" ? "Working in delegated task" : `Task ${state}`}` }
             return prior ? current.map((entry) => entry.callId === childEntryId ? next : entry) : appendTranscriptEntries(current, next)
           })
         }

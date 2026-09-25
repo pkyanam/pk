@@ -27,7 +27,6 @@ const (
 	maxFiles             = 64
 	maxQueuedChildren    = 8
 	maxFileBytes         = 4 << 10
-	maxEventText         = 8 << 10
 	maxReportBytes       = 32 << 10
 )
 
@@ -38,10 +37,10 @@ type Config struct {
 	// WorkspaceJournalRoot, when set, journals child file-tool mutations under
 	// the same root as the parent. Entries are keyed by the child session ID.
 	WorkspaceJournalRoot string
-	SkillsDirs                                         []string
-	MaxConcurrent                                      int
-	Depth                                              int
-	Runner                                             RunnerFactory
+	SkillsDirs           []string
+	MaxConcurrent        int
+	Depth                int
+	Runner               RunnerFactory
 	// Events callbacks may inspect or mutate manager state and may call emit
 	// indirectly, but must not call Manager.Close; Close drains callback delivery.
 	Events func(Event)
@@ -117,20 +116,21 @@ func DepthFromContext(ctx context.Context) int {
 }
 
 type child struct {
-	info        Child
-	claims      []string
-	ctx         context.Context
-	cancel      context.CancelFunc
-	inputs      chan runner.Input
-	inputMu     sync.Mutex
-	inputClosed bool
-	done        chan struct{}
-	final       chan struct{}
-	finalOnce   sync.Once
-	doneOnce    sync.Once
-	report      Report
-	textMu      sync.Mutex
-	text        strings.Builder
+	info         Child
+	claims       []string
+	ctx          context.Context
+	cancel       context.CancelFunc
+	inputs       chan runner.Input
+	inputMu      sync.Mutex
+	inputClosed  bool
+	done         chan struct{}
+	final        chan struct{}
+	finalOnce    sync.Once
+	doneOnce     sync.Once
+	report       Report
+	textMu       sync.Mutex
+	text         strings.Builder
+	sawAssistant bool
 }
 
 func (c *child) closeDone() { c.doneOnce.Do(func() { close(c.done) }) }
@@ -296,7 +296,7 @@ func (m *Manager) run(c *child) {
 		c.info.SessionID = result.SessionID
 		m.mu.Unlock()
 	}
-	if result.Text != "" {
+	if result.Text != "" && !c.sawAssistant {
 		c.textMu.Lock()
 		c.text.Reset()
 		_, _ = c.text.WriteString(limit(result.Text, maxReportBytes))
@@ -318,6 +318,9 @@ func (m *Manager) run(c *child) {
 	c.textMu.Unlock()
 	c.report = Report{Child: c.info, Text: text, StartedAt: c.info.StartedAt, FinishedAt: c.info.UpdatedAt, Error: c.info.Error}
 	m.mu.Unlock()
+	if c.info.State == "completed" && text != "" {
+		m.emit(Event{Type: "assistant", ChildID: c.info.ID, RequestID: c.info.RequestID, Phase: "final_answer", Text: text})
+	}
 	m.emit(Event{Type: "subagent", ChildID: c.info.ID, RequestID: c.info.RequestID, State: c.info.State, Text: limit(c.info.Error, 1024)})
 	c.finalOnce.Do(func() { close(c.final) })
 }
@@ -445,30 +448,34 @@ func (m *Manager) readEvents(c *child, r *io.PipeReader, done chan<- struct{}) {
 		e := Event{Type: typ, ChildID: c.info.ID, RequestID: c.info.RequestID, At: time.Now().UTC()}
 		switch typ {
 		case "assistant":
+			c.sawAssistant = true
 			_ = json.Unmarshal(raw["phase"], &e.Phase)
 			_ = json.Unmarshal(raw["text"], &e.Text)
+			if e.Phase != "analysis" {
+				c.textMu.Lock()
+				c.text.Reset()
+				if e.Phase != "commentary" {
+					c.text.WriteString(limit(e.Text, maxReportBytes))
+				}
+				c.textMu.Unlock()
+			}
 			if e.Phase == "final" || e.Phase == "final_answer" {
 				c.finalOnce.Do(func() { close(c.final) })
 			}
+			continue // Publish only the final report after the child has stopped.
 		case "tool_call":
-			_ = json.Unmarshal(raw["call_id"], &e.CallID)
-			_ = json.Unmarshal(raw["name"], &e.ToolName)
-			_ = json.Unmarshal(raw["state"], &e.State)
-			e.Payload = boundedRaw(raw, 6<<10)
+			// A preceding unphased reply was progress, not the final report.
+			c.textMu.Lock()
+			c.text.Reset()
+			c.textMu.Unlock()
+			continue // Full events remain in the child's own saved session.
+
 		case "usage", "session", "model":
 			e.Payload = boundedRaw(raw, 4<<10)
 		default:
 			continue
 		}
-		e.Text = limit(e.Text, maxEventText)
-		if typ == "assistant" && e.Text != "" {
-			c.textMu.Lock()
-			if c.text.Len() < maxReportBytes {
-				_, _ = c.text.WriteString(limit(e.Text, maxReportBytes-c.text.Len()))
-				c.text.WriteByte('\n')
-			}
-			c.textMu.Unlock()
-		}
+
 		m.emit(e)
 	}
 }
@@ -679,10 +686,10 @@ func (m *Manager) Close() {
 
 func buildChildPrompt(task string, files []string, taskOnly bool) string {
 	if taskOnly {
-		return "You are a child coding agent working in the parent's shared writable workspace. This is task-only mode: no files are assigned as exclusive ownership. The parent still has the same workspace tools and permissions; this is not an OS sandbox or read-only mode. Work on the requested investigation or task, coordinate before changing files that may overlap other work, and report any changes and tests. Do not spawn agents or create hidden worktrees. Task: " + task
+		return "You are a child coding agent working in the parent's shared writable workspace. This is task-only mode: no files are assigned as exclusive ownership. The parent still has the same workspace tools and permissions; this is not an OS sandbox or read-only mode. Work on the requested investigation or task, coordinate before changing files that may overlap other work, and report any changes and tests. Do not spawn agents or create hidden worktrees. Your parent works concurrently; only your final reply is returned. End with findings, changed files, checks, and blockers. Task: " + task
 	}
 	b, _ := json.Marshal(files)
-	return "You are a child coding agent working in the parent's shared writable workspace. Work only in the declared owned files: " + string(b) + ". This is coordination guidance, not a security sandbox. Do not spawn agents or alter files owned by other agents. Do not create hidden worktrees. Complete and verify the task, then report changed files and tests. Task: " + task
+	return "You are a child coding agent working in the parent's shared writable workspace. Work only in the declared owned files: " + string(b) + ". This is coordination guidance, not a security sandbox. Do not spawn agents or alter files owned by other agents. Do not create hidden worktrees. Your parent works concurrently; only your final reply is returned. Complete and verify the task, then report findings, changed files, checks, and blockers. Task: " + task
 }
 func choose(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {

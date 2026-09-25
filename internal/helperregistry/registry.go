@@ -289,13 +289,13 @@ func (h *remoteHandler) publish(op operation.Operation) error {
 func description(name string) string {
 	switch name {
 	case "SubagentStart":
-		return "Start a child coding agent in the shared writable workspace (default max 2 active; up to 8 queued). Set task_only=true and omit files for an investigation with no exclusive file ownership. Otherwise declare 1–64 unique workspace-relative files it owns. Ownership is coordination guidance only: the child has the same tools, write access, and OS permissions, not a sandbox or read-only restriction. Coordinate before changing files outside owned paths. Task is limited to 16 KiB; child agents cannot recursively spawn agents."
+		return "Start a child asynchronously and return its ID immediately; keep doing independent work. Only its final report is returned by SubagentWait. Uses the shared writable workspace (default max 2 active; up to 8 queued). Set task_only=true and omit files for an investigation with no exclusive file ownership. Otherwise declare 1–64 unique workspace-relative files it owns. Ownership is coordination guidance only: the child has the same tools, write access, and OS permissions, not a sandbox or read-only restriction. Coordinate before changing files outside owned paths. Task is limited to 16 KiB; child agents cannot recursively spawn agents."
 	case "SubagentStatus":
-		return "Get the state of a child coding agent."
+		return "Check child state without waiting; use sparingly, not in a polling loop."
 	case "SubagentSend":
 		return "Queue text steering for a running child agent; accepted after durable persistence."
 	case "SubagentWait":
-		return "Wait for a child agent to finish its current task and return its report."
+		return "Wait for completion and return only the final report. Use when the result blocks your next step or no independent work remains; otherwise keep working."
 	default:
 		return "Cancel a child coding agent."
 	}
