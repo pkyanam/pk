@@ -719,6 +719,7 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 	var mu sync.Mutex
 	toolCalls := make(map[string]toolCallMetadata)
 	pendingTools := make(map[string]bool)
+	recoveryInputs := make(map[inbox.ID]struct{})
 	sawToolWork, recoveredProgress := false, false
 	return func(id session.ID, item sessionstore.Item) {
 		if item.Kind == sessionstore.ItemInput {
@@ -726,6 +727,13 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			if !ok {
 				return
 			}
+			mu.Lock()
+			_, isRecovery := recoveryInputs[input.ID]
+			delete(recoveryInputs, input.ID)
+			mu.Unlock()
+			// Bound automatic continuation per external user turn, not per
+			// lifetime of a long-running interactive coordinator.
+			resetProgressRecoveryForExternalInput(input.Kind == inbox.InputExternal, isRecovery, &sawToolWork, &recoveredProgress)
 			inputAckMu.Lock()
 			callbacks := inputAcks[input.ID]
 			delete(inputAcks, input.ID)
@@ -847,6 +855,9 @@ func outputObserver(out, diagnostics io.Writer, jsonl, toolEvents bool, runCtx c
 			go func() {
 				inputID, err := newID()
 				if err == nil {
+					mu.Lock()
+					recoveryInputs[inbox.ID(inputID)] = struct{}{}
+					mu.Unlock()
 					payload, encodeErr := json.Marshal(progressRecoveryNote)
 					err = encodeErr
 					if err == nil {

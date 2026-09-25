@@ -1,5 +1,21 @@
 # v0.2.0 M1 recovery handoff
 
+## Current state (2026-09-24)
+
+The old handoff below is superseded. M1 was implemented and committed as `90cac3f` (`v2 (M1): daemon skeleton, stdio JSON-RPC, provider-catalog State, pk daemon start|stop|status`) in `/Users/preetham/Code/pk-v2-worktree`, then `origin/main` was merged cleanly in `33c49c2`. The branch is `feat/v2-daemon`, tracking `origin/feat/v2-daemon`, five commits ahead at that merge commit. The worktree was clean at inspection. Preserve this state; do not recreate M1 or reset/clean/merge it again.
+
+The latest pk task/session is `3f4adaf36075973f4c2927f46e208238`. It stopped after saying it would rerun verification and investigate the build/release path; no verification commands followed that statement. Its read-only child investigation (`a87468efc953a4921c1fbb1243c717aa`) was launched but returned no findings. Its log ends with `when_idle` / `input stream closed`, followed 2 ms later by `hard` / `interrupted`; the logs do not identify who initiated that lifecycle shutdown. Resume the parent session with `pk --session 3f4adaf36075973f4c2927f46e208238` from the v2 worktree. The current CLI supports `--session ID` to resume a saved session; `-r`, `-resume`, and `--resume` open the picker instead.
+
+Copy and paste this into the resumed session:
+
+```text
+Continue the existing v0.2.0 task in `/Users/preetham/Code/pk-v2-worktree` on `feat/v2-daemon`, starting from its current clean merged HEAD (`33c49c2`). M1 is already complete in `90cac3f` and `origin/main` is already merged; do not recreate M1, amend it, reset/clean the worktree, or redo the merge. First inspect current status and the merge diff. Then finish the verification you already announced: verify the daemon and resume dispatch coexist, run the relevant Go tests and `go build ./...`, and inspect any failures before making a narrowly scoped fix. The prior read-only child investigating build/install/release for a possible `pk2` binary was interrupted without returning findings. If that investigation remains in scope, restart only that read-only investigation and wait for its result; do not assume its findings, and do not let parent idleness silently discard pending child work. Preserve all existing work. Do not commit, push, tag, release, or publish without an explicit review of the resulting diff. Report exact checks and outcomes.
+```
+
+The parent session ended at an assistant turn boundary (`when_idle`) rather than a recorded user cancellation. It had already consumed the runtime's one continuation for the long interactive run, so a later future-tense-only response after the user's “Please don't stop” could not trigger another recovery. Main now scopes the bounded continuation allowance to each external user turn; the internal recovery input does not reset its own allowance. The child lifecycle shutdown coincided with parent idleness, but the logs do not prove the parent directly canceled it. Ensure future parent work waits for started children before returning idle.
+
+## Superseded original M1 handoff
+
 The separate checkout `/Users/preetham/Code/pk-v2-worktree` is on `feat/v2-daemon`, tracking `origin/feat/v2-daemon` at `b204a8a`. Its only local change is the untracked `docs/v2-architecture.md`. There is no `internal/v2/` directory or daemon scaffold yet. The earlier M1 attempt stopped before editing: the child reported its file-writing tool was confined to `/private/tmp`, then its session was interrupted. The architecture decisions and M1 request were saved in `~/.pk/sessions/917747e6cbc9205d1fa244bc0c5cb907.session.jsonl` and `~/.pk/sessions/3a5d726e4ecb88efeff45423d6f9501d.session.jsonl`.
 
 Copy and paste this into pk when resuming the v0.2.0 work:

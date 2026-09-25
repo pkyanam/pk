@@ -19,6 +19,8 @@ func TestUnfinishedProgressIsNarrow(t *testing.T) {
 		{"The key evidence is in. Let me examine the heartbeat implementation and confirm the resend claim.", true},
 		{"Let me check the tests.", true},
 		{"I’ll inspect the runner now.", true},
+		{"The merge completed cleanly — git auto-merged main.go. Let me verify the cases, then re-run the full verification suite:", true},
+		{"Merge verified clean. Now the full verification suite on the merged tree, in parallel with the investigation:", true},
 		{"Done. All tests pass.", false},
 		{"Would you like me to inspect it?", false},
 		{"If you want, I’ll inspect it.", false},
@@ -31,6 +33,27 @@ func TestUnfinishedProgressIsNarrow(t *testing.T) {
 	}
 	if unfinishedProgress("Let me inspect it.", "final_answer") {
 		t.Fatal("recovered explicit final")
+	}
+}
+
+func TestProgressRecoveryBudgetResetsOnlyForExternalTurns(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		external         bool
+		internalRecovery bool
+		wantReset        bool
+	}{
+		{name: "user input", external: true, wantReset: true},
+		{name: "runtime recovery", external: true, internalRecovery: true},
+		{name: "control input"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sawToolWork, recovered := true, true
+			resetProgressRecoveryForExternalInput(tc.external, tc.internalRecovery, &sawToolWork, &recovered)
+			if (sawToolWork == false) != tc.wantReset || (recovered == false) != tc.wantReset {
+				t.Fatalf("sawToolWork=%t recovered=%t, want reset=%t", sawToolWork, recovered, tc.wantReset)
+			}
+		})
 	}
 }
 
