@@ -57,6 +57,7 @@ type Options struct {
 	// appended. Callers may use it to retain input-owned artifacts.
 	AfterInputPersist func(sessionID, inputID string)
 	SessionID         string
+	ParentSessionID   string
 	SessionDir        string
 	Workspace         string
 	Model             string
@@ -1549,8 +1550,14 @@ func newContextSnapshot(options Options, registry tool.Registry, _ []tool.Skill)
 		tools = append(tools, definition.Tool)
 	}
 	explicit := strings.TrimSpace(options.SystemPrompt)
+	role := "main"
+	if options.ParentSessionID != "" {
+		role = "subagent"
+	}
 	return ContextSnapshot{
 		Version: contextSnapshotVersion, Workspace: options.Workspace,
+		ParentSessionID:      options.ParentSessionID,
+		SessionRole:          role,
 		SystemPrompt:         workspaceSystemPrompt(options.Workspace, options.SystemPrompt, options.Diagnostics),
 		ExplicitSystemPrompt: explicit, Tools: tools, MCPFingerprint: options.MCPFingerprint, ProviderFingerprint: options.ProviderFingerprint, ProviderID: options.ProviderID, ImageGenFingerprint: options.ImageGenFingerprint,
 	}

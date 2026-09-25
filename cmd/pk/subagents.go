@@ -78,6 +78,13 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 	if len(cfg.SkillsDirs) == 0 {
 		cfg.SkillsDirs = append([]string(nil), parent.SkillsDirs...)
 	}
+	previousOnSession := parent.OnSession
+	parent.OnSession = func(id string) {
+		parent.SessionID = id
+		if previousOnSession != nil {
+			previousOnSession(id)
+		}
+	}
 	if cfg.ProviderID == "" {
 		cfg.ProviderID = parent.ProviderID
 	}
@@ -128,8 +135,9 @@ func configureSubagents(ctx context.Context, parent *runner.Options, cfg subagen
 	}
 	manager, err := subagents.New(subagents.Config{
 		Workspace: cfg.Workspace, SessionDir: cfg.SessionDir,
+		ParentSessionID:      func() string { return parent.SessionID },
 		WorkspaceJournalRoot: cfg.WorkspaceJournalRoot,
-		Model: model, Effort: effort,
+		Model:                model, Effort: effort,
 		SystemPrompt: cfg.SystemPrompt, SkillsDirs: append([]string(nil), cfg.SkillsDirs...),
 		MaxConcurrent: cfg.MaxConcurrent, Depth: 0, Events: cfg.Events,
 		Runner: func(runCtx context.Context, child runner.Options) (runner.RunResult, error) {

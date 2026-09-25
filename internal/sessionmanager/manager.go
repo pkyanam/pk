@@ -41,14 +41,16 @@ type Manager struct {
 }
 
 type Session struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Workspace string    `json:"workspace,omitempty"`
-	Title     string    `json:"title,omitempty"`
-	Preview   string    `json:"preview,omitempty"`
-	ItemCount int       `json:"item_count"`
-	Active    bool      `json:"active"`
+	ID              string    `json:"id"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	Workspace       string    `json:"workspace,omitempty"`
+	Title           string    `json:"title,omitempty"`
+	Preview         string    `json:"preview,omitempty"`
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	SessionRole     string    `json:"session_role,omitempty"`
+	ItemCount       int       `json:"item_count"`
+	Active          bool      `json:"active"`
 }
 
 type ListOptions struct {
@@ -56,6 +58,7 @@ type ListOptions struct {
 	Workspace string
 	ActiveIDs map[string]bool
 	Limit     int
+	Kind      string
 }
 
 type TrashEntry struct {
@@ -86,7 +89,9 @@ type archiveManifest struct {
 }
 
 type contextMetadata struct {
-	Workspace string
+	Workspace       string
+	ParentSessionID string
+	SessionRole     string
 }
 
 // Archive moves the selected session and its harness-managed sidecars into
@@ -915,6 +920,10 @@ func (m Manager) List(ctx context.Context, opts ListOptions) ([]Session, error) 
 			return nil, err
 		}
 		meta.Active = opts.ActiveIDs[meta.ID]
+		isSubagent := meta.SessionRole == "subagent" || meta.ParentSessionID != ""
+		if opts.Kind == "main" && isSubagent || opts.Kind == "subagents" && !isSubagent {
+			continue
+		}
 		if !meta.Active {
 			busy, lockErr := sessionlock.IsBusy(cacheDir, meta.ID)
 			if lockErr != nil {
@@ -1017,14 +1026,16 @@ func readMetadata(ctx context.Context, store *localfile.Store, sessionsDir strin
 
 func readMetadataFromSnapshot(ctx context.Context, store *localfile.Store, sessionsDir string, info sessionstore.SessionInfo, snapshot sessionstore.Snapshot) (Session, error) {
 	meta := Session{ID: string(info.ID), CreatedAt: snapshot.Session.CreatedAt, UpdatedAt: info.LastUpdatedAt}
+	var context contextMetadata
 	if data, err := os.ReadFile(contextSnapshotPath(sessionsDir, string(info.ID))); err == nil {
-		var context contextMetadata
 		if json.Unmarshal(data, &context) == nil {
 			meta.Workspace = context.Workspace
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return Session{}, err
 	}
+	meta.ParentSessionID = context.ParentSessionID
+	meta.SessionRole = context.SessionRole
 	page, err := store.Items(ctx, info.ID, 0, maxMetadataItems)
 	if err != nil {
 		return Session{}, err

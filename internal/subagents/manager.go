@@ -34,6 +34,7 @@ type RunnerFactory func(context.Context, runner.Options) (runner.RunResult, erro
 
 type Config struct {
 	Workspace, SessionDir, Model, Effort, SystemPrompt string
+	ParentSessionID                                    func() string
 	// WorkspaceJournalRoot, when set, journals child file-tool mutations under
 	// the same root as the parent. Entries are keyed by the child session ID.
 	WorkspaceJournalRoot string
@@ -288,6 +289,9 @@ func (m *Manager) run(c *child) {
 		m.mu.Unlock()
 		m.emit(Event{Type: "subagent", ChildID: c.info.ID, RequestID: c.info.RequestID, State: "running", Text: "session=" + id})
 	}, Inputs: c.inputs, QueueInputs: true, KeepAlive: false, CaptureLimit: maxReportBytes}
+	if m.cfg.ParentSessionID != nil {
+		opts.ParentSessionID = m.cfg.ParentSessionID()
+	}
 	result, err := m.cfg.Runner(c.ctx, opts)
 	_ = w.Close()
 	<-readDone

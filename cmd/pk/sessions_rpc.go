@@ -31,7 +31,7 @@ func (s *rpcServer) rpcActiveSessionIDs() map[string]bool {
 	return active
 }
 
-func (s *rpcServer) listSessions(ctx context.Context, query, workspace string, limit int) ([]sessionmanager.Session, error) {
+func (s *rpcServer) listSessions(ctx context.Context, query, workspace string, limit int, kind string) ([]sessionmanager.Session, error) {
 	if len(query) > 512 || len(workspace) > 4096 {
 		return nil, errors.New("session search fields exceed their size limits")
 	}
@@ -41,11 +41,14 @@ func (s *rpcServer) listSessions(ctx context.Context, query, workspace string, l
 	if limit > rpcSessionMaxLimit {
 		return nil, errors.New("session list limit exceeds 500")
 	}
+	if kind != "" && kind != "main" && kind != "subagents" {
+		return nil, errors.New("session kind must be main or subagents")
+	}
 	s.mu.Lock()
 	sessionDir := s.sessionDir
 	s.mu.Unlock()
 	return rpcSessionsManager(sessionDir).List(ctx, sessionmanager.ListOptions{
-		Query: query, Workspace: filepath.Clean(strings.TrimSpace(workspace)),
+		Query: query, Workspace: filepath.Clean(strings.TrimSpace(workspace)), Kind: kind,
 		ActiveIDs: s.rpcActiveSessionIDs(), Limit: limit,
 	})
 }

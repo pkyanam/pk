@@ -10,6 +10,8 @@ export type ManagedSession = {
   workspace?: string
   title?: string
   preview?: string
+  parent_session_id?: string
+  session_role?: "main" | "subagent"
   item_count: number
   active: boolean
 }
@@ -24,7 +26,7 @@ export type TrashedSession = {
 }
 
 type SessionResult = { session_id: string; trash_id?: string; ok: boolean; error?: string }
-type SessionTab = "sessions" | "trash"
+type SessionTab = "sessions" | "subagents" | "trash"
 type RequestKind = "sessions" | "trash" | "archive" | "restore" | "purge"
 type RequestInfo = { kind: RequestKind; query: string }
 
@@ -51,7 +53,7 @@ function compactPath(path: string, max: number): string {
 }
 
 function singleLine(value: string | undefined, max: number): string {
-  const text = (value ?? "").replace(/\s+/g, " ").trim()
+  const text = (value ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()
   if (Bun.stringWidth(text) <= max) return text
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
   let output = ""
@@ -104,7 +106,7 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
   const refresh = (target: SessionTab = tab, search = query) => {
     setSearchDirty(false)
     const bounded = search.slice(0, maxQueryBytes)
-    if (target === "sessions") sendRequest("sessions", "sessions_list", { query: bounded, limit: listLimit })
+    if (target !== "trash") sendRequest("sessions", "sessions_list", { query: bounded, limit: listLimit, kind: target === "subagents" ? "subagents" : "main" })
     else sendRequest("trash", "sessions_trash_list", { query: bounded })
   }
 
@@ -132,8 +134,9 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     return () => clearTimeout(timer)
   }, [query, tab, open, searchDirty])
 
-  const visibleItems = tab === "sessions" ? sessions : trash
-  const rowKey = (index: number) => tab === "sessions" ? (sessions[index] as ManagedSession | undefined)?.id : (trash[index] as TrashedSession | undefined)?.trash_id
+  const isSessionTab = tab !== "trash"
+  const visibleItems = isSessionTab ? sessions : trash
+  const rowKey = (index: number) => isSessionTab ? (sessions[index] as ManagedSession | undefined)?.id : (trash[index] as TrashedSession | undefined)?.trash_id
 
   useEffect(() => {
     setSelectedIndex((index) => visibleItems.length === 0 ? 0 : Math.max(0, Math.min(index, visibleItems.length - 1)))
@@ -152,7 +155,7 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
   const toggleSelected = (index = selectedIndex) => {
     const id = rowKey(index)
     if (!id) return
-    if (tab === "sessions" && sessions[index]?.active) {
+    if (isSessionTab && sessions[index]?.active) {
       setNotice("This session is open in another view and cannot be archived here.")
       return
     }
@@ -165,21 +168,21 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
   }
 
   const selectableIDs = visibleItems.flatMap((item) => {
-    if (tab === "sessions" && (item as ManagedSession).active) return []
-    return [tab === "sessions" ? (item as ManagedSession).id : (item as TrashedSession).trash_id]
+    if (isSessionTab && (item as ManagedSession).active) return []
+    return [isSessionTab ? (item as ManagedSession).id : (item as TrashedSession).trash_id]
   })
   const allSelected = selectableIDs.length > 0 && selectableIDs.every((id) => selectedIDs.has(id))
   const toggleAll = () => {
     if (busy || selectableIDs.length === 0) return
     const clearing = allSelected
     setSelectedIDs(clearing ? new Set() : new Set(selectableIDs))
-    const skipped = tab === "sessions" ? visibleItems.length - selectableIDs.length : 0
+    const skipped = isSessionTab ? visibleItems.length - selectableIDs.length : 0
     setNotice(clearing ? (skipped > 0 ? `Selection cleared; ${skipped} open session${skipped === 1 ? "" : "s"} ${skipped === 1 ? "remains" : "remain"} unselected.` : "Selection cleared.") : skipped > 0 ? `Selected ${selectableIDs.length}; skipped ${skipped} open session${skipped === 1 ? "" : "s"}.` : `Selected ${selectableIDs.length} session${selectableIDs.length === 1 ? "" : "s"}.`)
   }
 
   const selected = [...selectedIDs]
   const runArchive = () => {
-    if (tab !== "sessions" || selected.length === 0 || busy) return
+    if (!isSessionTab || selected.length === 0 || busy) return
     sendRequest("archive", "sessions_archive", { session_ids: selected })
   }
   const runRestore = () => {
@@ -250,6 +253,7 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     if (name === "/") { setSearchMode(true); return }
     if (name === "1") { setTabAndRefresh("sessions"); return }
     if (name === "2") { setTabAndRefresh("trash"); return }
+    if (name === "3") { setTabAndRefresh("subagents"); return }
     if (name === "up" || name === "arrowup") { setSelectedIndex((index) => Math.max(0, index - 1)); return }
     if (name === "down" || name === "arrowdown") { setSelectedIndex((index) => Math.min(visibleItems.length - 1, index + 1)); return }
     if (name === "space" || key.sequence === " ") { toggleSelected(); return }
@@ -257,12 +261,12 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     if (name === "r") { runRestore(); return }
     if (name === "p") {
       if (tab === "trash" && selected.length > 0) setConfirmPurge(true)
-      else if (tab === "sessions" && selected.length > 0) setNotice("Purge is only available in Trash. Press A to archive selected sessions first; they remain recoverable there.")
+      else if (isSessionTab && selected.length > 0) setNotice("Purge is only available in Trash. Press A to archive selected sessions first; they remain recoverable there.")
       return
     }
     if (name === "s") { toggleAll(); return }
     if (name === "c" && busy) { send("session_operation_cancel"); return }
-    if (name === "return" && tab === "sessions") {
+    if (name === "return" && isSessionTab) {
       const session = sessions[selectedIndex]
       if (session && !session.active) onLoad(session)
       else if (session?.active) setNotice("This session is already open.")
@@ -273,9 +277,9 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
 
   const start = Math.max(0, Math.min(selectedIndex - Math.floor(visibleRows / 2), Math.max(0, visibleItems.length - visibleRows)))
   const page = visibleItems.slice(start, start + visibleRows)
-  const activeSession = tab === "sessions" ? sessions[selectedIndex] : undefined
+  const activeSession = isSessionTab ? sessions[selectedIndex] : undefined
   const trashSession = tab === "trash" ? trash[selectedIndex] : undefined
-  const detailTitle = singleLine(tab === "sessions" ? activeSession?.title || "Untitled session" : trashSession?.title || "Archived session", Math.max(20, renderer.width - 16))
+  const detailTitle = singleLine(isSessionTab ? activeSession?.title || "Untitled session" : trashSession?.title || "Archived session", Math.max(20, renderer.width - 16))
   const detailPreview = singleLine(activeSession?.preview || (trashSession ? `Archived ${formatDate(trashSession.archived_at)} · ${trashSession.state}` : "Select a session to inspect its saved metadata."), Math.max(20, renderer.width - 16))
   const detailMetadata = singleLine(`${compactPath(activeSession?.workspace || trashSession?.workspace || "", Math.max(24, renderer.width - 28))}${activeSession ? `  ·  Created ${formatDate(activeSession.created_at)}` : ""}`, Math.max(20, renderer.width - 16))
   const openDisabled = busy || !activeSession || activeSession.active
@@ -295,13 +299,14 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     <text fg={colors.muted} content="Search, reopen, or clean up local conversation history. Archive is recoverable; purge permanently deletes archived data." />
     <box style={{ flexDirection: "row", gap: 2 }}>
       <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => setTabAndRefresh("sessions"))} style={{ backgroundColor: tab === "sessions" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "sessions" ? colors.accent : colors.muted} content={`Sessions · ${sessions.length}  [1]`} /></box>
+      <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => setTabAndRefresh("subagents"))} style={{ backgroundColor: tab === "subagents" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "subagents" ? colors.accent : colors.muted} content={`Subagents · [3]`} /></box>
       <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => setTabAndRefresh("trash"))} style={{ backgroundColor: tab === "trash" ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}><text fg={tab === "trash" ? colors.accent : colors.muted} content={`Trash · ${trash.length}  [2]`} /></box>
     </box>
     <box style={{ flexDirection: "row", gap: 1 }}>
       <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, toggleAll)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}>
         <text fg={colors.accent} content={allSelected ? "Clear selection · S" : "Select all · S"} />
       </box>
-      <text fg={colors.dim} content={tab === "sessions" ? "Open sessions are skipped" : "Select all archived items"} />
+      <text fg={colors.dim} content={isSessionTab ? "Open sessions are skipped · missing origin metadata stays in Sessions" : "Select all archived items"} />
     </box>
     <box style={{ flexDirection: "row", gap: 1 }}>
       <text fg={searchMode ? colors.accent : colors.muted} content="/" />
@@ -310,21 +315,25 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
     </box>
     <text fg={colors.dim} content={busy ? notice : notice || `${visibleItems.length === 0 ? "No results" : `Showing ${start + 1}–${Math.min(start + page.length, visibleItems.length)} of ${visibleItems.length}`} · ${selected.length} selected`} />
     <box style={{ flexDirection: "column", flexGrow: 1, minHeight: 3, border: ["top", "bottom"], borderColor: colors.line, paddingTop: 1, paddingBottom: 1 }}>
-      {page.length === 0 && <text fg={colors.dim} content={busy ? "Loading…" : tab === "sessions" ? "No saved sessions match this filter." : "Trash is empty. Archived sessions can be restored or permanently removed here."} />}
+      {page.length === 0 && <text fg={colors.dim} content={busy ? "Loading…" : isSessionTab ? "No saved sessions match this filter." : "Trash is empty. Archived sessions can be restored or permanently removed here."} />}
       {page.map((item, localIndex) => {
         const index = start + localIndex
-        const session = tab === "sessions" ? item as ManagedSession : undefined
+        const session = isSessionTab ? item as ManagedSession : undefined
         const archived = tab === "trash" ? item as TrashedSession : undefined
         const id = session?.id ?? archived?.trash_id ?? ""
         const isSelected = selectedIDs.has(id)
         const isCursor = index === selectedIndex
         const title = session?.title || archived?.title || "Untitled session"
         const workspace = session?.workspace || archived?.workspace || "Workspace unavailable"
-        const meta = session ? `${session.item_count} entries · updated ${formatDate(session.updated_at)}${session.active ? " · open now" : ""}` : `${archived?.state ?? "archived"} · ${formatDate(archived?.archived_at ?? "")}`
-        const line = singleLine(`${isSelected ? "[x]" : "[ ]"} ${title}  ·  ${meta}`, Math.max(20, renderer.width - 22))
-        return <box key={id} onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => { setSelectedIndex(index); toggleSelected(index) })} style={{ flexDirection: "column", minHeight: 2, backgroundColor: isCursor ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}>
+        const origin = session?.session_role === "main" ? "main" : session?.session_role === "subagent" || session?.parent_session_id ? "subagent" : "origin unknown"
+        const meta = session ? `${session.item_count ?? 0} entries · updated ${formatDate(session.updated_at ?? "")} · ${origin}${session.active ? " · open now" : ""}` : `${archived?.state ?? "archived"} · ${formatDate(archived?.archived_at ?? "")}`
+        // Leave room for the modal, list border, and row padding. Fixed row
+        // height prevents OpenTUI wrapping a long preview over the next item.
+        const rowWidth = Math.max(8, renderer.width - 34)
+        const line = singleLine(`${isSelected ? "[x]" : "[ ]"} ${title}  ·  ${meta}`, rowWidth)
+        return <box key={id} onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => { setSelectedIndex(index); toggleSelected(index) })} style={{ flexDirection: "column", height: 2, minHeight: 2, maxHeight: 2, backgroundColor: isCursor ? colors.raised : colors.panel, paddingLeft: 1, paddingRight: 1 }}>
           <text fg={isCursor ? colors.accent : colors.text} content={line} />
-          <text fg={colors.dim} content={singleLine(`${compactPath(workspace, Math.max(20, renderer.width - 25))}  ·  ${session?.preview ?? ""}`, Math.max(20, renderer.width - 25))} />
+          <text fg={colors.dim} content={singleLine(`${compactPath(workspace, Math.max(8, rowWidth - 2))}  ·  ${session?.preview ?? ""}`, rowWidth)} />
         </box>
       })}
     </box>
@@ -332,7 +341,7 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
       <text fg={colors.text} content={detailTitle || "Session details"} />
       <text fg={colors.muted} content={detailMetadata} />
       <text fg={colors.dim} content={detailPreview} />
-      {tab === "sessions" && <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => {
+      {isSessionTab && <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => {
         if (!openDisabled && activeSession) onLoad(activeSession)
       })} style={{ alignSelf: "flex-start", backgroundColor: openDisabled ? colors.panel : colors.raised, paddingLeft: 1, paddingRight: 1 }}>
         <text fg={openDisabled ? colors.dim : colors.accent} content={activeSession?.active ? "Already open" : busy ? "Open session · wait for operation" : "Open session · click"} />
@@ -346,9 +355,9 @@ export function SessionManager({ open, onClose, send, event, onLoad }: SessionMa
       </box>
     </box>}
     <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
-      <text fg={colors.dim} content={tab === "sessions" ? "↑↓ move · Space select · S all · Enter open · A archive" : "↑↓ move · Space select · S all · R restore · P purge"} />
+      <text fg={colors.dim} content={isSessionTab ? "↑↓ move · Space select · S all · Enter open · A archive" : "↑↓ move · Space select · S all · R restore · P purge"} />
       <box style={{ flexDirection: "row", gap: 1 }}>
-        {tab === "sessions" ? <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, runArchive)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Archive ${selected.length || "selected"}`} /></box> : <>
+        {isSessionTab ? <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, runArchive)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Archive ${selected.length || "selected"}`} /></box> : <>
           <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, runRestore)} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.accent} content={`Restore ${selected.length || "selected"}`} /></box>
           <box onMouseDown={(event: { button: number; preventDefault: () => void; stopPropagation: () => void }) => leftMouseDown(event, () => selected.length > 0 && setConfirmPurge(true))} style={{ backgroundColor: colors.raised, paddingLeft: 1, paddingRight: 1 }}><text fg={colors.red} content={`Purge ${selected.length || "selected"}`} /></box>
         </>}

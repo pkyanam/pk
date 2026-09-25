@@ -848,7 +848,7 @@ export function PkApp({ transport, workspace, initialSession }: { transport: PkT
   const [sessionUsageLoading, setSessionUsageLoading] = useState(false)
   const [sessionUsageError, setSessionUsageError] = useState("")
   const [compactionUsageExpanded, setCompactionUsageExpanded] = useState(false)
-  const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
+  const [sessionManagerOpen, setSessionManagerOpen] = useState(() => process.env.PK_RESUME_PICKER === "1")
   const [sessionManagerEvent, setSessionManagerEvent] = useState<ServerEvent | undefined>()
   const [mcpManagerOpen, setMcpManagerOpen] = useState(false)
   const [selectionIndex, setSelectionIndex] = useState(0)

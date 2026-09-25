@@ -984,7 +984,11 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 				}
 				_ = s.emit(msg.ID, "model_progress", payload)
 			}}
+			previousOnSession := opts.OnSession
 			opts.OnSession = func(id string) {
+				if previousOnSession != nil {
+					previousOnSession(id)
+				}
 				s.mu.Lock()
 				s.session = id
 				s.opts.SessionID = id
@@ -2103,6 +2107,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			Query     string `json:"query,omitempty"`
 			Workspace string `json:"workspace,omitempty"`
 			Limit     int    `json:"limit,omitempty"`
+			Kind      string `json:"kind,omitempty"`
 		}
 		if len(msg.Payload) > 0 {
 			if err := json.Unmarshal(msg.Payload, &request); err != nil {
@@ -2111,7 +2116,7 @@ func (s *rpcServer) handle(msg rpcMessage, finished chan<- turnDone) {
 			}
 		}
 		s.startSkillOperation(msg.ID, "session search", "sessions_list_started", "sessions", map[string]any{}, func(ctx context.Context) (any, error) {
-			items, err := s.listSessions(ctx, request.Query, request.Workspace, request.Limit)
+			items, err := s.listSessions(ctx, request.Query, request.Workspace, request.Limit, request.Kind)
 			return map[string]any{"sessions": items}, err
 		})
 	case "sessions_archive":
