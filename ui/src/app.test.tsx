@@ -2449,7 +2449,9 @@ describe("OpenTUI application", () => {
     expect(parsed.highlights?.some(([, , scope]) => scope === "markup.link.label")).toBe(true)
     act(() => fake.emit({ version: 1, id: prompt.id, type: "turn_started", payload: { session_id: "currency-session" } }))
     act(() => fake.emit({ version: 1, id: prompt.id, type: "assistant", payload: { text } }))
-    await setup.waitForFrame((frame) => frame.includes("Bitcoin (BTC) is") && frame.includes("CoinMarketCap"))
+    // Highlighting runs in a worker; renderer frames can finish before its
+    // reply on a busy CI runner. Await highlighting before asserting text.
+    await setup.flush()
     const findMarkdownBlock = () => findDescendant(setup.renderer.root, (renderable) => /^markdown-\d+-block-0$/.test(renderable.id ?? ""))
     let markdownBlock = findMarkdownBlock()
     const deadline = Date.now() + 1000
