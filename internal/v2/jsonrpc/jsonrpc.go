@@ -58,6 +58,11 @@ func (e *RPCError) Error() string {
 	return fmt.Sprintf("jsonrpc %d: %s", e.Code, e.Message)
 }
 
+// ErrInvalidParams returns a *RPCError with the JSON-RPC invalid-params code.
+func ErrInvalidParams(message string) error {
+	return &RPCError{Code: InvalidParams, Message: message}
+}
+
 // Server dispatches newline-delimited JSON-RPC requests to registered
 // handlers. The daemon is the single writer, so no synchronization is needed.
 type Server struct {
